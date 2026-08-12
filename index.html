@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230b0c0e'/%3E%3Cpath d='M16 6v20M6 16h20' stroke='%23ffb347' stroke-width='3'/%3E%3C/svg%3E" />
+<title>ASHFALL — Abandoned City FPS</title>
+<link rel="stylesheet" href="./src/style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+
+  <!-- ============ HUD ============ -->
+  <div id="hud" class="hidden">
+    <div id="crosshair">
+      <span class="ch ch-t"></span>
+      <span class="ch ch-b"></span>
+      <span class="ch ch-l"></span>
+      <span class="ch ch-r"></span>
+      <span class="ch-dot"></span>
+    </div>
+    <div id="hitmarker"></div>
+
+    <div id="vignette"></div>
+    <div id="damage-flash"></div>
+    <div id="hurt-dirs"></div>
+
+    <div id="hud-topleft">
+      <div id="wave-line"><span class="label">WAVE</span> <span id="wave">1</span></div>
+      <div id="enemies-line"><span class="label">HOSTILES</span> <span id="enemies-left">0</span></div>
+      <div id="score-line"><span class="label">SCORE</span> <span id="score">0</span></div>
+    </div>
+
+    <div id="hud-topright">
+      <canvas id="radar" width="150" height="150"></canvas>
+    </div>
+
+    <div id="killfeed"></div>
+
+    <div id="hud-bottomleft">
+      <div id="health-wrap">
+        <div id="health-bar"><div id="health-fill"></div></div>
+        <div id="health-num">100</div>
+      </div>
+      <div id="stamina-bar"><div id="stamina-fill"></div></div>
+    </div>
+
+    <div id="hud-bottomright">
+      <div id="weapon-name">M9 PISTOL</div>
+      <div id="ammo"><span id="mag">15</span><span id="ammo-sep">/</span><span id="reserve">90</span></div>
+      <div id="reload-hint" class="hidden">PRESS [R] TO RELOAD</div>
+      <div id="weapon-slots"></div>
+    </div>
+
+    <div id="wave-banner" class="hidden"></div>
+    <div id="pickup-toast"></div>
+  </div>
+
+  <!-- ============ MENUS ============ -->
+  <div id="menu" class="overlay">
+    <div class="menu-inner">
+      <h1 class="title">ASHFALL</h1>
+      <p class="subtitle">Sector 7 &mdash; abandoned. Something still moves down there.</p>
+      <div id="loading">LOADING&hellip;</div>
+      <button id="start-btn" class="btn hidden">DEPLOY</button>
+      <div class="controls">
+        <div class="col">
+          <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
+          <div><kbd>Shift</kbd> Sprint</div>
+          <div><kbd>Ctrl</kbd> Crouch</div>
+          <div><kbd>Space</kbd> Jump</div>
+        </div>
+        <div class="col">
+          <div><kbd>LMB</kbd> Fire</div>
+          <div><kbd>RMB</kbd> Aim</div>
+          <div><kbd>R</kbd> Reload</div>
+          <div><kbd>1</kbd>&ndash;<kbd>4</kbd> / <kbd>Wheel</kbd> Weapons</div>
+        </div>
+      </div>
+      <div class="hint"><kbd>Esc</kbd> pauses &middot; click the screen to lock the mouse</div>
+    </div>
+  </div>
+
+  <div id="pause" class="overlay hidden">
+    <div class="menu-inner">
+      <h2 class="title small">PAUSED</h2>
+      <button id="resume-btn" class="btn">RESUME</button>
+      <div class="settings">
+        <label>Mouse sensitivity <input id="sens" type="range" min="20" max="300" value="100" /></label>
+        <label>Field of view <input id="fov" type="range" min="65" max="105" value="78" /></label>
+      </div>
+      <button id="quit-btn" class="btn ghost">ABANDON RUN</button>
+    </div>
+  </div>
+
+  <div id="gameover" class="overlay hidden">
+    <div class="menu-inner">
+      <h2 class="title small dead">YOU DIED</h2>
+      <div id="stats"></div>
+      <button id="retry-btn" class="btn">REDEPLOY</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
