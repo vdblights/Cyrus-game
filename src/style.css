@@ -158,6 +158,23 @@ html, body {
 #reload-hint { font-size: 12px; color: var(--red); animation: blink 0.9s infinite; }
 @keyframes blink { 50% { opacity: 0.25; } }
 
+#nades { margin-top: 6px; font-size: 13px; color: var(--amber-dim); }
+#nades.empty { color: rgba(255, 220, 180, 0.25); }
+#nade-count { color: var(--hud); font-weight: 700; font-size: 16px; }
+.nade-icon {
+  display: inline-block; width: 8px; height: 10px; margin-right: 2px;
+  background: #6f8250; border-radius: 3px; vertical-align: -1px;
+}
+
+/* fuse timer while a frag is cooking in hand */
+#cook-bar {
+  position: absolute; left: 50%; top: 58%;
+  width: 150px; height: 5px; margin-left: -75px;
+  background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(255, 190, 130, 0.4);
+}
+#cook-fill { height: 100%; width: 100%; background: var(--amber); transition: background 0.2s; }
+#cook-fill.hot { background: var(--red); }
+
 #weapon-slots { margin-top: 10px; display: flex; gap: 6px; justify-content: flex-end; }
 .slot {
   font-size: 11px; padding: 3px 8px;
@@ -233,7 +250,16 @@ kbd {
 
 .settings { margin: 24px 0; font-size: 13px; color: rgba(255, 220, 180, 0.7); }
 .settings label { display: block; margin: 12px 0; }
+.settings label.check { color: rgba(255, 220, 180, 0.75); }
+.settings input[type="checkbox"] { width: auto; accent-color: var(--amber); }
 .settings input { vertical-align: middle; margin-left: 10px; width: 200px; accent-color: var(--amber); }
 
 #stats { margin: 18px 0 26px; font-size: 15px; line-height: 2; color: rgba(255, 220, 180, 0.85); }
 #stats b { color: var(--amber); font-size: 20px; }
+#stats .record { color: var(--amber); letter-spacing: 0.24em; margin-top: 10px; animation: blink 1s infinite; }
+
+.records {
+  margin: -14px 0 22px; font-size: 13px; letter-spacing: 0.18em;
+  color: rgba(255, 220, 180, 0.6);
+}
+.records b { color: var(--amber); font-size: 16px; }

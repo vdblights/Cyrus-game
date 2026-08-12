@@ -72,10 +72,25 @@ export class Effects {
       this.casings.push({ mesh: m, life: 0, vel: new THREE.Vector3(), spin: new THREE.Vector3() });
     }
 
-    // ---- muzzle light --------------------------------------------------
+    // ---- muzzle + blast lights ------------------------------------------
     this.muzzleLight = new THREE.PointLight(0xffcf8a, 0, 16, 2);
     scene.add(this.muzzleLight);
     this.muzzleLife = 0;
+
+    this.blastLight = new THREE.PointLight(0xffa040, 0, 40, 2);
+    scene.add(this.blastLight);
+    this.blastLife = 0;
+
+    // ---- debris chunks thrown by explosions -------------------------------
+    this.debris = [];
+    const rubble = new THREE.MeshLambertMaterial({ color: 0x4a4640 });
+    const chunk = new THREE.IcosahedronGeometry(0.11, 0);
+    for (let i = 0; i < 30; i++) {
+      const m = new THREE.Mesh(chunk, rubble);
+      m.visible = false;
+      scene.add(m);
+      this.debris.push({ mesh: m, life: 0, vel: new THREE.Vector3(), spin: new THREE.Vector3() });
+    }
   }
 
   tracer(from, to, width = 1) {
@@ -120,11 +135,59 @@ export class Effects {
     if (surface === 'hard') {
       const d = this.decals[this.decalIdx = (this.decalIdx + 1) % this.decals.length];
       d.position.copy(point).addScaledVector(normal, 0.012);
+      d.rotation.set(0, 0, 0);
       V.copy(point).add(normal);
       d.lookAt(V);
       d.scale.setScalar(0.7 + Math.random() * 0.8);
       d.visible = true;
     }
+  }
+
+  /** Wisp of smoke off a tumbling grenade. */
+  trailPuff(point) {
+    V.set((Math.random() - 0.5) * 0.3, 0.3, (Math.random() - 0.5) * 0.3);
+    this._sprite(this.spriteMaps.smoke, point, 0.12, 0.45, V, 1.8, 0.22);
+  }
+
+  /** Frag detonation: flash, fireball, smoke column, sparks and debris. */
+  explosion(point) {
+    this.blastLight.position.copy(point).setY(point.y + 0.6);
+    this.blastLight.intensity = 60;
+    this.blastLife = 0.5;
+
+    this._sprite(this.spriteMaps.flash, point, 4.2, 0.09, null, 8, 1, true);
+    for (let i = 0; i < 6; i++) {
+      V.set((Math.random() - 0.5) * 6, Math.random() * 3.4, (Math.random() - 0.5) * 6);
+      this._sprite(this.spriteMaps.spark, point, 1.5 + Math.random(), 0.2 + Math.random() * 0.2, V, 4, 0.9, true);
+    }
+    for (let i = 0; i < 14; i++) {
+      V.set((Math.random() - 0.5) * 5, 0.8 + Math.random() * 3, (Math.random() - 0.5) * 5);
+      this._sprite(this.spriteMaps.smoke, point, 0.9 + Math.random() * 0.9,
+        1.1 + Math.random() * 0.9, V, 3.4, 0.55);
+    }
+    for (let i = 0; i < 10; i++) {
+      V.copy(point).addScaledVector(
+        new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize(), Math.random() * 3);
+      this._sprite(this.spriteMaps.smoke, V, 1.2, 0.9, null, 2.4, 0.3);
+    }
+
+    for (let i = 0; i < 10; i++) {
+      const d = this.debris.find((x) => x.life <= 0);
+      if (!d) break;
+      d.mesh.position.copy(point).setY(point.y + 0.2);
+      d.mesh.scale.setScalar(0.4 + Math.random() * 0.9);
+      d.mesh.visible = true;
+      d.vel.set((Math.random() - 0.5) * 16, 4 + Math.random() * 9, (Math.random() - 0.5) * 16);
+      d.spin.set(Math.random() * 22, Math.random() * 22, Math.random() * 22);
+      d.life = 1.6 + Math.random();
+    }
+
+    // scorch mark
+    const dec = this.decals[this.decalIdx = (this.decalIdx + 1) % this.decals.length];
+    dec.position.copy(point).setY(0.02);
+    dec.rotation.set(-Math.PI / 2, 0, Math.random() * 3);
+    dec.scale.setScalar(14);
+    dec.visible = true;
   }
 
   blood(point, dir) {
@@ -198,6 +261,27 @@ export class Effects {
       if (c.life <= 0) c.mesh.visible = false;
     }
 
+    for (const d of this.debris) {
+      if (d.life <= 0) continue;
+      d.life -= dt;
+      d.vel.y -= 20 * dt;
+      d.mesh.position.addScaledVector(d.vel, dt);
+      d.mesh.rotation.x += d.spin.x * dt;
+      d.mesh.rotation.y += d.spin.y * dt;
+      if (d.mesh.position.y < 0.06) {
+        d.mesh.position.y = 0.06;
+        d.vel.set(d.vel.x * 0.45, Math.abs(d.vel.y) * 0.3, d.vel.z * 0.45);
+        d.spin.multiplyScalar(0.5);
+      }
+      if (d.life <= 0) d.mesh.visible = false;
+    }
+
+    if (this.blastLife > 0) {
+      this.blastLife -= dt;
+      this.blastLight.intensity *= Math.max(0, 1 - dt * 6);
+      if (this.blastLife <= 0) this.blastLight.intensity = 0;
+    }
+
     if (this.muzzleLife > 0) {
       this.muzzleLife -= dt;
       this.muzzleLight.intensity *= Math.max(0, 1 - dt * 22);
@@ -210,6 +294,8 @@ export class Effects {
     for (const s of this.sprites) { s.life = 0; s.spr.visible = false; }
     for (const c of this.casings) { c.life = 0; c.mesh.visible = false; }
     for (const d of this.decals) d.visible = false;
+    for (const d of this.debris) { d.life = 0; d.mesh.visible = false; }
     this.muzzleLight.intensity = 0;
+    this.blastLight.intensity = 0;
   }
 }

@@ -57,9 +57,11 @@
       <div id="weapon-name">M9 PISTOL</div>
       <div id="ammo"><span id="mag">15</span><span id="ammo-sep">/</span><span id="reserve">90</span></div>
       <div id="reload-hint" class="hidden">PRESS [R] TO RELOAD</div>
+      <div id="nades"><span class="nade-icon"></span> FRAG &times;<span id="nade-count">3</span></div>
       <div id="weapon-slots"></div>
     </div>
 
+    <div id="cook-bar" class="hidden"><div id="cook-fill"></div></div>
     <div id="wave-banner" class="hidden"></div>
     <div id="pickup-toast"></div>
   </div>
@@ -71,6 +73,7 @@
       <p class="subtitle">Sector 7 &mdash; abandoned. Something still moves down there.</p>
       <div id="loading">LOADING&hellip;</div>
       <button id="start-btn" class="btn hidden">DEPLOY</button>
+      <div id="records" class="records hidden"></div>
       <div class="controls">
         <div class="col">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
@@ -84,6 +87,12 @@
           <div><kbd>R</kbd> Reload</div>
           <div><kbd>1</kbd>&ndash;<kbd>4</kbd> / <kbd>Wheel</kbd> Weapons</div>
         </div>
+        <div class="col">
+          <div><kbd>G</kbd> Frag &mdash; hold to cook</div>
+          <div><kbd>F</kbd> Melee bash</div>
+          <div><kbd>M</kbd> Mute</div>
+          <div><kbd>Esc</kbd> Pause</div>
+        </div>
       </div>
       <div class="hint"><kbd>Esc</kbd> pauses &middot; click the screen to lock the mouse</div>
     </div>
@@ -96,6 +105,9 @@
       <div class="settings">
         <label>Mouse sensitivity <input id="sens" type="range" min="20" max="300" value="100" /></label>
         <label>Field of view <input id="fov" type="range" min="65" max="105" value="78" /></label>
+        <label>Volume <input id="volume" type="range" min="0" max="100" value="70" /></label>
+        <label class="check">Invert vertical look <input id="invert" type="checkbox" /></label>
+        <label class="check">Mute audio <input id="mute" type="checkbox" /></label>
       </div>
       <button id="quit-btn" class="btn ghost">ABANDON RUN</button>
     </div>

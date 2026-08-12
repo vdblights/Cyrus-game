@@ -31,6 +31,9 @@ fully offline.
 | Right mouse | Aim down sights |
 | `R` | Reload |
 | `1`–`4`, `Q`, mouse wheel | Switch weapons |
+| `G` | Frag grenade — **hold to cook**, release to throw |
+| `F` / `V` | Melee bash |
+| `M` | Mute |
 | `Esc` | Pause |
 
 Click the canvas to capture the mouse. Losing pointer lock pauses the game.
@@ -48,6 +51,17 @@ Every weapon has its own recoil pattern, spread (which tightens when you aim or
 crouch and opens when you move), reload timing and ADS zoom. Headshots do
 extra damage and are called out in the killfeed; limb hits do less.
 
+You also carry **frags** (three to start, five max, dropped by kills). The fuse
+starts the moment you pull the pin, not when the grenade lands — hold `G` to
+cook one so it airbursts on arrival, and watch the fuse bar, because holding it
+too long detonates it in your hand. Grenades arc, bounce off walls and wrecks,
+and roll to a stop; damage falls off with distance and is cut sharply for
+anything hiding behind cover.
+
+The **melee bash** interrupts whatever you are doing — including a reload —
+and knocks a target back. That is the point: it is the answer to something
+already inside your guard.
+
 ## Hostiles
 
 | Type | Behaviour |
@@ -63,8 +77,8 @@ for a beat after spotting you. Health scales ~9% per wave.
 
 Waves grow each round, hostiles trickle in rather than appearing all at once,
 and clearing a wave awards a score bonus plus an ammo resupply. Kills sometimes
-drop ammo crates and medkits. Health regenerates five seconds after you stop
-taking fire.
+drop ammo crates, medkits and frags. Health regenerates five seconds after you
+stop taking fire. Your best wave and score are kept between sessions.
 
 ## How it is put together
 
@@ -76,7 +90,8 @@ src/world.js        AABB collision, line-of-sight, bounds
 src/player.js       input, movement, camera, health
 src/weapons.js      weapon definitions, view models, firing and recoil
 src/enemies.js      hostile archetypes, AI, procedural bodies
-src/effects.js      pooled tracers, impacts, blood, casings, muzzle flash
+src/grenades.js     thrown frags: fuse, bounce physics, detonation
+src/effects.js      pooled tracers, impacts, blood, casings, explosions
 src/textures.js     canvas-painted textures (asphalt, facades, rust, sky)
 src/audio.js        synthesised gunfire and feedback via Web Audio
 src/hud.js          HUD readouts, killfeed, radar, damage indicators
@@ -101,3 +116,10 @@ A few notes on the implementation:
 - **Hostiles have a stuck watchdog.** If one stops closing on the player and
   is not deliberately holding its range, it is quietly re-inserted elsewhere
   so a wave can never stall.
+- **Grenades use a sphere-vs-AABB solver** that resolves along the shallowest
+  of the three axes, distinguishing a bounce from resting contact so a frag
+  rolls to a halt instead of stopping dead where it lands.
+- **Camera trauma is squared before use**, so a distant blast is a nudge and a
+  close one throws your aim off.
+- **Settings and records persist** in `localStorage` — sensitivity, FOV,
+  volume, invert-look and mute, plus your best wave and score.

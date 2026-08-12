@@ -9,6 +9,9 @@ class Audio {
     this.master = null;
     this.noiseBuf = null;
     this.enabled = true;
+    this.volume = 1;
+    this.muted = false;
+    this.wind = null;
   }
 
   init() {
@@ -50,6 +53,17 @@ class Audio {
   }
 
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
+
+  setVolume(v) {
+    this.volume = v;
+    if (this.master) this.master.gain.value = this.muted ? 0 : v * 0.5;
+  }
+
+  setMuted(m) {
+    this.muted = m;
+    if (this.master) this.master.gain.value = m ? 0 : (this.volume ?? 1) * 0.5;
+    if (m) this.stopAmbience();
+  }
 
   _noise(dur, filterType, freq, q, gain, sweepTo) {
     const ctx = this.ctx;
@@ -141,6 +155,71 @@ class Audio {
   step(crouch = false) {
     if (!this.ctx) return;
     this._noise(0.09, 'bandpass', crouch ? 500 : 900, 1.2, crouch ? 0.05 : 0.10, 260);
+  }
+
+  /** Grenade: pin, bounce, and the blast itself. */
+  pinPull() { if (this.ctx) { this._tone('square', 1200, 700, 0.05, 0.10); this._noise(0.05, 'highpass', 3000, 1, 0.08); } }
+
+  grenadeBounce() { if (this.ctx) { this._tone('square', 420, 260, 0.05, 0.06); this._noise(0.04, 'bandpass', 1800, 2, 0.05); } }
+
+  explosion(gain = 1) {
+    if (!this.ctx) return;
+    this._tone('sine', 90, 24, 1.1, 0.75 * gain);            // body
+    this._noise(0.35, 'lowpass', 1600, 0.8, 0.85 * gain, 200); // crack
+    this._noise(1.6, 'lowpass', 500, 0.7, 0.40 * gain, 90);    // rolling tail
+    this._noise(0.9, 'highpass', 2200, 0.8, 0.14 * gain, 900); // debris hiss
+  }
+
+  meleeSwing() { if (this.ctx) this._noise(0.16, 'bandpass', 700, 1.4, 0.16, 260); }
+
+  meleeHit() {
+    if (!this.ctx) return;
+    this._tone('sine', 140, 60, 0.16, 0.28);
+    this._noise(0.14, 'lowpass', 900, 1, 0.30, 240);
+  }
+
+  /** Distant firefight somewhere else in the city — pure atmosphere. */
+  distantFire() {
+    if (!this.ctx) return;
+    const rounds = 2 + (Math.random() * 4 | 0);
+    for (let i = 0; i < rounds; i++) {
+      const t = i * (0.08 + Math.random() * 0.09);
+      setTimeout(() => {
+        if (!this.ctx) return;
+        this._noise(0.24, 'lowpass', 420, 0.8, 0.05, 150);
+        this._tone('sine', 70, 40, 0.22, 0.05);
+      }, t * 1000);
+    }
+  }
+
+  /** Low wind bed, started when a run begins. */
+  startAmbience() {
+    if (!this.ctx || this.wind) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    src.loop = true;
+    const flt = this.ctx.createBiquadFilter();
+    flt.type = 'lowpass';
+    flt.frequency.value = 320;
+    flt.Q.value = 0.6;
+    const g = this.ctx.createGain();
+    g.gain.value = 0.05;
+    // slow swell so the wind breathes instead of hissing flat
+    const lfo = this.ctx.createOscillator();
+    lfo.frequency.value = 0.07;
+    const lfoGain = this.ctx.createGain();
+    lfoGain.gain.value = 0.03;
+    lfo.connect(lfoGain);
+    lfoGain.connect(g.gain);
+    src.connect(flt); flt.connect(g); g.connect(this.master);
+    src.start(); lfo.start();
+    this.wind = { src, lfo };
+  }
+
+  stopAmbience() {
+    if (!this.wind) return;
+    try { this.wind.src.stop(); this.wind.lfo.stop(); } catch { /* already stopped */ }
+    this.wind = null;
   }
 
   enemyAlert() { if (this.ctx) { this._tone('sawtooth', 300, 120, 0.35, 0.10); this._noise(0.3, 'bandpass', 700, 1.5, 0.10, 300); } }

@@ -97,6 +97,74 @@ export class World {
     return true;
   }
 
+  /**
+   * Bounce a sphere (a thrown grenade) off the ground and off every box it
+   * hits, resolving along the shallowest of the three axes and reflecting
+   * that velocity component.
+   *
+   * @returns {0|1|2} 0 = free, 1 = bounced off something, 2 = resting on a
+   *          surface (the caller applies rolling drag)
+   */
+  bounceSphere(pos, vel, radius, restitution = 0.36, friction = 0.72) {
+    let contact = 0;
+
+    if (pos.y - radius <= 0) {
+      pos.y = radius;
+      if (vel.y < 0) {
+        if (vel.y < -1.4) {
+          // a real bounce: reverse and scrub some speed off the surface
+          vel.y = -vel.y * restitution;
+          vel.x *= friction;
+          vel.z *= friction;
+          contact = 1;
+        } else {
+          vel.y = 0;             // settled — it rolls from here
+          contact = Math.max(contact, 2);
+        }
+      }
+    }
+
+    for (const b of this.boxes) {
+      if (pos.y - radius > b.top) continue;
+      const closestX = Math.max(b.minX, Math.min(pos.x, b.maxX));
+      const closestZ = Math.max(b.minZ, Math.min(pos.z, b.maxZ));
+      const dx = pos.x - closestX, dz = pos.z - closestZ;
+      if (dx * dx + dz * dz >= radius * radius) continue;
+
+      // three candidate escapes: out the sides, or up onto the top face
+      const outX = dx >= 0 ? b.maxX + radius - pos.x : b.minX - radius - pos.x;
+      const outZ = dz >= 0 ? b.maxZ + radius - pos.z : b.minZ - radius - pos.z;
+      const outY = b.top + radius - pos.y;
+      const aX = Math.abs(outX), aZ = Math.abs(outZ), aY = Math.abs(outY);
+
+      if (aY <= aX && aY <= aZ) {
+        pos.y += outY;
+        if (vel.y < 0) {
+          if (vel.y < -1.4) {
+            vel.y = -vel.y * restitution;
+            vel.x *= friction;
+            vel.z *= friction;
+            contact = 1;
+          } else {
+            vel.y = 0;
+            contact = Math.max(contact, 2);
+          }
+        }
+      } else if (aX <= aZ) {
+        pos.x += outX;
+        vel.x = -vel.x * restitution;
+        vel.z *= friction;
+        contact = 1;
+      } else {
+        pos.z += outZ;
+        vel.z = -vel.z * restitution;
+        vel.x *= friction;
+        contact = 1;
+      }
+    }
+    return contact;
+  }
+
   /** Keep an entity inside the play area. */
   clampToBounds(pos, radius = 0.5) {
     const lim = this.bounds - radius;

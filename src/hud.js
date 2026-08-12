@@ -12,6 +12,8 @@ export class HUD {
       reloadHint: $('reload-hint'), slots: $('weapon-slots'), crosshair: $('crosshair'),
       hitmarker: $('hitmarker'), killfeed: $('killfeed'), banner: $('wave-banner'),
       flash: $('damage-flash'), hurtDirs: $('hurt-dirs'), toast: $('pickup-toast'),
+      nades: $('nades'), nadeCount: $('nade-count'),
+      cookBar: $('cook-bar'), cookFill: $('cook-fill'),
     };
     this.radar = $('radar');
     this.radarCtx = this.radar.getContext('2d');
@@ -65,6 +67,18 @@ export class HUD {
     const spreadPx = (ws.adsT > 0.6 ? w.def.adsSpread : w.def.spread) * 900
       * (Math.hypot(p.velocity.x, p.velocity.z) > 1 ? 1.4 : 1);
     this.setCrosshairSpread(spreadPx, ws.adsT > 0.75);
+
+    this.el.nadeCount.textContent = game.nades;
+    this.el.nades.classList.toggle('empty', game.nades === 0);
+
+    // fuse readout while a frag is being cooked
+    const cooking = game.cookStart >= 0;
+    this.el.cookBar.classList.toggle('hidden', !cooking);
+    if (cooking) {
+      const left = Math.max(0, 1 - (game.time - game.cookStart) / game.fuseLength);
+      this.el.cookFill.style.width = left * 100 + '%';
+      this.el.cookFill.classList.toggle('hot', left < 0.35);
+    }
 
     this.drawRadar(game);
   }

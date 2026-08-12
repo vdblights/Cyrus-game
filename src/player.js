@@ -11,7 +11,9 @@ export class Input {
     this.wheel = 0;
     this.locked = false;
     this.sensitivity = 1;
+    this.invertY = false;
     this.onKey = null;
+    this.onKeyUp = null;
 
     addEventListener('keydown', (e) => {
       if (e.repeat) return;
@@ -19,7 +21,10 @@ export class Input {
       if (this.onKey) this.onKey(e.code, e);
       if (['Space', 'Tab', 'ControlLeft'].includes(e.code)) e.preventDefault();
     });
-    addEventListener('keyup', (e) => this.keys.delete(e.code));
+    addEventListener('keyup', (e) => {
+      this.keys.delete(e.code);
+      if (this.onKeyUp) this.onKeyUp(e.code, e);
+    });
     addEventListener('blur', () => { this.keys.clear(); this.fire = false; this.aim = false; });
 
     canvas.addEventListener('mousedown', (e) => {
@@ -35,7 +40,7 @@ export class Input {
     addEventListener('mousemove', (e) => {
       if (!this.locked) return;
       this.lookDelta.x += e.movementX * 0.0022 * this.sensitivity;
-      this.lookDelta.y += e.movementY * 0.0022 * this.sensitivity;
+      this.lookDelta.y += e.movementY * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
     });
     addEventListener('wheel', (e) => { if (this.locked) this.wheel += Math.sign(e.deltaY); }, { passive: true });
 
@@ -90,11 +95,17 @@ export class Player {
     this.recoilYaw = 0;
     this.dead = false;
     this.stepTimer = 0;
+    this.shake = 0;
   }
 
   applyRecoil(v, h) {
     this.recoilPitch += v;
     this.recoilYaw += h;
+  }
+
+  /** Camera trauma, 0..1 — squared on use so small knocks stay subtle. */
+  addShake(amount) {
+    this.shake = Math.min(1, this.shake + amount);
   }
 
   /** @param {number} time game clock, so regeneration measures the same units */
@@ -206,7 +217,17 @@ export class Player {
     }
 
     // ---- apply to camera -------------------------------------------------
+    this.shake = Math.max(0, this.shake - dt * 1.6);
+    const trauma = this.shake * this.shake;
+    const sx = trauma * (Math.random() - 0.5) * 0.09;
+    const sy = trauma * (Math.random() - 0.5) * 0.09;
+    const sr = trauma * (Math.random() - 0.5) * 0.07;
+
     this.camera.position.copy(this.position);
-    this.camera.rotation.set(this.pitch + this.recoilPitch, this.yaw + this.recoilYaw, roll, 'YXZ');
+    this.camera.position.y += trauma * (Math.random() - 0.5) * 0.06;
+    this.camera.rotation.set(
+      this.pitch + this.recoilPitch + sy,
+      this.yaw + this.recoilYaw + sx,
+      roll + sr, 'YXZ');
   }
 }

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { buildCity } from './city.js';
 import { Player, Input } from './player.js';
-import { WeaponSystem } from './weapons.js';
+import { WeaponSystem, MELEE_RANGE, MELEE_DAMAGE } from './weapons.js';
+import { GrenadeSystem, FUSE, BLAST_RADIUS, BLAST_DAMAGE } from './grenades.js';
 import { Effects } from './effects.js';
 import { Enemy } from './enemies.js';
 import { HUD } from './hud.js';
@@ -55,6 +56,12 @@ class Game {
     this.input = new Input(this.canvas);
     this.hud = new HUD();
 
+    this.grenades = new GrenadeSystem(this.scene, this);
+    this.nades = 3;
+    this.maxNades = 5;
+    this.fuseLength = FUSE;
+    this.cookStart = -1;
+
     this.enemies = [];
     this.pool = {};
     this.pickups = [];
@@ -74,6 +81,8 @@ class Game {
     this.nextWaveAt = 0;
     this.runStart = 0;
 
+    this.settings = this.loadSettings();
+    this.records = this.loadRecords();
     this.bindUI();
     addEventListener('resize', () => this.resize());
     this.resize();
@@ -148,12 +157,59 @@ class Game {
     this.pickupGeo = {
       ammo: new THREE.BoxGeometry(0.42, 0.26, 0.28),
       health: new THREE.BoxGeometry(0.34, 0.3, 0.26),
+      frag: new THREE.IcosahedronGeometry(0.17, 1),
     };
     this.pickupMat = {
       ammo: new THREE.MeshLambertMaterial({ color: 0x8a7a2e, emissive: 0x3a3208 }),
       health: new THREE.MeshLambertMaterial({ color: 0xd8d8d0, emissive: 0x0f2a10 }),
+      frag: new THREE.MeshLambertMaterial({ color: 0x4a5a38, emissive: 0x141c0c }),
     };
     this.crossMat = new THREE.MeshBasicMaterial({ color: 0x2ecc40 });
+  }
+
+  loadSettings() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('ashfall.settings') || '{}'); } catch { saved = {}; }
+    return { sens: 100, fov: 78, volume: 70, muted: false, invertY: false, ...saved };
+  }
+
+  saveSettings() {
+    try { localStorage.setItem('ashfall.settings', JSON.stringify(this.settings)); } catch { /* private mode */ }
+  }
+
+  loadRecords() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('ashfall.records') || '{}'); } catch { saved = {}; }
+    return { bestScore: 0, bestWave: 0, ...saved };
+  }
+
+  saveRecords() {
+    try { localStorage.setItem('ashfall.records', JSON.stringify(this.records)); } catch { /* private mode */ }
+  }
+
+  showRecords() {
+    const el = document.getElementById('records');
+    if (!el) return;
+    el.classList.toggle('hidden', !this.records.bestWave);
+    el.innerHTML = `BEST &mdash; WAVE <b>${this.records.bestWave}</b> &middot; ` +
+      `SCORE <b>${this.records.bestScore.toLocaleString()}</b>`;
+  }
+
+  applySettings() {
+    const st = this.settings;
+    this.input.sensitivity = st.sens / 100;
+    this.input.invertY = st.invertY;
+    this.baseFov = st.fov;
+    audio.setVolume(st.volume / 100);
+    audio.setMuted(st.muted);
+    for (const [id, val] of [['sens', st.sens], ['fov', st.fov], ['volume', st.volume]]) {
+      const el = document.getElementById(id);
+      if (el) el.value = val;
+    }
+    const inv = document.getElementById('invert');
+    if (inv) inv.checked = st.invertY;
+    const mute = document.getElementById('mute');
+    if (mute) mute.checked = st.muted;
   }
 
   bindUI() {
@@ -163,10 +219,17 @@ class Game {
     document.getElementById('resume-btn').onclick = () => this.resume();
     document.getElementById('quit-btn').onclick = () => this.toMenu();
 
-    const sens = document.getElementById('sens');
-    sens.oninput = () => { this.input.sensitivity = sens.value / 100; };
-    const fov = document.getElementById('fov');
-    fov.oninput = () => { this.baseFov = +fov.value; };
+    const bind = (id, key, read) => {
+      const el = document.getElementById(id);
+      el.oninput = () => { this.settings[key] = read(el); this.applySettings(); this.saveSettings(); };
+    };
+    bind('sens', 'sens', (el) => +el.value);
+    bind('fov', 'fov', (el) => +el.value);
+    bind('volume', 'volume', (el) => +el.value);
+    bind('invert', 'invertY', (el) => el.checked);
+    bind('mute', 'muted', (el) => el.checked);
+    this.applySettings();
+    this.showRecords();
 
     this.canvas.addEventListener('click', () => {
       if (this.state === 'playing' && !this.input.locked) this.input.requestLock();
@@ -184,6 +247,21 @@ class Game {
       if (code === 'Digit3') this.weapons.select(2, this.time);
       if (code === 'Digit4') this.weapons.select(3, this.time);
       if (code === 'KeyQ') this.weapons.cycle(1, this.time);
+      if (code === 'KeyF' || code === 'KeyV') this.weapons.startMelee(this.time);
+      if (code === 'KeyG' && this.cookStart < 0 && this.nades > 0 && !this.player.dead) {
+        this.cookStart = this.time;          // pin is out; the fuse is running
+        audio.pinPull();
+      }
+      if (code === 'KeyM') {
+        this.settings.muted = !this.settings.muted;
+        this.applySettings();
+        this.saveSettings();
+        this.hud.toast(this.settings.muted ? 'AUDIO MUTED' : 'AUDIO ON');
+      }
+    };
+
+    this.input.onKeyUp = (code) => {
+      if (code === 'KeyG' && this.cookStart >= 0) this.throwGrenade();
     };
   }
 
@@ -206,6 +284,10 @@ class Game {
     for (const p of this.pickups) this.scene.remove(p.mesh);
     this.pickups.length = 0;
     this.effects.reset();
+    this.grenades.reset();
+    this.nades = 3;
+    this.cookStart = -1;
+    this.nextAmbience = 10;
 
     this.player.reset(-17, 24);            // the plaza near the middle of the map
     this.player.onStep = () => audio.step(this.player.crouching);
@@ -225,6 +307,7 @@ class Game {
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('pause').classList.add('hidden');
     this.hud.show(true);
+    audio.startAmbience();
     this.state = 'playing';
     this.input.requestLock();
     this.nextWaveAt = this.time + 3;
@@ -246,6 +329,7 @@ class Game {
 
   toMenu() {
     this.state = 'menu';
+    audio.stopAmbience();
     document.getElementById('pause').classList.add('hidden');
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('menu').classList.remove('hidden');
@@ -256,7 +340,15 @@ class Game {
   gameOver() {
     this.state = 'dead';
     audio.death();
+    audio.stopAmbience();
     this.input.exitLock();
+
+    const beatScore = this.score > this.records.bestScore;
+    const beatWave = this.wave > this.records.bestWave;
+    this.records.bestScore = Math.max(this.records.bestScore, this.score);
+    this.records.bestWave = Math.max(this.records.bestWave, this.wave);
+    this.saveRecords();
+    this.showRecords();
     const acc = this.shotsFired ? Math.round((this.shotsHit / this.shotsFired) * 100) : 0;
     const mins = Math.floor((this.time - this.runStart) / 60);
     const secs = Math.floor((this.time - this.runStart) % 60).toString().padStart(2, '0');
@@ -265,7 +357,8 @@ class Game {
         `<div>WAVE REACHED <b>${this.wave}</b></div>` +
         `<div>SCORE <b>${this.score.toLocaleString()}</b></div>` +
         `<div>KILLS <b>${this.kills}</b> &middot; HEADSHOTS <b>${this.headshots}</b></div>` +
-        `<div>ACCURACY <b>${acc}%</b> &middot; SURVIVED <b>${mins}:${secs}</b></div>`;
+        `<div>ACCURACY <b>${acc}%</b> &middot; SURVIVED <b>${mins}:${secs}</b></div>` +
+        (beatScore || beatWave ? '<div class="record">NEW PERSONAL BEST</div>' : '');
       document.getElementById('gameover').classList.remove('hidden');
       this.hud.show(false);
     }, 1600);
@@ -425,21 +518,7 @@ class Game {
       }
       const result = enemy.damage(dmg, zone, dir, hitE.point);
       this.shotsHit += def.pellets > 1 ? 1 / def.pellets : 1;
-
-      if (result === 'kill') {
-        this.kills++;
-        const head = zone === 'head';
-        if (head) this.headshots++;
-        const gained = enemy.type.score * (head ? 1.5 : 1);
-        this.score += Math.round(gained);
-        this.hud.hitmark(true);
-        this.hud.kill(enemy.type.name, def.name.split(' ')[0], head);
-        audio.kill();
-        this.maybeDrop(enemy.pos);
-      } else if (result === 'hit') {
-        this.hud.hitmark(false);
-        audio.hitmark();
-      }
+      this.registerHit(enemy, result, def.name.split(' ')[0], zone === 'head');
     } else if (hitW) {
       end = hitW.point.clone();
       const n = hitW.face ? hitW.face.normal.clone().transformDirection(hitW.object.matrixWorld) : dir.clone().negate();
@@ -455,15 +534,111 @@ class Game {
     if (tStart.distanceTo(end) > 0.6) this.effects.tracer(tStart, end, def.tracer);
   }
 
+  /** Release a cooked grenade. A fuse run down to zero goes off in hand. */
+  throwGrenade() {
+    if (this.cookStart < 0) return;
+    const cooked = this.time - this.cookStart;
+    this.cookStart = -1;
+    if (this.nades <= 0) return;
+    this.nades--;
+
+    const remaining = FUSE - cooked;
+    if (remaining <= 0) {
+      // held too long: it detonates where you stand
+      this.grenades.dropAtFeet(V1.copy(this.player.position).setY(0.4));
+      return;
+    }
+    this.camera.getWorldDirection(V1);
+    this.grenades.throw_(this.camera.position, V1, remaining, this.player.velocity);
+  }
+
+  /** Buttstroke: everything in a short cone in front of the player. */
+  meleeStrike() {
+    this.camera.getWorldDirection(V1);
+    let struck = false;
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      V2.copy(e.pos).setY(this.player.position.y).sub(this.player.position);
+      const dist = V2.length();
+      if (dist > MELEE_RANGE + e.radius) continue;
+      if (V2.normalize().dot(V1) < 0.55) continue;          // outside the swing arc
+
+      const result = e.damage(MELEE_DAMAGE, 'body', V1, V2.copy(e.pos).setY(1.2));
+      // shove them back so a bash actually buys space
+      e.pos.addScaledVector(V1, 1.1);
+      struck = true;
+      this.registerHit(e, result, 'BASH', false);
+    }
+    if (struck) {
+      audio.meleeHit();
+      this.player.addShake(0.16);
+    }
+  }
+
+  /** Shared bookkeeping for anything that damages a hostile. */
+  registerHit(enemy, result, weaponLabel, headshot) {
+    if (result === 'kill') {
+      this.kills++;
+      if (headshot) this.headshots++;
+      this.score += Math.round(enemy.type.score * (headshot ? 1.5 : 1));
+      this.hud.hitmark(true);
+      this.hud.kill(enemy.type.name, weaponLabel, headshot);
+      audio.kill();
+      this.maybeDrop(enemy.pos);
+    } else if (result === 'hit') {
+      this.hud.hitmark(false);
+      audio.hitmark();
+    }
+  }
+
+  /** Frag detonation: damage falls off with distance and needs line of sight. */
+  explode(pos) {
+    this.effects.explosion(pos);
+    audio.explosion();
+
+    // Blast is traced from a little above the casing: a grenade resting
+    // against a sandbag still throws fragments over it. Cover behind which a
+    // target is fully hidden cuts the damage rather than cancelling it.
+    const originY = pos.y + 0.75;
+
+    for (const e of [...this.enemies]) {
+      if (!e.alive) continue;
+      const dist = Math.hypot(e.pos.x - pos.x, e.pos.z - pos.z, (e.pos.y + 1) - pos.y);
+      if (dist > BLAST_RADIUS) continue;
+
+      const exposed = this.world.lineOfSight(pos.x, originY, pos.z, e.pos.x, 1.15, e.pos.z);
+      const falloff = Math.pow(THREE.MathUtils.clamp(1 - dist / BLAST_RADIUS, 0, 1), 1.6);
+      V1.set(e.pos.x - pos.x, 0, e.pos.z - pos.z).normalize();
+      const result = e.damage(BLAST_DAMAGE * falloff * (exposed ? 1 : 0.4),
+        'body', V1, V2.copy(e.pos).setY(1.2));
+      e.pos.addScaledVector(V1, falloff * 1.4);
+      this.registerHit(e, result, 'FRAG', false);
+    }
+
+    // the player is not exempt from their own grenade
+    const pd = this.player.position.distanceTo(pos);
+    if (pd < BLAST_RADIUS) {
+      const exposed = this.world.lineOfSight(pos.x, originY, pos.z,
+        this.player.position.x, this.player.position.y, this.player.position.z);
+      const falloff = Math.pow(THREE.MathUtils.clamp(1 - pd / BLAST_RADIUS, 0, 1), 1.6);
+      this.player.addShake(0.35 + falloff * 0.65);
+      this.damagePlayer(BLAST_DAMAGE * 0.55 * falloff * (exposed ? 1 : 0.4), pos);
+    } else if (pd < BLAST_RADIUS * 2.5) {
+      this.player.addShake(0.25 * (1 - pd / (BLAST_RADIUS * 2.5)));
+    }
+  }
+
   maybeDrop(pos) {
     const r = Math.random();
     let kind = null;
-    if (r < 0.28) kind = 'ammo';
-    else if (r < 0.40) kind = 'health';
-    else if (this.player.health < 45 && r < 0.62) kind = 'health';
+    if (r < 0.26) kind = 'ammo';
+    else if (r < 0.36) kind = 'health';
+    else if (r < 0.46 && this.nades < this.maxNades) kind = 'frag';
+    else if (this.player.health < 45 && r < 0.66) kind = 'health';
     if (!kind) return;
 
     const mesh = new THREE.Mesh(this.pickupGeo[kind], this.pickupMat[kind]);
+    if (kind === 'frag') mesh.scale.set(1, 1.2, 1);
     mesh.position.set(pos.x, 0.45, pos.z);
     mesh.castShadow = true;
     if (kind === 'health') {
@@ -491,6 +666,12 @@ class Game {
         if (p.kind === 'ammo') {
           taken = this.weapons.addAmmo(0.30, true);
           if (taken) this.hud.toast('AMMO +');
+        } else if (p.kind === 'frag') {
+          if (this.nades < this.maxNades) {
+            this.nades++;
+            this.hud.toast('FRAG +1');
+            taken = true;
+          }
         } else {
           if (this.player.health < this.player.maxHealth) {
             this.player.heal(40);
@@ -527,6 +708,7 @@ class Game {
       angle = Math.atan2(rx, -rz);
     }
     this.hud.damage(angle, Math.min(0.6, amount / 40));
+    this.player.addShake(Math.min(0.4, amount / 55));
     // a hit shoves the view around
     this.player.applyRecoil(randRange(-0.02, 0.03), randRange(-0.02, 0.02));
     if (died) this.gameOver();
@@ -578,8 +760,13 @@ class Game {
       }
     }
 
+    // a fuse that runs out while the pin is still in your hand goes off there
+    if (this.cookStart >= 0 && this.time - this.cookStart >= FUSE) this.throwGrenade();
+
+    this.grenades.update(dt, this.world);
     this.updateWaves(dt);
     this.updatePickups(dt);
+    this.updateAmbience(dt);
     this.effects.update(dt);
     this.hud.update(this);
 
@@ -600,6 +787,15 @@ class Game {
     this.sky.position.copy(this.camera.position);
     this.dust.position.set(
       Math.round(this.player.position.x / 30) * 30, 0, Math.round(this.player.position.z / 30) * 30);
+  }
+
+  /** Occasional distant firefight, so the sector never feels empty. */
+  updateAmbience(dt) {
+    this.nextAmbience = (this.nextAmbience ?? 8) - dt;
+    if (this.nextAmbience <= 0) {
+      this.nextAmbience = randRange(11, 26);
+      audio.distantFire();
+    }
   }
 
   flickerFires(dt) {
