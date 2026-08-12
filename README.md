@@ -69,7 +69,15 @@ already inside your guard.
 | Scavenger | Fast melee rusher, closes to contact |
 | Raider | Rifleman, holds ~13 m and fires in bursts |
 | Breaker | Shotgunner, pushes to close range (wave 3+) |
+| Marksman | Takes high ground and hits for 26 (wave 4+) |
 | Juggernaut | Heavy, 420 HP, suppressing fire (wave 5+) |
+| Warlord | Elite juggernaut that closes out every fifth wave |
+
+A marksman claims a rooftop or terrace and stays there while it can see you.
+Before each shot it paints you with an aiming laser for about a second — that
+red line is your warning to break line of sight. Warlords are outsized, carry
+roughly 1100 HP, wear a gold band, and get their own health bar at the top of
+the screen.
 
 They hunt by sight, by proximity and by the sound of your gunfire, steer around
 buildings and wrecks, strafe while holding their preferred range, and hold fire
@@ -80,13 +88,25 @@ and clearing a wave awards a score bonus plus an ammo resupply. Kills sometimes
 drop ammo crates, medkits and frags. Health regenerates five seconds after you
 stop taking fire. Your best wave and score are kept between sessions.
 
+## Vertical ground
+
+The city is not flat. Raised terraces of collapsed floor and stacked shipping
+containers are scattered through the blocks, each reachable by a stair run of
+half-metre steps — low enough that you simply walk up them, no jumping. Take
+the high ground and the ground-level hostiles lose their shot at you; step to
+the edge and you get yours.
+
+The same rules apply to everyone: hostiles climb, stand on, and fall off the
+same surfaces, and a melee rusher cannot reach you across a height gap. Drops
+of more than about four metres hurt, and a long enough fall will kill you.
+
 ## How it is put together
 
 ```
 index.html          page shell, HUD markup, import map
 src/main.js         game loop, scene/lighting setup, waves, hit resolution
 src/city.js         procedural city generation
-src/world.js        AABB collision, line-of-sight, bounds
+src/world.js        AABB collision, ground height, line-of-sight, bounds
 src/player.js       input, movement, camera, health
 src/weapons.js      weapon definitions, view models, firing and recoil
 src/enemies.js      hostile archetypes, AI, procedural bodies
@@ -121,5 +141,12 @@ A few notes on the implementation:
   rolls to a halt instead of stopping dead where it lands.
 - **Camera trauma is squared before use**, so a distant blast is a nudge and a
   close one throws your aim off.
+- **Verticality is derived from the same box list.** `groundHeight()` reports
+  the highest surface under an entity below its step ceiling, so walking up
+  stairs, standing on a terrace and falling off a ledge all fall out of one
+  query — no separate navmesh or heightfield.
+- **Climbable structures are validated before they are built.** Both the
+  platform footprint and the whole stair corridor must be clear ground, or the
+  structure is not placed; a buried staircase is an unclimbable one.
 - **Settings and records persist** in `localStorage` — sensitivity, FOV,
   volume, invert-look and mute, plus your best wave and score.

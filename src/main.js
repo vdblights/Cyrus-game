@@ -4,7 +4,7 @@ import { Player, Input } from './player.js';
 import { WeaponSystem, MELEE_RANGE, MELEE_DAMAGE } from './weapons.js';
 import { GrenadeSystem, FUSE, BLAST_RADIUS, BLAST_DAMAGE } from './grenades.js';
 import { Effects } from './effects.js';
-import { Enemy } from './enemies.js';
+import { Enemy, ENEMY_TYPES } from './enemies.js';
 import { HUD } from './hud.js';
 import { audio } from './audio.js';
 import * as TEX from './textures.js';
@@ -49,6 +49,7 @@ class Game {
     const city = buildCity(this.scene);
     this.world = city.world;
     this.fireBarrels = city.fireBarrels;
+    this.perches = city.perches;
 
     this.effects = new Effects(this.scene);
     this.player = new Player(this.camera, this.world);
@@ -291,6 +292,10 @@ class Game {
 
     this.player.reset(-17, 24);            // the plaza near the middle of the map
     this.player.onStep = () => audio.step(this.player.crouching);
+    this.player.onFallDamage = (amount) => {
+      this.player.addShake(0.4);
+      this.damagePlayer(amount, null);
+    };
     this.weapons.reset();
     this.score = 0;
     this.kills = 0;
@@ -301,6 +306,8 @@ class Game {
     this.pendingSpawns = 0;
     this.spawnQueue.length = 0;
     this.waveClearedAt = 0;
+    this.bossPending = false;
+    this.boss = null;
     this.runStart = this.time;
 
     document.getElementById('menu').classList.add('hidden');
@@ -379,12 +386,13 @@ class Game {
     for (let i = 0; i < total; i++) {
       let type = 'scavenger';
       const r = Math.random();
-      if (w >= 5 && r < 0.10 + w * 0.01) type = 'brute';
-      else if (w >= 3 && r < 0.34) type = 'shotgunner';
-      else if (w >= 2 && r < 0.62) type = 'raider';
-      else if (r < 0.3 && w >= 2) type = 'raider';
+      if (w >= 5 && r < 0.09 + w * 0.008) type = 'brute';
+      else if (w >= 4 && r < 0.22) type = 'marksman';
+      else if (w >= 3 && r < 0.42) type = 'shotgunner';
+      else if (w >= 2 && r < 0.66) type = 'raider';
       queue.push(type);
     }
+    this.bossPending = w % 5 === 0;      // a warlord closes out every fifth wave
     this.spawnQueue = queue;
     this.pendingSpawns = queue.length;
     this.waveHpScale = 1 + (w - 1) * 0.09;
@@ -392,12 +400,12 @@ class Game {
 
     const unlocked = this.weapons.unlockForWave(w);
     audio.wave();
-    this.hud.banner('WAVE ' + w, `${total} HOSTILES`);
+    this.hud.banner('WAVE ' + w, this.bossPending ? `${total} HOSTILES &middot; WARLORD` : `${total} HOSTILES`);
     if (unlocked.length) setTimeout(() => this.hud.toast('WEAPON RECOVERED: ' + unlocked.join(', ')), 1200);
   }
 
   updateWaves(dt) {
-    if (this.spawnQueue.length === 0 && this.pendingSpawns === 0) {
+    if (this.spawnQueue.length === 0 && this.pendingSpawns === 0 && !this.bossPending) {
       if (this.wave === 0) {
         if (this.time >= this.nextWaveAt) this.startWave();
       } else if (this.aliveCount === 0) {
@@ -424,6 +432,13 @@ class Game {
       this.pendingSpawns = this.spawnQueue.length;
       this.nextSpawnAt = this.time + randRange(0.25, 0.9);
     }
+
+    if (this.bossPending && this.spawnQueue.length === 0 && this.aliveCount <= 4) {
+      this.bossPending = false;
+      this.spawnEnemy('brute', true);
+      audio.wave();
+      this.hud.banner('WARLORD', 'ELITE HOSTILE INBOUND');
+    }
   }
 
   _recycle(e) {
@@ -444,7 +459,7 @@ class Game {
       const x = p.x + Math.cos(a) * d;
       const z = p.z + Math.sin(a) * d;
       if (Math.abs(x) > lim || Math.abs(z) > lim) continue;
-      if (this.world.occupied(x, z, 1.2, 0.6)) continue;
+      if (this.world.occupied(x, z, 1.2, 0.6)) continue;   // no spawning inside geometry
       fallback = fallback || { x, z };
       if (!this.world.lineOfSight(x, 1.5, z, p.x, p.y, p.z)) return { x, z };
       if (i > 40) return { x, z };
@@ -454,26 +469,47 @@ class Game {
 
   /** Pull a hostile that has wedged itself in geometry and drop it back in. */
   relocateEnemy(enemy) {
-    const { x, z } = this.findSpawnPoint(22, 45);
-    enemy.pos.set(x, 0, z);
+    // perch-users go back to high ground rather than the street
+    const spot = (enemy.type.perch && this.findPerch()) || { ...this.findSpawnPoint(22, 45), y: 0 };
+    const { x, z } = spot;
+    enemy.pos.set(x, spot.y || 0, z);
     enemy.lastDistCheck = Infinity;
     enemy.vel.set(0, 0, 0);
     enemy.group.position.copy(enemy.pos);
   }
 
-  spawnEnemy(typeKey) {
-    const { x, z } = this.findSpawnPoint();
+  /** A high, unoccupied vantage point far enough from the player to matter. */
+  findPerch() {
+    if (!this.perches.length) return null;
+    const p = this.player.position;
+    const candidates = this.perches.filter((q) => {
+      const d = Math.hypot(q.x - p.x, q.z - p.z);
+      if (d < 18 || d > 75) return false;
+      return !this.enemies.some((e) => e.alive && Math.hypot(e.pos.x - q.x, e.pos.z - q.z) < 3);
+    });
+    if (!candidates.length) return null;
+    return candidates[(Math.random() * candidates.length) | 0];
+  }
+
+  spawnEnemy(typeKey, elite = false) {
+    let x, z, y = 0;
+    const perch = ENEMY_TYPES[typeKey].perch && !elite ? this.findPerch() : null;
+    if (perch) {
+      ({ x, z } = perch);
+      y = perch.y;
+    } else {
+      ({ x, z } = this.findSpawnPoint());
+    }
 
     const pooled = this.pool[typeKey];
-    let e;
-    if (pooled && pooled.length) {
-      e = pooled.pop();
-      e.spawn(x, z, this.waveHpScale);
-    } else {
-      e = new Enemy(typeKey, this.scene, this);
-      e.spawn(x, z, this.waveHpScale);
+    const e = (pooled && pooled.length) ? pooled.pop() : new Enemy(typeKey, this.scene, this);
+    e.spawn(x, z, this.waveHpScale * (elite ? 2.6 : 1), y);
+    if (elite) {
+      e.applyElite(true);
+      this.boss = e;
     }
     this.enemies.push(e);
+    return e;
   }
 
   // --------------------------------------------------------------- combat
@@ -558,12 +594,14 @@ class Game {
     let struck = false;
     for (const e of this.enemies) {
       if (!e.alive) continue;
-      V2.copy(e.pos).setY(this.player.position.y).sub(this.player.position);
+      V2.copy(e.pos).setY(e.pos.y + 1.2).sub(this.player.position);
+      if (Math.abs(V2.y) > 1.6) continue;                    // out of reach vertically
+      V2.y = 0;
       const dist = V2.length();
       if (dist > MELEE_RANGE + e.radius) continue;
       if (V2.normalize().dot(V1) < 0.55) continue;          // outside the swing arc
 
-      const result = e.damage(MELEE_DAMAGE, 'body', V1, V2.copy(e.pos).setY(1.2));
+      const result = e.damage(MELEE_DAMAGE, 'body', V1, V2.copy(e.pos).setY(e.pos.y + 1.2));
       // shove them back so a bash actually buys space
       e.pos.addScaledVector(V1, 1.1);
       struck = true;
@@ -580,9 +618,13 @@ class Game {
     if (result === 'kill') {
       this.kills++;
       if (headshot) this.headshots++;
-      this.score += Math.round(enemy.type.score * (headshot ? 1.5 : 1));
+      this.score += Math.round(enemy.scoreValue * (headshot ? 1.5 : 1));
       this.hud.hitmark(true);
-      this.hud.kill(enemy.type.name, weaponLabel, headshot);
+      this.hud.kill(enemy.displayName, weaponLabel, headshot);
+      if (enemy.elite) {
+        this.hud.banner('WARLORD DOWN', `+${enemy.scoreValue}`);
+        this.player.addShake(0.2);
+      }
       audio.kill();
       this.maybeDrop(enemy.pos);
     } else if (result === 'hit') {
@@ -603,14 +645,14 @@ class Game {
 
     for (const e of [...this.enemies]) {
       if (!e.alive) continue;
-      const dist = Math.hypot(e.pos.x - pos.x, e.pos.z - pos.z, (e.pos.y + 1) - pos.y);
+      const dist = Math.hypot(e.pos.x - pos.x, e.pos.z - pos.z, (e.pos.y + 1) - pos.y);   // aim at the chest
       if (dist > BLAST_RADIUS) continue;
 
-      const exposed = this.world.lineOfSight(pos.x, originY, pos.z, e.pos.x, 1.15, e.pos.z);
+      const exposed = this.world.lineOfSight(pos.x, originY, pos.z, e.pos.x, e.pos.y + 1.15, e.pos.z);
       const falloff = Math.pow(THREE.MathUtils.clamp(1 - dist / BLAST_RADIUS, 0, 1), 1.6);
       V1.set(e.pos.x - pos.x, 0, e.pos.z - pos.z).normalize();
       const result = e.damage(BLAST_DAMAGE * falloff * (exposed ? 1 : 0.4),
-        'body', V1, V2.copy(e.pos).setY(1.2));
+        'body', V1, V2.copy(e.pos).setY(e.pos.y + 1.2));
       e.pos.addScaledVector(V1, falloff * 1.4);
       this.registerHit(e, result, 'FRAG', false);
     }

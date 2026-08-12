@@ -61,6 +61,8 @@ const TARGET = new THREE.Vector3();
 const EYE_STAND = 1.68;
 const EYE_CROUCH = 1.05;
 const GRAVITY = 22;
+const STEP_HEIGHT = 0.55;      // how high you can walk up without jumping
+const FALL_SAFE = 13;          // impact speed you can absorb unhurt (~4 m drop)
 
 export class Player {
   constructor(camera, world) {
@@ -184,12 +186,28 @@ export class Player {
     }
     this.velocity.y -= GRAVITY * dt;
     this.feetY += this.velocity.y * dt;
-    if (this.feetY <= 0) { this.feetY = 0; this.velocity.y = 0; this.onGround = true; }
 
+    // Move horizontally first. Anything no taller than a step above the feet
+    // is walkable, so it does not block — the support check below lifts you.
     this.position.x += this.velocity.x * dt;
     this.position.z += this.velocity.z * dt;
-    this.world.resolve(this.position, this.radius, this.feetY, 0.45);
+    this.world.resolve(this.position, this.radius, this.feetY, STEP_HEIGHT);
     this.world.clampToBounds(this.position, this.radius);
+
+    // ---- footing ---------------------------------------------------------
+    const ceiling = this.feetY + (this.onGround ? STEP_HEIGHT : 0.02);
+    const support = this.world.groundHeight(this.position.x, this.position.z, this.radius, ceiling);
+    if (this.feetY <= support + 1e-4) {
+      if (this.velocity.y < -FALL_SAFE && this.onFallDamage) {
+        this.onFallDamage(Math.round((-this.velocity.y - FALL_SAFE) * 6));
+      }
+      this.feetY = support;
+      this.velocity.y = 0;
+      this.onGround = true;
+    } else {
+      // walked off an edge
+      this.onGround = false;
+    }
 
     // ---- view height, bob ----------------------------------------------
     const wantEye = this.crouching ? EYE_CROUCH : EYE_STAND;

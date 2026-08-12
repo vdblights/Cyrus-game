@@ -140,7 +140,56 @@ export function buildCity(scene) {
     }
   }
 
-  return { world, group, fireBarrels };
+  // ------------------------------------------------- climbable structures
+  // Vertical ground: raised slabs and stacked containers, each reachable by
+  // a stair run of half-metre steps so they can be walked up without jumping.
+  const perches = [];
+  const edgeLimit = (GRID * BLOCK) / 2 - 8;    // keep clear of the perimeter
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      const cx = lotCenter(i), cz = lotCenter(j);
+      const half = LOT / 2 + 3;
+      const wantTerrace = Math.random() < 0.6;
+
+      // A structure is only worth building if both the platform footprint and
+      // the whole stair run land on clear ground — a buried staircase is an
+      // unclimbable one.
+      for (let attempt = 0; attempt < 16; attempt++) {
+        const px = cx + randRange(-half - 5, half + 5);
+        const pz = cz + randRange(-half - 5, half + 5);
+        if (Math.abs(px) > edgeLimit || Math.abs(pz) > edgeLimit) continue;
+
+        if (wantTerrace) {
+          const h = randRange(3.2, 5.4);
+          const sw = randRange(5, 8.5), sd = randRange(5, 8.5);
+          const fromSouth = Math.random() < 0.5;
+          const runLen = h * 1.9 + 1;
+          const zLo = fromSouth ? pz - sd / 2 : pz - sd / 2 - runLen;
+          const zHi = fromSouth ? pz + sd / 2 + runLen : pz + sd / 2;
+          if (!areaClear(world, px - sw / 2 - 1, zLo - 1, px + sw / 2 + 1, zHi + 1)) continue;
+          terrace(group, world, px, pz, sw, sd, h, fromSouth, darkConcrete, rustMat, perches);
+        } else {
+          const rot = Math.random() < 0.5 ? 0 : Math.PI / 2;
+          const halfW = rot === 0 ? 1.6 : 3.4, halfD = rot === 0 ? 3.4 : 1.6;
+          if (!areaClear(world, px - halfW - 8, pz - halfD - 8, px + halfW + 8, pz + halfD + 8)) continue;
+          containerStack(group, world, px, pz, rot, rustMat, perches);
+        }
+        break;
+      }
+    }
+  }
+
+  return { world, group, fireBarrels, perches };
+
+  /** True when no registered box taller than `maxTop` overlaps the rectangle. */
+  function areaClear(w, minX, minZ, maxX, maxZ, maxTop = 0.4) {
+    for (const b of w.boxes) {
+      if (b.top <= maxTop) continue;
+      if (b.maxX < minX || b.minX > maxX || b.maxZ < minZ || b.minZ > maxZ) continue;
+      return false;
+    }
+    return true;
+  }
 
   // ------------------------------------------------------------- builders
   function buildTower(g, w, cx, cz, facadeMats, conc, metal, glass, rust) {
@@ -273,6 +322,98 @@ export function buildCity(scene) {
       barricade(g, w, cx + Math.cos(a) * 8, cz + Math.sin(a) * 8, a, conc);
     }
     for (let k = 0; k < 3; k++) container(g, w, cx + randRange(-9, 9), cz + randRange(-9, 9), Math.random() * Math.PI, rust);
+  }
+
+  /**
+   * Stair run of half-metre steps — low enough that the step-up in the
+   * movement code carries you and the hostiles up without jumping.
+   */
+  function stairs(g, w, x, z, rot, height, width = 3) {
+    const rise = 0.46;
+    const run = 0.85;
+    const count = Math.max(1, Math.round(height / rise));
+    const dirX = Math.sin(rot), dirZ = Math.cos(rot);
+    for (let k = 0; k < count; k++) {
+      const top = rise * (k + 1);
+      const sx = x + dirX * (run * k);
+      const sz = z + dirZ * (run * k);
+      // each tread is a solid block from the ground up to its own height
+      const m = new THREE.Mesh(boxGeo(
+        Math.abs(dirX) > 0.5 ? run : width, top,
+        Math.abs(dirX) > 0.5 ? width : run, 3), darkConcrete);
+      m.position.set(sx, top / 2, sz);
+      m.castShadow = m.receiveShadow = true;
+      g.add(m);
+      w.solids.push(m);
+      const hw = (Math.abs(dirX) > 0.5 ? run : width) / 2;
+      const hd = (Math.abs(dirX) > 0.5 ? width : run) / 2;
+      w.addBox(sx - hw, sz - hd, sx + hw, sz + hd, top);
+    }
+    // where the run tops out
+    return { x: x + dirX * run * count, z: z + dirZ * run * count, y: rise * count };
+  }
+
+  /** Raised slab of collapsed floor: cover, a firing position, a perch. */
+  function terrace(g, w, x, z, sw, sd, h, fromSouth, conc, rust, perchList) {
+    const slab = new THREE.Mesh(boxGeo(sw, h, sd, 4), conc);
+    slab.position.set(x, h / 2, z);
+    slab.castShadow = slab.receiveShadow = true;
+    g.add(slab);
+    w.solids.push(slab);
+    w.addBox(x - sw / 2, z - sd / 2, x + sw / 2, z + sd / 2, h);
+
+    // stairs climbing to it from the side the caller checked was clear
+    const rot = fromSouth ? Math.PI : 0;
+    const startZ = fromSouth ? z + sd / 2 + h * 1.85 : z - sd / 2 - h * 1.85;
+    stairs(g, w, x, startZ, rot, h, 3);
+
+    // knee-high lip so the top reads as a platform, not a plinth
+    for (const [ox, oz, lw, ld] of [
+      [0, -sd / 2 + 0.3, sw, 0.5], [0, sd / 2 - 0.3, sw, 0.5],
+      [-sw / 2 + 0.3, 0, 0.5, sd], [sw / 2 - 0.3, 0, 0.5, sd],
+    ]) {
+      if (Math.random() < 0.35) continue;                 // gaps to shoot through
+      const lip = new THREE.Mesh(boxGeo(lw, 0.5, ld, 3), conc);
+      lip.position.set(x + ox, h + 0.25, z + oz);
+      lip.castShadow = true;
+      g.add(lip);
+      w.solids.push(lip);
+    }
+    if (Math.random() < 0.4) {
+      const crate = new THREE.Mesh(boxGeo(1.2, 1.2, 1.2, 2), rust);
+      crate.position.set(x + randRange(-sw / 4, sw / 4), h + 0.6, z + randRange(-sd / 4, sd / 4));
+      crate.castShadow = true;
+      g.add(crate);
+    }
+    perchList.push({ x, y: h, z });
+    return { x, y: h, z };
+  }
+
+  /** Two containers stacked, with crate steps up the side. */
+  function containerStack(g, w, x, z, rot, rust, perchList) {
+    const cw = 2.5, ch = 2.6, cd = 6.0;
+    for (let k = 0; k < 2; k++) {
+      const m = new THREE.Mesh(boxGeo(cw, ch, cd, 3), rust);
+      m.position.set(x + (k ? randRange(-0.4, 0.4) : 0), ch / 2 + k * ch, z);
+      m.rotation.y = rot;
+      m.castShadow = m.receiveShadow = true;
+      g.add(m);
+      w.solids.push(m);
+    }
+    const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
+    const halfW = (cw / 2) * cos + (cd / 2) * sin;
+    const halfD = (cw / 2) * sin + (cd / 2) * cos;
+    w.addBox(x - halfW, z - halfD, x + halfW, z + halfD, ch * 2);
+
+    // crate steps climbing the long side up to the top of the stack
+    const runLen = ch * 2 * 1.85;
+    if (rot === 0) {
+      stairs(g, w, x + halfW + 1 + runLen, z, Math.PI / 2 * 3, ch * 2, 2.4);
+    } else {
+      stairs(g, w, x, z + halfD + 1 + runLen, Math.PI, ch * 2, 2.4);
+    }
+
+    perchList.push({ x, y: ch * 2, z });
   }
 
   function streetlight(g, w, x, z, metal) {

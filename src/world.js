@@ -58,6 +58,23 @@ export class World {
     }
   }
 
+  /**
+   * Height of the highest surface an entity standing at (x, z) could be
+   * supported by, ignoring anything above `ceiling` (their feet plus a step).
+   * Street level is 0.
+   */
+  groundHeight(x, z, radius, ceiling) {
+    let best = 0;
+    for (const b of this.boxes) {
+      if (b.top > ceiling || b.top <= best) continue;
+      const closestX = Math.max(b.minX, Math.min(x, b.maxX));
+      const closestZ = Math.max(b.minZ, Math.min(z, b.maxZ));
+      const dx = x - closestX, dz = z - closestZ;
+      if (dx * dx + dz * dz < radius * radius) best = b.top;
+    }
+    return best;
+  }
+
   /** True when a point is inside (or within `pad` of) any solid box. */
   occupied(x, z, pad = 0, minTop = 1.2) {
     for (const b of this.boxes) {

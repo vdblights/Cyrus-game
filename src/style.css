@@ -166,6 +166,19 @@ html, body {
   background: #6f8250; border-radius: 3px; vertical-align: -1px;
 }
 
+/* elite hostile health, shown while a warlord is alive */
+#boss-bar { position: absolute; left: 50%; top: 74px; width: 420px; margin-left: -210px; text-align: center; }
+#boss-name { font-size: 13px; letter-spacing: 0.32em; color: #ffd23f; margin-bottom: 5px; }
+#boss-track {
+  height: 9px; background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 210, 63, 0.5); transform: skewX(-20deg);
+}
+#boss-fill {
+  height: 100%; width: 100%;
+  background: linear-gradient(90deg, #d9452f, #ffd23f);
+  transition: width 0.2s ease-out;
+}
+
 /* fuse timer while a frag is cooking in hand */
 #cook-bar {
   position: absolute; left: 50%; top: 58%;

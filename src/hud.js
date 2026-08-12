@@ -14,6 +14,7 @@ export class HUD {
       flash: $('damage-flash'), hurtDirs: $('hurt-dirs'), toast: $('pickup-toast'),
       nades: $('nades'), nadeCount: $('nade-count'),
       cookBar: $('cook-bar'), cookFill: $('cook-fill'),
+      bossBar: $('boss-bar'), bossFill: $('boss-fill'),
     };
     this.radar = $('radar');
     this.radarCtx = this.radar.getContext('2d');
@@ -79,6 +80,11 @@ export class HUD {
       this.el.cookFill.style.width = left * 100 + '%';
       this.el.cookFill.classList.toggle('hot', left < 0.35);
     }
+
+    const boss = game.boss;
+    const bossUp = !!boss && boss.alive;
+    this.el.bossBar.classList.toggle('hidden', !bossUp);
+    if (bossUp) this.el.bossFill.style.width = Math.max(0, (boss.hp / boss.maxHp) * 100) + '%';
 
     this.drawRadar(game);
   }
