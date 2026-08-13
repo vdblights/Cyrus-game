@@ -292,29 +292,34 @@ export class Enemy {
     // spotted the target, or got close enough to hear them
     if (!this.alerted && ((sees && dist < this.type.detect) || dist < 16)) this.alert(time);
 
+    // Anything that fights from high ground stays on it: it overwatches while
+    // unalerted and never walks itself back down to street level.
+    const onPerch = this.type.perch && this.pos.y > 1.5;
+
     let moveDir = V2.set(0, 0, 0);
     if (!this.alerted) {
       // still hunting: drift toward the player at a walk
-      moveDir.copy(toPlayer);
+      if (!onPerch) moveDir.copy(toPlayer);
     } else {
       const t = this.type;
-      // a marksman who has found high ground stays on it
-      const holdPerch = t.perch && this.pos.y > 1.5 && sees;
+      const holdPerch = onPerch;
       const wantCloser = !holdPerch && dist > t.preferred * (t.melee ? 1 : 1.15);
       const wantBack = !t.melee && !holdPerch && dist < t.preferred * 0.6;
 
       if (wantCloser) moveDir.copy(toPlayer);
       else if (wantBack) moveDir.copy(toPlayer).negate();
 
-      // strafe when holding position and able to see the target
-      if (!wantCloser && sees) {
+      // strafe when holding position and able to see the target — but never
+      // on a perch, where side-stepping walks you off the edge
+      if (!wantCloser && sees && !onPerch) {
         this.strafeTimer -= dt;
         if (this.strafeTimer <= 0) { this.strafe *= -1; this.strafeTimer = randRange(1.2, 3); }
         moveDir.x += -toPlayer.z * this.strafe * 0.9;
         moveDir.z += toPlayer.x * this.strafe * 0.9;
       }
-      // no line of sight: push toward the player to break the wall
-      if (!sees) moveDir.copy(toPlayer);
+      // no line of sight: push toward the player to break the wall, unless
+      // that would mean abandoning high ground
+      if (!sees && !onPerch) moveDir.copy(toPlayer);
     }
 
     // ---- obstacle avoidance --------------------------------------------
@@ -352,13 +357,16 @@ export class Enemy {
     // Geometry can still trap a hostile in a corner. If an alerted one has
     // not made progress for a while, pull it out and re-insert it elsewhere
     // so a wave can never stall forever.
+    // Someone holding a perch is doing their job while they wait for a target
+    // to walk into view, so give them far longer before the watchdog moves
+    // them — but not forever, or a wave could stall on a roof.
     this.stuckTimer += dt;
-    if (this.stuckTimer > 4) {
+    if (this.stuckTimer > (onPerch ? 12 : 4)) {
       // Judge progress by closing distance, not by movement: a hostile can
       // orbit a wall forever and look busy. One holding its preferred range
       // on purpose is exempt, so nobody gets yanked mid-firefight.
       const closed = this.lastDistCheck - dist;
-      const holdingRange = sees && dist <= this.type.preferred * 1.4;
+      const holdingRange = sees && (onPerch || dist <= this.type.preferred * 1.4);
       if (dist > 4 && closed < 1.5 && !holdingRange) this.game.relocateEnemy(this);
       this.lastDistCheck = dist;
       this.stuckTimer = 0;
@@ -475,6 +483,10 @@ export class Enemy {
     beam.visible = aiming;
     if (!aiming) return;
 
+    // The beam's position is parent-local while lookAt works in world space,
+    // so both have to read the same transform: refresh it first, or a hostile
+    // that just moved aims its laser at where it used to be.
+    this.group.updateMatrixWorld(true);
     this.parts.muzzle.getWorldPosition(V3);
     // position is parent-local, but lookAt takes a world-space target, and
     // the length has to be divided out of the parent's scale

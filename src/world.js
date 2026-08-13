@@ -85,31 +85,42 @@ export class World {
   }
 
   /**
-   * Cheap 2D line-of-sight test against the box list (slab method), used by
-   * enemies before they take a shot.
+   * Segment-vs-box test over the whole box list (three-slab method). Boxes
+   * run from the ground to `top`, so a sight line clears low cover by
+   * passing over it.
+   *
+   * This is deliberately symmetric: swapping the endpoints gives the same
+   * answer, so a hostile can never see a target that cannot see it back.
    */
   lineOfSight(ax, ay, az, bx, by, bz) {
-    const dx = bx - ax, dz = bz - az;
-    const len = Math.hypot(dx, dz);
-    if (len < 1e-4) return true;
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    if (dx * dx + dy * dy + dz * dz < 1e-8) return true;
     const invX = dx !== 0 ? 1 / dx : Infinity;
+    const invY = dy !== 0 ? 1 / dy : Infinity;
     const invZ = dz !== 0 ? 1 / dz : Infinity;
 
     for (const box of this.boxes) {
       let t0 = 0, t1 = 1;
+
       let tA = (box.minX - ax) * invX, tB = (box.maxX - ax) * invX;
-      if (tA > tB) [tA, tB] = [tB, tA];
-      t0 = Math.max(t0, tA); t1 = Math.min(t1, tB);
+      if (tA > tB) { const t = tA; tA = tB; tB = t; }
+      if (tA > t0) t0 = tA;
+      if (tB < t1) t1 = tB;
+      if (t0 > t1) continue;
+
+      tA = (0 - ay) * invY; tB = (box.top - ay) * invY;
+      if (tA > tB) { const t = tA; tA = tB; tB = t; }
+      if (tA > t0) t0 = tA;
+      if (tB < t1) t1 = tB;
       if (t0 > t1) continue;
 
       tA = (box.minZ - az) * invZ; tB = (box.maxZ - az) * invZ;
-      if (tA > tB) [tA, tB] = [tB, tA];
-      t0 = Math.max(t0, tA); t1 = Math.min(t1, tB);
+      if (tA > tB) { const t = tA; tA = tB; tB = t; }
+      if (tA > t0) t0 = tA;
+      if (tB < t1) t1 = tB;
       if (t0 > t1) continue;
 
-      // vertical check at the entry point: shots can pass over low cover
-      const yAt = ay + (by - ay) * t0;
-      if (yAt < box.top) return false;
+      return false;
     }
     return true;
   }

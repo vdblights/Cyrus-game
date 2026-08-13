@@ -9,6 +9,7 @@ import { HUD } from './hud.js';
 import { audio } from './audio.js';
 import * as TEX from './textures.js';
 import { randRange } from './world.js';
+import { initRandom, getSeed } from './rng.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
@@ -16,6 +17,8 @@ const RAY = new THREE.Raycaster();
 
 class Game {
   constructor() {
+    // seed first: everything below this line draws on Math.random()
+    this.seed = initRandom();
     this.canvas = document.getElementById('scene');
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
@@ -92,7 +95,15 @@ class Game {
     this.renderer.compile(this.scene, this.camera);
     document.getElementById('loading').classList.add('hidden');
     document.getElementById('start-btn').classList.remove('hidden');
+    const seedEl = document.getElementById('seed');
+    if (seedEl) seedEl.textContent = 'SECTOR SEED ' + getSeed();
     this.renderer.setAnimationLoop(() => this.frame());
+  }
+
+  /** Restart the random stream — used by tests to pin a run exactly. */
+  reseed(seed = this.seed) {
+    this.seed = initRandom(seed);
+    return this.seed;
   }
 
   // ------------------------------------------------------------------ setup
@@ -237,7 +248,12 @@ class Game {
     });
 
     this.input.onLockChange = (locked) => {
-      if (!locked && this.state === 'playing') this.pause();
+      // without capture there is nothing to lose, so do not auto-pause
+      if (!locked && this.state === 'playing' && !this.input.fallback) this.pause();
+    };
+
+    this.input.onFallback = () => {
+      if (this.state === 'playing') this.hud.toast('MOUSE CAPTURE UNAVAILABLE — ARROW KEYS ALSO LOOK');
     };
 
     this.input.onKey = (code) => {
@@ -484,7 +500,7 @@ class Game {
     const p = this.player.position;
     const candidates = this.perches.filter((q) => {
       const d = Math.hypot(q.x - p.x, q.z - p.z);
-      if (d < 18 || d > 75) return false;
+      if (d < 16 || d > 95) return false;      // within its detection range
       return !this.enemies.some((e) => e.alive && Math.hypot(e.pos.x - q.x, e.pos.z - q.z) < 3);
     });
     if (!candidates.length) return null;
@@ -843,7 +859,10 @@ class Game {
   flickerFires(dt) {
     for (const b of this.fireBarrels) {
       b.phase += dt * 9;
-      const f = 0.7 + Math.sin(b.phase) * 0.15 + Math.sin(b.phase * 2.7) * 0.12 + Math.random() * 0.12;
+      // deliberately not random: cosmetic per-frame noise would consume the
+      // seeded stream and make an otherwise identical run diverge
+      const f = 0.7 + Math.sin(b.phase) * 0.15 + Math.sin(b.phase * 2.7) * 0.12
+        + Math.sin(b.phase * 6.1 + 1.7) * 0.06;
       b.light.intensity = b.base * f;
       b.flame.material.opacity = 0.65 + f * 0.3;
       b.flame.scale.set(1.0 + f * 0.25, 1.4 + f * 0.4, 1);

@@ -8,16 +8,59 @@ No build step, no asset files, no network calls — open the page and play.
 
 ## Running it
 
-Because the game loads ES modules, it needs to be served over HTTP rather than
-opened as a `file://` path:
-
 ```bash
-python3 -m http.server 8000
-# then open http://localhost:8000
+npm start          # serves the repo at http://localhost:8000
 ```
 
-Any static server works. Three.js is vendored in `vendor/`, so the game runs
-fully offline.
+`npm start` needs no dependencies — it runs a small static server from
+`tests/serve.js`. Any static server works just as well; the game only needs
+HTTP rather than a `file://` path, because it loads ES modules. Three.js is
+vendored in `vendor/`, so it runs fully offline.
+
+Add `?seed=12345` to the URL to replay an exact city; the seed for the current
+one is printed under the menu.
+
+### One-file build
+
+```bash
+npm run build      # writes dist/ashfall.html
+```
+
+That inlines the markup, CSS, all modules and Three.js into a single ~620 KB
+HTML file with no external references. It runs straight from a `file://` path
+or from anywhere that can host one static file — useful for sharing a playable
+copy without the repo.
+
+## Testing
+
+```bash
+npm install        # playwright + esbuild, only needed for tests and builds
+npx playwright install chromium
+npm test           # 11 checks, headless
+```
+
+The suite drives the real game in a headless browser through `window.__game`,
+stepping the loop at a fixed timestep instead of waiting on frames — a
+four-minute simulated run finishes in seconds and does not depend on render
+speed, which matters because software WebGL renders at a couple of frames a
+second.
+
+| Flag | Effect |
+| --- | --- |
+| `--seed=N` | Replay an exact city (default is pinned, so runs are repeatable) |
+| `--headed` | Watch it play |
+| `--shots` | Also write screenshots to `tests/shots/` |
+
+It covers boot and city generation, hit registration and headshots, melee
+reach, grenade flight and blast falloff, cook-offs, stair climbing, fall
+damage, marksman perching and laser tracking, warlord spawns, settings and
+record persistence, and a four-minute scripted run that must reach wave 3
+with hostiles still able to engage.
+
+Three things make it trustworthy rather than merely green: the random stream
+is seeded, every check reloads the page so none of them inherit another's
+state, and the render loop is stopped during checks — otherwise it steps the
+game on real frame timing underneath the test and results stop repeating.
 
 ## Controls
 

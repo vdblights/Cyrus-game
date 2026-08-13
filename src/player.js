@@ -10,6 +10,7 @@ export class Input {
     this.lookDelta = new THREE.Vector2();
     this.wheel = 0;
     this.locked = false;
+    this.fallback = false;      // pointer lock refused: look without capture
     this.sensitivity = 1;
     this.invertY = false;
     this.onKey = null;
@@ -19,7 +20,9 @@ export class Input {
       if (e.repeat) return;
       this.keys.add(e.code);
       if (this.onKey) this.onKey(e.code, e);
-      if (['Space', 'Tab', 'ControlLeft'].includes(e.code)) e.preventDefault();
+      if (['Space', 'Tab', 'ControlLeft', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        e.preventDefault();
+      }
     });
     addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
@@ -27,8 +30,11 @@ export class Input {
     });
     addEventListener('blur', () => { this.keys.clear(); this.fire = false; this.aim = false; });
 
+    canvas.addEventListener('mouseenter', () => { this.pointerOnCanvas = true; });
+    canvas.addEventListener('mouseleave', () => { this.pointerOnCanvas = false; this.fire = false; });
+
     canvas.addEventListener('mousedown', (e) => {
-      if (!this.locked) return;
+      if (!this.locked && !this.fallback) return;
       if (e.button === 0) this.fire = true;
       if (e.button === 2) this.aim = true;
     });
@@ -38,11 +44,13 @@ export class Input {
     });
     addEventListener('contextmenu', (e) => e.preventDefault());
     addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
+      if (!this.locked && !(this.fallback && this.pointerOnCanvas)) return;
       this.lookDelta.x += e.movementX * 0.0022 * this.sensitivity;
       this.lookDelta.y += e.movementY * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
     });
-    addEventListener('wheel', (e) => { if (this.locked) this.wheel += Math.sign(e.deltaY); }, { passive: true });
+    addEventListener('wheel', (e) => {
+      if (this.locked || this.fallback) this.wheel += Math.sign(e.deltaY);
+    }, { passive: true });
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
@@ -51,7 +59,28 @@ export class Input {
     });
   }
 
-  requestLock() { this.canvas.requestPointerLock?.(); }
+  /**
+   * Ask for pointer lock, and fall back to unlocked mouse-look if it is
+   * refused — embedded frames and some browsers deny it, and the game still
+   * has to be playable there.
+   */
+  requestLock() {
+    if (!this.canvas.requestPointerLock) { this.enableFallback(); return; }
+    try {
+      const res = this.canvas.requestPointerLock();
+      if (res && typeof res.catch === 'function') res.catch(() => this.enableFallback());
+    } catch {
+      this.enableFallback();
+    }
+    clearTimeout(this._lockTimer);
+    this._lockTimer = setTimeout(() => { if (!this.locked) this.enableFallback(); }, 700);
+  }
+
+  enableFallback() {
+    if (this.fallback) return;
+    this.fallback = true;
+    if (this.onFallback) this.onFallback();
+  }
   exitLock() { document.exitPointerLock?.(); }
   down(code) { return this.keys.has(code); }
   endFrame() { this.lookDelta.set(0, 0); this.wheel = 0; }
@@ -125,6 +154,12 @@ export class Player {
 
   update(dt, time, input) {
     // ---- look ----------------------------------------------------------
+    const turn = 2.2 * dt;
+    if (input.down('ArrowLeft')) this.yaw += turn;
+    if (input.down('ArrowRight')) this.yaw -= turn;
+    if (input.down('ArrowUp')) this.pitch += turn * 0.7;
+    if (input.down('ArrowDown')) this.pitch -= turn * 0.7;
+
     this.yaw -= input.lookDelta.x;
     this.pitch -= input.lookDelta.y;
     this.pitch = THREE.MathUtils.clamp(this.pitch, -Math.PI / 2 + 0.02, Math.PI / 2 - 0.02);

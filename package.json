@@ -1,0 +1,17 @@
+{
+  "name": "ashfall",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Abandoned-city first-person shooter that runs in the browser",
+  "type": "module",
+  "scripts": {
+    "start": "node tests/serve.js",
+    "test": "node tests/run.js",
+    "test:shots": "node tests/run.js --shots",
+    "build": "node tests/build-single-file.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "playwright": "^1.49.0"
+  }
+}
