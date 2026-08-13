@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { audio } from './audio.js';
 import { randRange } from './world.js';
+import { blobShadow } from './textures.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
@@ -27,6 +28,12 @@ export const ENEMY_TYPES = {
     name: 'BREAKER', hp: 170, speed: 3.6, scale: 1.08, melee: false,
     damage: 5, pellets: 6, rate: 1.15, preferred: 6, accuracy: 0.14, falloff: 16,
     color: 0x9a7550, accent: 0x53412f, score: 200, detect: 50, sound: 'shotgun', marker: 0x3fa9d8,
+  },
+  marksman: {
+    name: 'MARKSMAN', hp: 90, speed: 2.4, scale: 1.0, melee: false,
+    damage: 26, rate: 2.9, preferred: 26, accuracy: 0.022, detect: 95,
+    color: 0x5c6f5a, accent: 0x2f3a30, score: 250, sound: 'rifle', marker: 0x7ce04a,
+    laser: true, perch: true,
   },
   brute: {
     name: 'JUGGERNAUT', hp: 420, speed: 2.4, scale: 1.35, melee: false,
@@ -75,6 +82,7 @@ function buildBody(type) {
     new THREE.MeshBasicMaterial({ color: type.marker || 0xd8452f }));
   band.position.y = 1.36;
   g.add(band);
+  parts.band = band;
 
   const eye = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.03, 0.02),
     new THREE.MeshBasicMaterial({ color: 0xff4a2a }));
@@ -115,6 +123,21 @@ function buildBody(type) {
     mag.position.set(0, -0.14, -0.16);
     weapon.add(mag);
   }
+  if (type.laser) {
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.012, 0.012, 1, 4, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xff2a1a, transparent: true, opacity: 0.55,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+    beam.geometry.translate(0, 0.5, 0);
+    beam.geometry.rotateX(Math.PI / 2);
+    beam.visible = false;
+    beam.frustumCulled = false;
+    g.add(beam);
+    parts.beam = beam;
+  }
+
   weapon.position.set(0.30, 1.28, -0.12);
   g.add(weapon);
   parts.weapon = weapon;
@@ -122,6 +145,21 @@ function buildBody(type) {
   muzzle.position.set(0, 0, -0.75);
   weapon.add(muzzle);
   parts.muzzle = muzzle;
+
+  // Contact shadow. The sun's shadow map only covers the area around the
+  // player, so distant hostiles would otherwise float; this grounds every one
+  // of them at any range, and follows them onto rooftops.
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.5, 1.5),
+    new THREE.MeshBasicMaterial({
+      map: blobShadow(), transparent: true, depthWrite: false,
+      opacity: 0.75, blending: THREE.NormalBlending,
+    }));
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.03;
+  shadow.renderOrder = -1;
+  g.add(shadow);
+  parts.shadow = shadow;
 
   g.scale.setScalar(type.scale);
   return { group: g, parts };
@@ -168,12 +206,33 @@ export class Enemy {
     this.avoidTimer = 0;
     this.stuckTimer = 0;
     this.lastDistCheck = Infinity;
+    this.pos.y = 0;
+    if (this.parts.beam) this.parts.beam.visible = false;
+    this.applyElite(false);
   }
 
-  spawn(x, z, waveScale = 1) {
+  /** What the killfeed calls this hostile. */
+  get displayName() { return this.elite ? 'WARLORD' : this.type.name; }
+
+  /** Points awarded for putting it down. */
+  get scoreValue() { return this.type.score * (this.elite ? 3 : 1); }
+
+  /**
+   * Elite variant: a scaled-up, tougher, higher-value version used for the
+   * boss that closes out every fifth wave.
+   */
+  applyElite(on) {
+    this.elite = on;
+    const s = this.type.scale * (on ? 1.45 : 1);
+    this.group.scale.setScalar(s);
+    this.radius = 0.45 * s;
+    if (this.parts.band) this.parts.band.material.color.setHex(on ? 0xffd23f : (this.type.marker || 0xd8452f));
+  }
+
+  spawn(x, z, waveScale = 1, y = 0) {
     this.reset();
     this.hp = this.maxHp = Math.round(this.type.hp * waveScale);
-    this.pos.set(x, 0, z);
+    this.pos.set(x, y, z);
     this.group.position.copy(this.pos);
   }
 
@@ -213,7 +272,7 @@ export class Enemy {
     this.deathT = 0;
     this.vel.set(0, 0, 0);
     this.fallDir = Math.atan2(fromDir ? fromDir.x : 0, fromDir ? fromDir.z : 1);
-    this.game.effects.gib(V1.copy(this.pos).setY(1.2));
+    this.game.effects.gib(V1.copy(this.pos).setY(this.pos.y + 1.2));
     audio.flesh();
   }
 
@@ -225,7 +284,8 @@ export class Enemy {
       const fall = Math.sin(t * Math.PI * 0.5) * (Math.PI / 2);
       this.group.rotation.x = Math.cos(this.fallDir) * fall;
       this.group.rotation.z = -Math.sin(this.fallDir) * fall;
-      this.group.position.y = -0.1 * t;
+      this.group.position.y = this.pos.y - 0.1 * t;
+      if (this.parts.shadow) this.parts.shadow.material.opacity = 0.75 * Math.max(0, 1 - this.deathT);
       if (this.deathT > 6) {
         const k = Math.max(0, 1 - (this.deathT - 6) / 1.5);
         this.group.scale.setScalar(this.type.scale * k);
@@ -240,35 +300,43 @@ export class Enemy {
     toPlayer.y = 0;
     const dist = toPlayer.length();
     toPlayer.normalize();
+    const heightGap = player.position.y - (this.pos.y + 1.5);
 
-    const eyeY = 1.5 * this.type.scale;
+    const eyeY = this.pos.y + 1.5 * this.type.scale;
     const sees = dist < this.type.detect &&
       world.lineOfSight(this.pos.x, eyeY, this.pos.z, player.position.x, player.position.y, player.position.z);
 
     // spotted the target, or got close enough to hear them
     if (!this.alerted && ((sees && dist < this.type.detect) || dist < 16)) this.alert(time);
 
+    // Anything that fights from high ground stays on it: it overwatches while
+    // unalerted and never walks itself back down to street level.
+    const onPerch = this.type.perch && this.pos.y > 1.5;
+
     let moveDir = V2.set(0, 0, 0);
     if (!this.alerted) {
       // still hunting: drift toward the player at a walk
-      moveDir.copy(toPlayer);
+      if (!onPerch) moveDir.copy(toPlayer);
     } else {
       const t = this.type;
-      const wantCloser = dist > t.preferred * (t.melee ? 1 : 1.15);
-      const wantBack = !t.melee && dist < t.preferred * 0.6;
+      const holdPerch = onPerch;
+      const wantCloser = !holdPerch && dist > t.preferred * (t.melee ? 1 : 1.15);
+      const wantBack = !t.melee && !holdPerch && dist < t.preferred * 0.6;
 
       if (wantCloser) moveDir.copy(toPlayer);
       else if (wantBack) moveDir.copy(toPlayer).negate();
 
-      // strafe when holding position and able to see the target
-      if (!wantCloser && sees) {
+      // strafe when holding position and able to see the target — but never
+      // on a perch, where side-stepping walks you off the edge
+      if (!wantCloser && sees && !onPerch) {
         this.strafeTimer -= dt;
         if (this.strafeTimer <= 0) { this.strafe *= -1; this.strafeTimer = randRange(1.2, 3); }
         moveDir.x += -toPlayer.z * this.strafe * 0.9;
         moveDir.z += toPlayer.x * this.strafe * 0.9;
       }
-      // no line of sight: push toward the player to break the wall
-      if (!sees) moveDir.copy(toPlayer);
+      // no line of sight: push toward the player to break the wall, unless
+      // that would mean abandoning high ground
+      if (!sees && !onPerch) moveDir.copy(toPlayer);
     }
 
     // ---- obstacle avoidance --------------------------------------------
@@ -278,7 +346,7 @@ export class Enemy {
     if (moveDir.lengthSq() > 1e-4) {
       moveDir.normalize();
       const probe = 1.8 + this.radius;
-      const clear = (x, z) => !world.occupied(this.pos.x + x * probe, this.pos.z + z * probe, this.radius, 0.9);
+      const clear = (x, z) => !world.occupied(this.pos.x + x * probe, this.pos.z + z * probe, this.radius, this.pos.y + 0.9);
       const rot = (a, out) => {
         const cos = Math.cos(a), sin = Math.sin(a);
         return out.set(moveDir.x * cos - moveDir.z * sin, 0, moveDir.x * sin + moveDir.z * cos);
@@ -306,13 +374,16 @@ export class Enemy {
     // Geometry can still trap a hostile in a corner. If an alerted one has
     // not made progress for a while, pull it out and re-insert it elsewhere
     // so a wave can never stall forever.
+    // Someone holding a perch is doing their job while they wait for a target
+    // to walk into view, so give them far longer before the watchdog moves
+    // them — but not forever, or a wave could stall on a roof.
     this.stuckTimer += dt;
-    if (this.stuckTimer > 4) {
+    if (this.stuckTimer > (onPerch ? 12 : 4)) {
       // Judge progress by closing distance, not by movement: a hostile can
       // orbit a wall forever and look busy. One holding its preferred range
       // on purpose is exempt, so nobody gets yanked mid-firefight.
       const closed = this.lastDistCheck - dist;
-      const holdingRange = sees && dist <= this.type.preferred * 1.4;
+      const holdingRange = sees && (onPerch || dist <= this.type.preferred * 1.4);
       if (dist > 4 && closed < 1.5 && !holdingRange) this.game.relocateEnemy(this);
       this.lastDistCheck = dist;
       this.stuckTimer = 0;
@@ -321,8 +392,14 @@ export class Enemy {
     const speed = this.type.speed * (this.alerted ? 1 : 0.45);
     this.vel.lerp(V3.copy(moveDir).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
-    world.resolve(this.pos, this.radius, 0, 0.5);
+    world.resolve(this.pos, this.radius, this.pos.y, 0.55);
     world.clampToBounds(this.pos, this.radius);
+
+    // follow the surface underfoot: stairs and platforms carry hostiles too,
+    // and stepping off a ledge drops them rather than leaving them floating
+    const support = world.groundHeight(this.pos.x, this.pos.z, this.radius, this.pos.y + 0.55);
+    if (support > this.pos.y) this.pos.y = Math.min(support, this.pos.y + dt * 6);
+    else if (support < this.pos.y) this.pos.y = Math.max(support, this.pos.y - dt * 14);
 
     // separation so crowds do not stack into one body
     for (const other of this.game.enemies) {
@@ -350,6 +427,7 @@ export class Enemy {
       this.group.rotation.y += diff * Math.min(1, dt * 7);
     }
 
+    this._updateLaser(player, sees, time);
     this._animate(dt, dist);
     // hit detection raycasts against these meshes before the renderer runs,
     // so their world matrices have to be current now, not next frame
@@ -361,7 +439,7 @@ export class Enemy {
     if (time < this.nextFire) return;
 
     if (t.melee) {
-      if (dist < t.preferred + 0.9) {
+      if (dist < t.preferred + 0.9 && Math.abs(heightGap) < 1.8) {
         this.nextFire = time + t.rate + 0.6;
         this.swingT = 0.25;
         this.game.damagePlayer(t.damage, this.pos);
@@ -414,6 +492,29 @@ export class Enemy {
     }
   }
 
+  /** Sweep the aiming laser onto the target while the shot is lining up. */
+  _updateLaser(player, sees, time) {
+    const beam = this.parts.beam;
+    if (!beam) return;
+    const aiming = this.alerted && sees && this.nextFire - time < 1.1;
+    beam.visible = aiming;
+    if (!aiming) return;
+
+    // The beam's position is parent-local while lookAt works in world space,
+    // so both have to read the same transform: refresh it first, or a hostile
+    // that just moved aims its laser at where it used to be.
+    this.group.updateMatrixWorld(true);
+    this.parts.muzzle.getWorldPosition(V3);
+    // position is parent-local, but lookAt takes a world-space target, and
+    // the length has to be divided out of the parent's scale
+    beam.position.copy(beam.parent.worldToLocal(V4.copy(V3)));
+    beam.lookAt(player.position);
+    const scale = this.group.scale.x || 1;
+    beam.scale.set(1 / scale, 1 / scale, V3.distanceTo(player.position) / scale);
+    // pulses harder as the shot approaches
+    beam.material.opacity = 0.25 + 0.5 * (1 - Math.max(0, (this.nextFire - time) / 1.1));
+  }
+
   _animate(dt, dist) {
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.walkPhase += dt * (2 + speed * 2.6);
@@ -429,7 +530,13 @@ export class Enemy {
     if (this.parts.armR) this.parts.armR.rotation.x = aim + (this.swingT > 0 ? -1.6 : 0);
     if (this.swingT > 0) this.swingT -= dt;
 
-    this.group.position.y = Math.abs(Math.sin(this.walkPhase)) * 0.05 * amp;
+    const hop = Math.abs(Math.sin(this.walkPhase)) * 0.05 * amp;
+    this.group.position.y = this.pos.y + hop;
+    if (this.parts.shadow) {
+      // stays on the floor while the body bobs, and fades as it rises
+      this.parts.shadow.position.y = -hop / this.type.scale + 0.03;
+      this.parts.shadow.material.opacity = 0.75 * Math.max(0, 1 - hop * 4);
+    }
 
     // eye flares when hurt
     if (this.parts.eye) {

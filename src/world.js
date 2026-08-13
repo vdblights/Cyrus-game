@@ -58,6 +58,23 @@ export class World {
     }
   }
 
+  /**
+   * Height of the highest surface an entity standing at (x, z) could be
+   * supported by, ignoring anything above `ceiling` (their feet plus a step).
+   * Street level is 0.
+   */
+  groundHeight(x, z, radius, ceiling) {
+    let best = 0;
+    for (const b of this.boxes) {
+      if (b.top > ceiling || b.top <= best) continue;
+      const closestX = Math.max(b.minX, Math.min(x, b.maxX));
+      const closestZ = Math.max(b.minZ, Math.min(z, b.maxZ));
+      const dx = x - closestX, dz = z - closestZ;
+      if (dx * dx + dz * dz < radius * radius) best = b.top;
+    }
+    return best;
+  }
+
   /** True when a point is inside (or within `pad` of) any solid box. */
   occupied(x, z, pad = 0, minTop = 1.2) {
     for (const b of this.boxes) {
@@ -68,33 +85,112 @@ export class World {
   }
 
   /**
-   * Cheap 2D line-of-sight test against the box list (slab method), used by
-   * enemies before they take a shot.
+   * Segment-vs-box test over the whole box list (three-slab method). Boxes
+   * run from the ground to `top`, so a sight line clears low cover by
+   * passing over it.
+   *
+   * This is deliberately symmetric: swapping the endpoints gives the same
+   * answer, so a hostile can never see a target that cannot see it back.
    */
   lineOfSight(ax, ay, az, bx, by, bz) {
-    const dx = bx - ax, dz = bz - az;
-    const len = Math.hypot(dx, dz);
-    if (len < 1e-4) return true;
+    const dx = bx - ax, dy = by - ay, dz = bz - az;
+    if (dx * dx + dy * dy + dz * dz < 1e-8) return true;
     const invX = dx !== 0 ? 1 / dx : Infinity;
+    const invY = dy !== 0 ? 1 / dy : Infinity;
     const invZ = dz !== 0 ? 1 / dz : Infinity;
 
     for (const box of this.boxes) {
       let t0 = 0, t1 = 1;
+
       let tA = (box.minX - ax) * invX, tB = (box.maxX - ax) * invX;
-      if (tA > tB) [tA, tB] = [tB, tA];
-      t0 = Math.max(t0, tA); t1 = Math.min(t1, tB);
+      if (tA > tB) { const t = tA; tA = tB; tB = t; }
+      if (tA > t0) t0 = tA;
+      if (tB < t1) t1 = tB;
+      if (t0 > t1) continue;
+
+      tA = (0 - ay) * invY; tB = (box.top - ay) * invY;
+      if (tA > tB) { const t = tA; tA = tB; tB = t; }
+      if (tA > t0) t0 = tA;
+      if (tB < t1) t1 = tB;
       if (t0 > t1) continue;
 
       tA = (box.minZ - az) * invZ; tB = (box.maxZ - az) * invZ;
-      if (tA > tB) [tA, tB] = [tB, tA];
-      t0 = Math.max(t0, tA); t1 = Math.min(t1, tB);
+      if (tA > tB) { const t = tA; tA = tB; tB = t; }
+      if (tA > t0) t0 = tA;
+      if (tB < t1) t1 = tB;
       if (t0 > t1) continue;
 
-      // vertical check at the entry point: shots can pass over low cover
-      const yAt = ay + (by - ay) * t0;
-      if (yAt < box.top) return false;
+      return false;
     }
     return true;
+  }
+
+  /**
+   * Bounce a sphere (a thrown grenade) off the ground and off every box it
+   * hits, resolving along the shallowest of the three axes and reflecting
+   * that velocity component.
+   *
+   * @returns {0|1|2} 0 = free, 1 = bounced off something, 2 = resting on a
+   *          surface (the caller applies rolling drag)
+   */
+  bounceSphere(pos, vel, radius, restitution = 0.36, friction = 0.72) {
+    let contact = 0;
+
+    if (pos.y - radius <= 0) {
+      pos.y = radius;
+      if (vel.y < 0) {
+        if (vel.y < -1.4) {
+          // a real bounce: reverse and scrub some speed off the surface
+          vel.y = -vel.y * restitution;
+          vel.x *= friction;
+          vel.z *= friction;
+          contact = 1;
+        } else {
+          vel.y = 0;             // settled — it rolls from here
+          contact = Math.max(contact, 2);
+        }
+      }
+    }
+
+    for (const b of this.boxes) {
+      if (pos.y - radius > b.top) continue;
+      const closestX = Math.max(b.minX, Math.min(pos.x, b.maxX));
+      const closestZ = Math.max(b.minZ, Math.min(pos.z, b.maxZ));
+      const dx = pos.x - closestX, dz = pos.z - closestZ;
+      if (dx * dx + dz * dz >= radius * radius) continue;
+
+      // three candidate escapes: out the sides, or up onto the top face
+      const outX = dx >= 0 ? b.maxX + radius - pos.x : b.minX - radius - pos.x;
+      const outZ = dz >= 0 ? b.maxZ + radius - pos.z : b.minZ - radius - pos.z;
+      const outY = b.top + radius - pos.y;
+      const aX = Math.abs(outX), aZ = Math.abs(outZ), aY = Math.abs(outY);
+
+      if (aY <= aX && aY <= aZ) {
+        pos.y += outY;
+        if (vel.y < 0) {
+          if (vel.y < -1.4) {
+            vel.y = -vel.y * restitution;
+            vel.x *= friction;
+            vel.z *= friction;
+            contact = 1;
+          } else {
+            vel.y = 0;
+            contact = Math.max(contact, 2);
+          }
+        }
+      } else if (aX <= aZ) {
+        pos.x += outX;
+        vel.x = -vel.x * restitution;
+        vel.z *= friction;
+        contact = 1;
+      } else {
+        pos.z += outZ;
+        vel.z = -vel.z * restitution;
+        vel.x *= friction;
+        contact = 1;
+      }
+    }
+    return contact;
   }
 
   /** Keep an entity inside the play area. */

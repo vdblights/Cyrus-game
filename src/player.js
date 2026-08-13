@@ -10,20 +10,38 @@ export class Input {
     this.lookDelta = new THREE.Vector2();
     this.wheel = 0;
     this.locked = false;
+    this.fallback = false;      // pointer lock refused: steer without capture
+    this.pointerInside = false;
+    this.steer = new THREE.Vector2();   // -1..1 offset from screen centre
     this.sensitivity = 1;
+    this.invertY = false;
     this.onKey = null;
+    this.onKeyUp = null;
 
     addEventListener('keydown', (e) => {
       if (e.repeat) return;
       this.keys.add(e.code);
       if (this.onKey) this.onKey(e.code, e);
-      if (['Space', 'Tab', 'ControlLeft'].includes(e.code)) e.preventDefault();
+      if (['Space', 'Tab', 'ControlLeft', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        e.preventDefault();
+      }
     });
-    addEventListener('keyup', (e) => this.keys.delete(e.code));
+    addEventListener('keyup', (e) => {
+      this.keys.delete(e.code);
+      if (this.onKeyUp) this.onKeyUp(e.code, e);
+    });
     addEventListener('blur', () => { this.keys.clear(); this.fire = false; this.aim = false; });
 
+    canvas.addEventListener('mouseenter', () => { this.pointerInside = true; });
+    canvas.addEventListener('mouseleave', () => {
+      // stop turning rather than freezing mid-swing when the cursor leaves
+      this.pointerInside = false;
+      this.steer.set(0, 0);
+      this.fire = false;
+    });
+
     canvas.addEventListener('mousedown', (e) => {
-      if (!this.locked) return;
+      if (!this.locked && !this.fallback) return;
       if (e.button === 0) this.fire = true;
       if (e.button === 2) this.aim = true;
     });
@@ -33,20 +51,71 @@ export class Input {
     });
     addEventListener('contextmenu', (e) => e.preventDefault());
     addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
-      this.lookDelta.x += e.movementX * 0.0022 * this.sensitivity;
-      this.lookDelta.y += e.movementY * 0.0022 * this.sensitivity;
+      if (this.locked) {
+        this.lookDelta.x += e.movementX * 0.0022 * this.sensitivity;
+        this.lookDelta.y += e.movementY * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+        return;
+      }
+      if (!this.fallback) return;
+      // Without capture, movement deltas die at the window edge — the cursor
+      // simply stops. Steer by where the cursor sits instead: offset from the
+      // centre becomes a turn rate, which keeps working at the very edge and
+      // survives the pointer leaving entirely.
+      const r = canvas.getBoundingClientRect();
+      const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+      const ny = ((e.clientY - r.top) / r.height) * 2 - 1;
+      const dead = 0.12;
+      const shape = (v) => {
+        const a = Math.abs(v);
+        if (a < dead) return 0;
+        // ease in past the dead zone so small movements stay controllable
+        const t = (a - dead) / (1 - dead);
+        return Math.sign(v) * t * t;
+      };
+      this.steer.set(shape(nx), shape(ny) * (this.invertY ? -1 : 1));
+      this.pointerInside = nx > -1 && nx < 1 && ny > -1 && ny < 1;
     });
-    addEventListener('wheel', (e) => { if (this.locked) this.wheel += Math.sign(e.deltaY); }, { passive: true });
+    addEventListener('wheel', (e) => {
+      if (this.locked || this.fallback) this.wheel += Math.sign(e.deltaY);
+    }, { passive: true });
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
-      if (!this.locked) { this.fire = false; this.aim = false; this.keys.clear(); }
+      if (this.locked) {
+        // real capture beats steering: drop back out of the fallback
+        this.fallback = false;
+        this.steer.set(0, 0);
+      } else {
+        this.fire = false; this.aim = false; this.keys.clear();
+      }
       if (this.onLockChange) this.onLockChange(this.locked);
     });
   }
 
-  requestLock() { this.canvas.requestPointerLock?.(); }
+  /**
+   * Ask for pointer lock, and fall back to unlocked mouse-look if it is
+   * refused — embedded frames and some browsers deny it, and the game still
+   * has to be playable there.
+   */
+  requestLock() {
+    if (!this.canvas.requestPointerLock) { this.enableFallback(); return; }
+    // always worth another try: a denial can be temporary (Chrome rate-limits
+    // re-locking after Esc), and succeeding later should restore real capture
+    try {
+      const res = this.canvas.requestPointerLock();
+      if (res && typeof res.catch === 'function') res.catch(() => this.enableFallback());
+    } catch {
+      this.enableFallback();
+    }
+    clearTimeout(this._lockTimer);
+    this._lockTimer = setTimeout(() => { if (!this.locked) this.enableFallback(); }, 700);
+  }
+
+  enableFallback() {
+    if (this.fallback) return;
+    this.fallback = true;
+    if (this.onFallback) this.onFallback();
+  }
   exitLock() { document.exitPointerLock?.(); }
   down(code) { return this.keys.has(code); }
   endFrame() { this.lookDelta.set(0, 0); this.wheel = 0; }
@@ -56,6 +125,8 @@ const TARGET = new THREE.Vector3();
 const EYE_STAND = 1.68;
 const EYE_CROUCH = 1.05;
 const GRAVITY = 22;
+const STEP_HEIGHT = 0.55;      // how high you can walk up without jumping
+const FALL_SAFE = 13;          // impact speed you can absorb unhurt (~4 m drop)
 
 export class Player {
   constructor(camera, world) {
@@ -90,11 +161,17 @@ export class Player {
     this.recoilYaw = 0;
     this.dead = false;
     this.stepTimer = 0;
+    this.shake = 0;
   }
 
   applyRecoil(v, h) {
     this.recoilPitch += v;
     this.recoilYaw += h;
+  }
+
+  /** Camera trauma, 0..1 — squared on use so small knocks stay subtle. */
+  addShake(amount) {
+    this.shake = Math.min(1, this.shake + amount);
   }
 
   /** @param {number} time game clock, so regeneration measures the same units */
@@ -112,6 +189,19 @@ export class Player {
 
   update(dt, time, input) {
     // ---- look ----------------------------------------------------------
+    const turn = 2.2 * dt;
+    if (input.down('ArrowLeft')) this.yaw += turn;
+    if (input.down('ArrowRight')) this.yaw -= turn;
+    if (input.down('ArrowUp')) this.pitch += turn * 0.7;
+    if (input.down('ArrowDown')) this.pitch -= turn * 0.7;
+
+    // uncaptured mouse: cursor offset from centre drives a turn rate
+    if (input.fallback && input.pointerInside) {
+      const rate = 3.1 * dt * input.sensitivity;
+      this.yaw -= input.steer.x * rate;
+      this.pitch -= input.steer.y * rate * 0.75;
+    }
+
     this.yaw -= input.lookDelta.x;
     this.pitch -= input.lookDelta.y;
     this.pitch = THREE.MathUtils.clamp(this.pitch, -Math.PI / 2 + 0.02, Math.PI / 2 - 0.02);
@@ -173,12 +263,28 @@ export class Player {
     }
     this.velocity.y -= GRAVITY * dt;
     this.feetY += this.velocity.y * dt;
-    if (this.feetY <= 0) { this.feetY = 0; this.velocity.y = 0; this.onGround = true; }
 
+    // Move horizontally first. Anything no taller than a step above the feet
+    // is walkable, so it does not block — the support check below lifts you.
     this.position.x += this.velocity.x * dt;
     this.position.z += this.velocity.z * dt;
-    this.world.resolve(this.position, this.radius, this.feetY, 0.45);
+    this.world.resolve(this.position, this.radius, this.feetY, STEP_HEIGHT);
     this.world.clampToBounds(this.position, this.radius);
+
+    // ---- footing ---------------------------------------------------------
+    const ceiling = this.feetY + (this.onGround ? STEP_HEIGHT : 0.02);
+    const support = this.world.groundHeight(this.position.x, this.position.z, this.radius, ceiling);
+    if (this.feetY <= support + 1e-4) {
+      if (this.velocity.y < -FALL_SAFE && this.onFallDamage) {
+        this.onFallDamage(Math.round((-this.velocity.y - FALL_SAFE) * 6));
+      }
+      this.feetY = support;
+      this.velocity.y = 0;
+      this.onGround = true;
+    } else {
+      // walked off an edge
+      this.onGround = false;
+    }
 
     // ---- view height, bob ----------------------------------------------
     const wantEye = this.crouching ? EYE_CROUCH : EYE_STAND;
@@ -206,7 +312,17 @@ export class Player {
     }
 
     // ---- apply to camera -------------------------------------------------
+    this.shake = Math.max(0, this.shake - dt * 1.6);
+    const trauma = this.shake * this.shake;
+    const sx = trauma * (Math.random() - 0.5) * 0.09;
+    const sy = trauma * (Math.random() - 0.5) * 0.09;
+    const sr = trauma * (Math.random() - 0.5) * 0.07;
+
     this.camera.position.copy(this.position);
-    this.camera.rotation.set(this.pitch + this.recoilPitch, this.yaw + this.recoilYaw, roll, 'YXZ');
+    this.camera.position.y += trauma * (Math.random() - 0.5) * 0.06;
+    this.camera.rotation.set(
+      this.pitch + this.recoilPitch + sy,
+      this.yaw + this.recoilYaw + sx,
+      roll + sr, 'YXZ');
   }
 }

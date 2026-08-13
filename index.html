@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230b0c0e'/%3E%3Cpath d='M16 6v20M6 16h20' stroke='%23ffb347' stroke-width='3'/%3E%3C/svg%3E" />
-<title>ASHFALL — Abandoned City FPS</title>
+<title>ASHFALL</title>
 <link rel="stylesheet" href="./src/style.css" />
 <script type="importmap">
 {
@@ -57,9 +57,19 @@
       <div id="weapon-name">M9 PISTOL</div>
       <div id="ammo"><span id="mag">15</span><span id="ammo-sep">/</span><span id="reserve">90</span></div>
       <div id="reload-hint" class="hidden">PRESS [R] TO RELOAD</div>
+      <div id="nades"><span class="nade-icon"></span> FRAG &times;<span id="nade-count">3</span></div>
       <div id="weapon-slots"></div>
     </div>
 
+    <div id="boss-bar" class="hidden">
+      <div id="boss-name">WARLORD</div>
+      <div id="boss-track"><div id="boss-fill"></div></div>
+    </div>
+    <div id="capture-hint" class="hidden">
+      <span id="capture-text">CLICK TO CAPTURE MOUSE</span>
+      <a id="capture-newtab" class="hidden" href="#" target="_blank" rel="noopener">OPEN IN A NEW TAB &rsaquo;</a>
+    </div>
+    <div id="cook-bar" class="hidden"><div id="cook-fill"></div></div>
     <div id="wave-banner" class="hidden"></div>
     <div id="pickup-toast"></div>
   </div>
@@ -71,6 +81,7 @@
       <p class="subtitle">Sector 7 &mdash; abandoned. Something still moves down there.</p>
       <div id="loading">LOADING&hellip;</div>
       <button id="start-btn" class="btn hidden">DEPLOY</button>
+      <div id="records" class="records hidden"></div>
       <div class="controls">
         <div class="col">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
@@ -84,8 +95,19 @@
           <div><kbd>R</kbd> Reload</div>
           <div><kbd>1</kbd>&ndash;<kbd>4</kbd> / <kbd>Wheel</kbd> Weapons</div>
         </div>
+        <div class="col">
+          <div><kbd>G</kbd> Frag &mdash; hold to cook</div>
+          <div><kbd>F</kbd> Melee bash</div>
+          <div><kbd>M</kbd> Mute</div>
+          <div><kbd>Esc</kbd> Pause</div>
+        </div>
       </div>
-      <div class="hint"><kbd>Esc</kbd> pauses &middot; click the screen to lock the mouse</div>
+      <div id="seed" class="seed"></div>
+      <div class="hint">
+        <kbd>Esc</kbd> pauses &middot; click the screen to capture the mouse<br />
+        If capture is blocked, steer by moving the cursor off centre &mdash;
+        <kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd> also aim
+      </div>
     </div>
   </div>
 
@@ -96,6 +118,17 @@
       <div class="settings">
         <label>Mouse sensitivity <input id="sens" type="range" min="20" max="300" value="100" /></label>
         <label>Field of view <input id="fov" type="range" min="65" max="105" value="78" /></label>
+        <label>Volume <input id="volume" type="range" min="0" max="100" value="70" /></label>
+        <label>Graphics
+          <select id="quality">
+            <option value="auto">Auto</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </label>
+        <label class="check">Invert vertical look <input id="invert" type="checkbox" /></label>
+        <label class="check">Mute audio <input id="mute" type="checkbox" /></label>
       </div>
       <button id="quit-btn" class="btn ghost">ABANDON RUN</button>
     </div>

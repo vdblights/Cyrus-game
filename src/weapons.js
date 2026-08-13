@@ -142,6 +142,10 @@ const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
 const Q1 = new THREE.Quaternion();
 
+const MELEE_TIME = 0.42;      // full swing duration
+export const MELEE_RANGE = 2.6;
+export const MELEE_DAMAGE = 85;
+
 export class WeaponSystem {
   /**
    * @param {THREE.Scene} viewScene separate scene drawn over the world so the
@@ -171,6 +175,8 @@ export class WeaponSystem {
     this.ads = false;
     this.switching = 0;
     this.bobT = 0;
+    this.meleeT = 0;
+    this.meleeCooldown = 0;
 
     this.kickPos = new THREE.Vector3();
     this.kickRot = new THREE.Vector3();
@@ -183,6 +189,8 @@ export class WeaponSystem {
   get def() { return this.weapons[this.index].def; }
 
   reset() {
+    this.meleeT = 0;
+    this.meleeCooldown = 0;
     for (const w of this.weapons) {
       w.mag = w.def.mag;
       w.reserve = w.def.startReserve;
@@ -259,7 +267,23 @@ export class WeaponSystem {
   }
 
   canFire(time) {
-    return !this.reloading && time >= this.nextShot && this.switching <= 0;
+    return !this.reloading && time >= this.nextShot && this.switching <= 0 && this.meleeT <= 0;
+  }
+
+  /**
+   * Buttstroke with whatever is in your hands. Interrupts a reload, which is
+   * the point: it is the answer to something already inside your guard.
+   * @returns {boolean} whether the swing started
+   */
+  startMelee(time) {
+    if (this.meleeT > 0 || this.meleeCooldown > 0 || this.switching > 0) return false;
+    this.reloading = false;
+    this.meleeT = MELEE_TIME;
+    this.meleeCooldown = 0.85;
+    this.meleeHitDone = false;
+    this.nextShot = Math.max(this.nextShot, time + MELEE_TIME);
+    audio.meleeSwing();
+    return true;
   }
 
   /** Fire one round/volley. Returns true if a shot went out. */
@@ -348,6 +372,15 @@ export class WeaponSystem {
     this.adsT = THREE.MathUtils.clamp(this.adsT + (this.ads ? rate : -rate * 1.4), 0, 1);
 
     if (this.switching > 0) this.switching -= dt;
+    if (this.meleeCooldown > 0) this.meleeCooldown -= dt;
+    if (this.meleeT > 0) {
+      this.meleeT -= dt;
+      // the strike lands partway through the swing, not on the keypress
+      if (!this.meleeHitDone && this.meleeT <= MELEE_TIME * 0.45) {
+        this.meleeHitDone = true;
+        this.game.meleeStrike();
+      }
+    }
     if (this.reloading && time >= this.reloadEnd) this.finishReload();
 
     if (this._flashLife > 0) {
@@ -391,6 +424,18 @@ export class WeaponSystem {
       const t = this.switching / 0.32;
       base.y -= 0.24 * t;
       rx += 0.7 * t;
+    }
+    if (this.meleeT > 0) {
+      // wind up across the chest, then drive through
+      const t = 1 - this.meleeT / MELEE_TIME;
+      const arc = Math.sin(t * Math.PI);
+      const drive = Math.sin(Math.min(1, t * 1.6) * Math.PI);
+      base.x += 0.16 * arc - 0.24 * drive;
+      base.y += 0.07 * arc;
+      base.z += 0.20 * drive;
+      rx += 0.35 * arc;
+      ry -= 1.15 * drive;
+      rz += 0.75 * arc;
     }
     if (player.sprinting && speed > 3 && !this.ads) {
       base.y -= 0.045;
