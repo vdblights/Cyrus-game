@@ -10,7 +10,9 @@ export class Input {
     this.lookDelta = new THREE.Vector2();
     this.wheel = 0;
     this.locked = false;
-    this.fallback = false;      // pointer lock refused: look without capture
+    this.fallback = false;      // pointer lock refused: steer without capture
+    this.pointerInside = false;
+    this.steer = new THREE.Vector2();   // -1..1 offset from screen centre
     this.sensitivity = 1;
     this.invertY = false;
     this.onKey = null;
@@ -30,8 +32,13 @@ export class Input {
     });
     addEventListener('blur', () => { this.keys.clear(); this.fire = false; this.aim = false; });
 
-    canvas.addEventListener('mouseenter', () => { this.pointerOnCanvas = true; });
-    canvas.addEventListener('mouseleave', () => { this.pointerOnCanvas = false; this.fire = false; });
+    canvas.addEventListener('mouseenter', () => { this.pointerInside = true; });
+    canvas.addEventListener('mouseleave', () => {
+      // stop turning rather than freezing mid-swing when the cursor leaves
+      this.pointerInside = false;
+      this.steer.set(0, 0);
+      this.fire = false;
+    });
 
     canvas.addEventListener('mousedown', (e) => {
       if (!this.locked && !this.fallback) return;
@@ -44,9 +51,29 @@ export class Input {
     });
     addEventListener('contextmenu', (e) => e.preventDefault());
     addEventListener('mousemove', (e) => {
-      if (!this.locked && !(this.fallback && this.pointerOnCanvas)) return;
-      this.lookDelta.x += e.movementX * 0.0022 * this.sensitivity;
-      this.lookDelta.y += e.movementY * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+      if (this.locked) {
+        this.lookDelta.x += e.movementX * 0.0022 * this.sensitivity;
+        this.lookDelta.y += e.movementY * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+        return;
+      }
+      if (!this.fallback) return;
+      // Without capture, movement deltas die at the window edge — the cursor
+      // simply stops. Steer by where the cursor sits instead: offset from the
+      // centre becomes a turn rate, which keeps working at the very edge and
+      // survives the pointer leaving entirely.
+      const r = canvas.getBoundingClientRect();
+      const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+      const ny = ((e.clientY - r.top) / r.height) * 2 - 1;
+      const dead = 0.12;
+      const shape = (v) => {
+        const a = Math.abs(v);
+        if (a < dead) return 0;
+        // ease in past the dead zone so small movements stay controllable
+        const t = (a - dead) / (1 - dead);
+        return Math.sign(v) * t * t;
+      };
+      this.steer.set(shape(nx), shape(ny) * (this.invertY ? -1 : 1));
+      this.pointerInside = nx > -1 && nx < 1 && ny > -1 && ny < 1;
     });
     addEventListener('wheel', (e) => {
       if (this.locked || this.fallback) this.wheel += Math.sign(e.deltaY);
@@ -54,7 +81,13 @@ export class Input {
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
-      if (!this.locked) { this.fire = false; this.aim = false; this.keys.clear(); }
+      if (this.locked) {
+        // real capture beats steering: drop back out of the fallback
+        this.fallback = false;
+        this.steer.set(0, 0);
+      } else {
+        this.fire = false; this.aim = false; this.keys.clear();
+      }
       if (this.onLockChange) this.onLockChange(this.locked);
     });
   }
@@ -66,6 +99,8 @@ export class Input {
    */
   requestLock() {
     if (!this.canvas.requestPointerLock) { this.enableFallback(); return; }
+    // always worth another try: a denial can be temporary (Chrome rate-limits
+    // re-locking after Esc), and succeeding later should restore real capture
     try {
       const res = this.canvas.requestPointerLock();
       if (res && typeof res.catch === 'function') res.catch(() => this.enableFallback());
@@ -159,6 +194,13 @@ export class Player {
     if (input.down('ArrowRight')) this.yaw -= turn;
     if (input.down('ArrowUp')) this.pitch += turn * 0.7;
     if (input.down('ArrowDown')) this.pitch -= turn * 0.7;
+
+    // uncaptured mouse: cursor offset from centre drives a turn rate
+    if (input.fallback && input.pointerInside) {
+      const rate = 3.1 * dt * input.sensitivity;
+      this.yaw -= input.steer.x * rate;
+      this.pitch -= input.steer.y * rate * 0.75;
+    }
 
     this.yaw -= input.lookDelta.x;
     this.pitch -= input.lookDelta.y;

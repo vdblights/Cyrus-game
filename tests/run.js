@@ -414,6 +414,54 @@ check('a scripted run reaches wave 3 without stalling', async (page) => {
   return r;
 });
 
+check('look still works when pointer lock is denied', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = false;
+    g.input.enableFallback();                 // as if the browser refused capture
+    const canvas = document.getElementById('scene');
+    const rect = canvas.getBoundingClientRect();
+
+    const spin = (fx, fy, seconds) => {
+      canvas.dispatchEvent(new MouseEvent('mousemove', {
+        clientX: rect.left + rect.width * fx,
+        clientY: rect.top + rect.height * fy,
+        bubbles: true,
+      }));
+      const yaw = g.player.yaw, pitch = g.player.pitch;
+      for (let f = 0; f < seconds * 60; f++) { g.time += 1 / 60; g.step(1 / 60); }
+      return { yaw: +(g.player.yaw - yaw).toFixed(3), pitch: +(g.player.pitch - pitch).toFixed(3) };
+    };
+
+    const centre = spin(0.5, 0.5, 1);
+    const right = spin(0.95, 0.5, 1);
+    const edge = spin(0.001, 0.5, 1);         // the exact pixel where deltas die
+    const up = spin(0.5, 0.02, 1);
+
+    canvas.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+    const yawBefore = g.player.yaw;
+    for (let f = 0; f < 60; f++) { g.time += 1 / 60; g.step(1 / 60); }
+    const afterLeave = +(g.player.yaw - yawBefore).toFixed(3);
+
+    g.input.keys.add('ArrowLeft');
+    const beforeArrow = g.player.yaw;
+    for (let f = 0; f < 60; f++) { g.time += 1 / 60; g.step(1 / 60); }
+    const arrows = +(g.player.yaw - beforeArrow).toFixed(3);
+    g.input.keys.clear();
+
+    return { centre, right, edge, up, afterLeave, arrows, hinted: !document.getElementById('capture-hint').classList.contains('hidden') };
+  });
+  expect(r.centre.yaw === 0, 'the centre dead zone still turned the view');
+  expect(r.right.yaw < -0.5, `steering right did nothing (${r.right.yaw})`);
+  expect(r.edge.yaw > 0.5, `steering died at the window edge (${r.edge.yaw})`);
+  expect(r.up.pitch > 0.5, `steering up did nothing (${r.up.pitch})`);
+  expect(r.afterLeave === 0, `the view kept turning after the cursor left (${r.afterLeave})`);
+  expect(Math.abs(r.arrows) > 1, 'arrow keys did not aim');
+  expect(r.hinted, 'nothing told the player capture was unavailable');
+  return r;
+});
+
 check('settings and records survive a reload', async (page) => {
   await page.evaluate(() => {
     const g = window.__game;

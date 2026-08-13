@@ -179,6 +179,22 @@ html, body {
   transition: width 0.2s ease-out;
 }
 
+/* shown while playing without mouse capture, so the state is never a mystery */
+#capture-hint {
+  position: absolute; left: 50%; bottom: 16%;
+  transform: translateX(-50%);
+  padding: 9px 18px; text-align: center;
+  background: rgba(10, 11, 13, 0.82);
+  border: 1px solid rgba(255, 190, 130, 0.4);
+  font-size: 12px; letter-spacing: 0.2em; color: var(--hud);
+  pointer-events: auto;
+}
+#capture-hint a {
+  display: block; margin-top: 6px;
+  color: var(--amber); text-decoration: none; font-weight: 700;
+}
+#capture-hint a:hover, #capture-hint a:focus-visible { text-decoration: underline; }
+
 /* fuse timer while a frag is cooking in hand */
 #cook-bar {
   position: absolute; left: 50%; top: 58%;

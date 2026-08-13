@@ -86,6 +86,8 @@ class Game {
     this.runStart = 0;
     this.waveHpScale = 1;      // set per wave, but never left undefined
 
+    // an embedded page cannot always get pointer lock; the HUD offers a way out
+    this.embedded = window.self !== window.top;
     this.settings = this.loadSettings();
     this.records = this.loadRecords();
     this.bindUI();
@@ -244,7 +246,12 @@ class Game {
     this.applySettings();
     this.showRecords();
 
-    this.canvas.addEventListener('click', () => {
+    // any click inside the play area is another chance to capture the mouse
+    this.canvas.addEventListener('mousedown', () => {
+      if (this.state === 'playing' && !this.input.locked) this.input.requestLock();
+    });
+    document.getElementById('capture-hint').addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'A') return;          // let the link through
       if (this.state === 'playing' && !this.input.locked) this.input.requestLock();
     });
 
@@ -254,7 +261,10 @@ class Game {
     };
 
     this.input.onFallback = () => {
-      if (this.state === 'playing') this.hud.toast('MOUSE CAPTURE UNAVAILABLE — ARROW KEYS ALSO LOOK');
+      if (this.state !== 'playing') return;
+      this.hud.toast(this.embedded
+        ? 'EMBED BLOCKS MOUSE CAPTURE — STEER WITH THE CURSOR'
+        : 'MOUSE CAPTURE UNAVAILABLE — STEER WITH THE CURSOR');
     };
 
     this.input.onKey = (code) => {

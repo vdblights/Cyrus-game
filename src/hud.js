@@ -15,6 +15,8 @@ export class HUD {
       nades: $('nades'), nadeCount: $('nade-count'),
       cookBar: $('cook-bar'), cookFill: $('cook-fill'),
       bossBar: $('boss-bar'), bossFill: $('boss-fill'),
+      captureHint: $('capture-hint'), captureText: $('capture-text'),
+      captureNewTab: $('capture-newtab'),
     };
     this.radar = $('radar');
     this.radarCtx = this.radar.getContext('2d');
@@ -32,6 +34,27 @@ export class HUD {
   }
 
   show(v) { this.el.hud.classList.toggle('hidden', !v); }
+
+  /**
+   * Mouse capture state. Hidden once the pointer is locked; otherwise it says
+   * what to do about it — including the escape hatch when the page is embedded
+   * in a frame that denies pointer lock.
+   */
+  captureState({ locked, fallback, embedded }) {
+    const hide = locked;
+    this.el.captureHint.classList.toggle('hidden', hide);
+    if (hide) return;
+    if (fallback) {
+      this.el.captureText.textContent = embedded
+        ? 'MOUSE CAPTURE BLOCKED IN THIS EMBED — STEERING WITH CURSOR'
+        : 'MOUSE CAPTURE UNAVAILABLE — STEERING WITH CURSOR';
+      this.el.captureNewTab.classList.toggle('hidden', !embedded);
+      this.el.captureNewTab.href = location.href;
+    } else {
+      this.el.captureText.textContent = 'CLICK TO CAPTURE MOUSE';
+      this.el.captureNewTab.classList.add('hidden');
+    }
+  }
 
   setCrosshairSpread(px, hidden) {
     const c = this.el.crosshair;
@@ -85,6 +108,12 @@ export class HUD {
     const bossUp = !!boss && boss.alive;
     this.el.bossBar.classList.toggle('hidden', !bossUp);
     if (bossUp) this.el.bossFill.style.width = Math.max(0, (boss.hp / boss.maxHp) * 100) + '%';
+
+    this.captureState({
+      locked: game.input.locked,
+      fallback: game.input.fallback,
+      embedded: game.embedded,
+    });
 
     this.drawRadar(game);
   }

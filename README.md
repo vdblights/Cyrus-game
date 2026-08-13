@@ -36,7 +36,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 11 checks, headless
+npm test           # 12 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -53,9 +53,9 @@ second.
 
 It covers boot and city generation, hit registration and headshots, melee
 reach, grenade flight and blast falloff, cook-offs, stair climbing, fall
-damage, marksman perching and laser tracking, warlord spawns, settings and
-record persistence, and a four-minute scripted run that must reach wave 3
-with hostiles still able to engage.
+damage, marksman perching and laser tracking, warlord spawns, aiming without
+pointer lock, settings and record persistence, and a four-minute scripted run
+that must reach wave 3 with hostiles still able to engage.
 
 Three things make it trustworthy rather than merely green: the random stream
 is seeded, every check reloads the page so none of them inherit another's
@@ -103,7 +103,16 @@ scale had no initial value.
 | `M` | Mute |
 | `Esc` | Pause |
 
-Click the canvas to capture the mouse. Losing pointer lock pauses the game.
+Click the canvas to capture the mouse — with pointer lock held, the cursor
+physically cannot leave the window, and losing it pauses the game.
+
+Some contexts refuse pointer lock, most commonly a cross-origin `<iframe>`
+without `allow="pointer-lock"`. The game detects that and switches to cursor
+steering: the pointer's offset from the centre of the screen becomes a turn
+rate, with a dead zone in the middle. That keeps working at the very edge of
+the window and stops cleanly if the cursor leaves it, where raw mouse deltas
+would simply die. A banner says which mode you are in, and offers to open the
+page in its own tab, where capture works.
 
 ## Weapons
 
