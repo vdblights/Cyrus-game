@@ -84,6 +84,7 @@ class Game {
     this.spawnQueue = [];
     this.nextWaveAt = 0;
     this.runStart = 0;
+    this.waveHpScale = 1;      // set per wave, but never left undefined
 
     this.settings = this.loadSettings();
     this.records = this.loadRecords();
@@ -322,6 +323,7 @@ class Game {
     this.pendingSpawns = 0;
     this.spawnQueue.length = 0;
     this.waveClearedAt = 0;
+    this.waveHpScale = 1;
     this.bossPending = false;
     this.boss = null;
     this.runStart = this.time;

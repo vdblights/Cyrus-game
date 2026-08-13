@@ -62,6 +62,30 @@ is seeded, every check reloads the page so none of them inherit another's
 state, and the render loop is stopped during checks — otherwise it steps the
 game on real frame timing underneath the test and results stop repeating.
 
+### Asking the game questions
+
+When something looks wrong, measure it rather than guessing:
+
+```bash
+node tests/probe.js world                       # city stats for this seed
+node tests/probe.js enemies                     # every hostile's AI state
+node tests/probe.js shot                        # what a bullet actually hits
+node tests/probe.js perches                     # height profiles through each perch
+node tests/probe.js --seed=777 "g.startRun(); __step(45); return __enemies()"
+node tests/probe.js --list                      # the canned ones
+```
+
+It boots the game seeded and frozen, evaluates the expression inside it, and
+prints JSON. In scope: `g` (the whole game), `__step(seconds)`, `__enemies()`,
+`__profile(x, z, axis)`, `__place(range)`. `--file=path.js` runs a longer
+probe from disk.
+
+Every bug in this project has been found by looking at real state, and each
+time the first move was writing a throwaway script to get at it. This is that
+script, kept. It found a latent one within a minute of existing: hostiles
+spawned before the first wave got `NaN` health, because the per-wave health
+scale had no initial value.
+
 ## Controls
 
 | Input | Action |

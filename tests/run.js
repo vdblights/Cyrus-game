@@ -11,12 +11,9 @@
  *   node tests/run.js --shots    also write screenshots to tests/shots/
  *   node tests/run.js --headed   watch it run
  */
-import { chromium } from 'playwright';
-import { mkdir, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { serve } from './serve.js';
+import { openGame } from './harness.js';
 
 const PORT = 8177;
 const SEED = Number((process.argv.find((a) => a.startsWith('--seed=')) || '').split('=')[1]) || 20260813;
@@ -425,8 +422,7 @@ check('settings and records survive a reload', async (page) => {
     g.score = 4321; g.wave = 6;
     g.gameOver();
   });
-  await page.reload({ waitUntil: 'load' });   // same URL, so the seed carries
-  await waitForBoot(page);
+  await reloadGame();                        // same URL, so the seed carries
   const r = await page.evaluate(() => {
     const g = window.__game;
     return {
@@ -443,127 +439,33 @@ check('settings and records survive a reload', async (page) => {
 
 /* ------------------------------------------------------------------ runner */
 
+let reloadGame;
 class Failure extends Error {}
 function expect(cond, message) {
   if (!cond) throw new Failure(message);
 }
 
-async function waitForBoot(page, { freeze = true } = {}) {
-  await page.waitForFunction(() => window.__game && window.__game.state === 'menu', null, { timeout: 60000 });
-  // Stop the render loop. Otherwise it keeps stepping the game on real frame
-  // timing while a check steps it manually, and results stop being repeatable.
-  if (freeze) {
-    await page.evaluate((seed) => {
-      window.__game.renderer.setAnimationLoop(null);
-      window.__game.reseed(seed);      // identical stream regardless of load time
-    }, SEED);
-  }
-}
-
 async function screenshots(page) {
   await mkdir(SHOT_DIR, { recursive: true });
-  const shots = {
-    menu: () => {},
-    plaza: (g) => { g.startRun(); g.input.locked = true; },
-  };
-  for (const [name, setup] of Object.entries(shots)) {
-    await page.evaluate((fn) => { const f = new Function('g', `(${fn})(g)`); f(window.__game); }, setup.toString());
-    await page.waitForTimeout(2500);
-    await page.screenshot({ path: SHOT_DIR + name + '.png' });
-    console.log(`  wrote tests/shots/${name}.png`);
-  }
+  await page.evaluate(() => { window.__game.startRun(); window.__game.input.locked = true; });
+  await page.waitForTimeout(2500);
+  await page.screenshot({ path: SHOT_DIR + 'plaza.png' });
+  console.log('  wrote tests/shots/plaza.png');
 }
-
-/**
- * Find a Chromium to drive. Playwright pins a browser build per release, which
- * will not match a shared browser directory, so fall back to whatever is
- * actually installed before giving up.
- */
-async function findChromium() {
-  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
-  if (!root) return null;
-  const dirs = (await readdir(root).catch(() => []))
-    .filter((d) => d.startsWith('chromium-') || d === 'chromium')
-    .sort()
-    .reverse();
-  const relatives = [
-    'chrome-linux/chrome',
-    'chrome-mac/Chromium.app/Contents/MacOS/Chromium',
-    'chrome-win/chrome.exe',
-  ];
-  for (const dir of dirs) {
-    for (const rel of relatives) {
-      const full = join(root, dir, rel);
-      if (existsSync(full)) return full;
-    }
-  }
-  return null;
-}
-
-async function launchBrowser() {
-  const opts = {
-    headless: !HEADED,
-    // software WebGL, so this runs on a machine with no GPU
-    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
-  };
-  if (process.env.ASHFALL_CHROME) {
-    return chromium.launch({ ...opts, executablePath: process.env.ASHFALL_CHROME });
-  }
-  try {
-    return await chromium.launch(opts);
-  } catch (err) {
-    const found = await findChromium();
-    if (found) return chromium.launch({ ...opts, executablePath: found });
-    throw new Error(
-      `${err.message}\n\nInstall a browser with "npx playwright install chromium", ` +
-      'or point ASHFALL_CHROME at an existing Chromium binary.');
-  }
-}
-
-const server = await serve(PORT);
-const browser = await launchBrowser();
-
-let failed = 0;
-const page = await browser.newPage({ viewport: { width: 1100, height: 620 } });
-
-/**
- * Several checks need a hostile and the player in each other's sight. In a
- * dense city a random pair often has a wall between them, so pick a spot and
- * a heading that are verified clear rather than assuming.
- */
-await page.addInitScript(() => {
-  window.__place = (range) => {
-    const g = window.__game;
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const spot = g.findSpawnPoint(26, 34);
-      for (let a = 0; a < 16; a++) {
-        const ang = (a / 16) * Math.PI * 2;
-        const px = spot.x + Math.cos(ang) * range;
-        const pz = spot.z + Math.sin(ang) * range;
-        if (Math.abs(px) > g.world.bounds - 3 || Math.abs(pz) > g.world.bounds - 3) continue;
-        if (g.world.occupied(px, pz, 0.8, 0.6)) continue;
-        // clear at chest and at head height, and on ground level at both ends
-        if (g.world.groundHeight(spot.x, spot.z, 0.5, 99) > 0.05) continue;
-        if (!g.world.lineOfSight(px, 1.68, pz, spot.x, 1.2, spot.z)) continue;
-        if (!g.world.lineOfSight(px, 1.68, pz, spot.x, 1.75, spot.z)) continue;
-        return { target: spot, px, pz };
-      }
-    }
-    throw new Error('no clear firing line found on this seed');
-  };
-});
-const pageErrors = [];
-page.on('pageerror', (e) => pageErrors.push(e.message));
-page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(m.text()); });
 
 console.log(`seed ${SEED}\n`);
-const url = `http://localhost:${PORT}/index.html?seed=${SEED}`;
+const game = await openGame({ seed: SEED, port: PORT, headed: HEADED });
+const { page, errors: pageErrors } = game;
+// checks that need a mid-check reload go through the harness, so the seed,
+// the freeze and the injected helpers all survive it
+reloadGame = game.reload;
+
+let failed = 0;
 
 for (const { name, fn } of checks) {
   // Every check gets a freshly booted game on the same seed. Sharing one
   // instance made results depend on what the previous check left behind.
-  await page.goto(url, { waitUntil: 'load' });
-  await waitForBoot(page);
+  await game.reload();
   const before = pageErrors.length;
   try {
     const detail = await fn(page);
@@ -579,13 +481,11 @@ for (const { name, fn } of checks) {
 
 if (SHOTS) {
   console.log('\nscreenshots:');
-  await page.goto(url, { waitUntil: 'load' });
-  await waitForBoot(page, { freeze: false });
+  await game.reload({ freeze: false });
   await screenshots(page);
 }
 
-await browser.close();
-server.close();
+await game.close();
 
 console.log(`\n${checks.length - failed}/${checks.length} checks passed`);
 process.exit(failed ? 1 : 0);
