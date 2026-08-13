@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { audio } from './audio.js';
 import { randRange } from './world.js';
+import { blobShadow } from './textures.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
@@ -145,6 +146,21 @@ function buildBody(type) {
   weapon.add(muzzle);
   parts.muzzle = muzzle;
 
+  // Contact shadow. The sun's shadow map only covers the area around the
+  // player, so distant hostiles would otherwise float; this grounds every one
+  // of them at any range, and follows them onto rooftops.
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.5, 1.5),
+    new THREE.MeshBasicMaterial({
+      map: blobShadow(), transparent: true, depthWrite: false,
+      opacity: 0.75, blending: THREE.NormalBlending,
+    }));
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.03;
+  shadow.renderOrder = -1;
+  g.add(shadow);
+  parts.shadow = shadow;
+
   g.scale.setScalar(type.scale);
   return { group: g, parts };
 }
@@ -269,6 +285,7 @@ export class Enemy {
       this.group.rotation.x = Math.cos(this.fallDir) * fall;
       this.group.rotation.z = -Math.sin(this.fallDir) * fall;
       this.group.position.y = this.pos.y - 0.1 * t;
+      if (this.parts.shadow) this.parts.shadow.material.opacity = 0.75 * Math.max(0, 1 - this.deathT);
       if (this.deathT > 6) {
         const k = Math.max(0, 1 - (this.deathT - 6) / 1.5);
         this.group.scale.setScalar(this.type.scale * k);
@@ -513,7 +530,13 @@ export class Enemy {
     if (this.parts.armR) this.parts.armR.rotation.x = aim + (this.swingT > 0 ? -1.6 : 0);
     if (this.swingT > 0) this.swingT -= dt;
 
-    this.group.position.y = this.pos.y + Math.abs(Math.sin(this.walkPhase)) * 0.05 * amp;
+    const hop = Math.abs(Math.sin(this.walkPhase)) * 0.05 * amp;
+    this.group.position.y = this.pos.y + hop;
+    if (this.parts.shadow) {
+      // stays on the floor while the body bobs, and fades as it rises
+      this.parts.shadow.position.y = -hop / this.type.scale + 0.03;
+      this.parts.shadow.material.opacity = 0.75 * Math.max(0, 1 - hop * 4);
+    }
 
     // eye flares when hurt
     if (this.parts.eye) {

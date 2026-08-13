@@ -282,6 +282,12 @@ kbd {
 .settings label { display: block; margin: 12px 0; }
 .settings label.check { color: rgba(255, 220, 180, 0.75); }
 .settings input[type="checkbox"] { width: auto; accent-color: var(--amber); }
+.settings select {
+  font-family: var(--font); font-size: 13px; margin-left: 10px;
+  padding: 3px 8px; color: var(--hud);
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 190, 130, 0.35);
+}
 .settings input { vertical-align: middle; margin-left: 10px; width: 200px; accent-color: var(--amber); }
 
 #stats { margin: 18px 0 26px; font-size: 15px; line-height: 2; color: rgba(255, 220, 180, 0.85); }

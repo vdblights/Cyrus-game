@@ -36,16 +36,48 @@ export function buildCity(scene) {
   const group = new THREE.Group();
   scene.add(group);
 
-  const facades = [0, 1, 2, 3, 4].map((s) => new THREE.MeshLambertMaterial({ map: TEX.facade(s, 0) }));
-  const concreteMat = new THREE.MeshLambertMaterial({ map: TEX.concrete() });
-  const darkConcrete = new THREE.MeshLambertMaterial({ map: TEX.concrete('#565459') });
-  const rustMat = new THREE.MeshLambertMaterial({ map: TEX.rustMetal() });
-  const metalMat = new THREE.MeshLambertMaterial({ color: 0x4a4e54 });
-  const glassMat = new THREE.MeshLambertMaterial({ color: 0x27313a });
+  // Phong rather than Lambert: these surfaces need a normal map to break up
+  // the flatness, and a specular term so orientation reads at a glance.
+  const facades = [0, 1, 2, 3, 4].map((n) => {
+    const map = TEX.facade(n, 0);
+    return new THREE.MeshPhongMaterial({
+      map, normalMap: TEX.normalFrom(map, 1.1, 'facade' + n),
+      normalScale: new THREE.Vector2(0.55, 0.55),
+      specular: 0x2a2622, shininess: 6,
+    });
+  });
+
+  const concreteTex = TEX.concrete('#6a6c72');   // cooler stock; the warm key tints it
+  const concreteMat = new THREE.MeshPhongMaterial({
+    map: concreteTex, normalMap: TEX.normalFrom(concreteTex, 1.1, 'conc'),
+    normalScale: new THREE.Vector2(0.7, 0.7), specular: 0x24211e, shininess: 5,
+  });
+
+  const darkTex = TEX.concrete('#53565c');
+  const darkConcrete = new THREE.MeshPhongMaterial({
+    map: darkTex, normalMap: TEX.normalFrom(darkTex, 1.1, 'dark'),
+    normalScale: new THREE.Vector2(0.7, 0.7), specular: 0x201d1b, shininess: 5,
+  });
+
+  const rustTex = TEX.rustMetal();
+  const rustMat = new THREE.MeshPhongMaterial({
+    map: rustTex, normalMap: TEX.normalFrom(rustTex, 1.8, 'rust'),
+    normalScale: new THREE.Vector2(1, 1), specular: 0x3a3028, shininess: 18,
+  });
+
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x4a4e54, specular: 0x8a9099, shininess: 55 });
+  // dark glass catches the sky hard, which is what sells it as glass
+  const glassMat = new THREE.MeshPhongMaterial({
+    color: 0x1b242c, specular: 0xa8c0d8, shininess: 120, reflectivity: 1,
+  });
 
   // ---------------------------------------------------------------- ground
   const groundSize = GRID * BLOCK + 120;
-  const asphaltMat = new THREE.MeshLambertMaterial({ map: TEX.asphalt() });
+  const asphaltTex = TEX.asphalt();
+  const asphaltMat = new THREE.MeshPhongMaterial({
+    map: asphaltTex, normalMap: TEX.normalFrom(asphaltTex, 0.9, 'asph'),
+    normalScale: new THREE.Vector2(0.55, 0.55), specular: 0x181a1e, shininess: 12,
+  });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundSize, groundSize), asphaltMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -218,6 +250,28 @@ export function buildCity(scene) {
       cap.position.set(x, h + 0.4, z);
       cap.castShadow = true;
       g.add(cap);
+
+      // tall blocks step back near the top, which is most of what gives a
+      // skyline its silhouette
+      if (h > 20 && Math.random() < 0.65) {
+        const setH = randRange(4, 10);
+        const inset = randRange(1.5, 3);
+        const tower = new THREE.Mesh(boxGeo(bw - inset * 2, setH, bd - inset * 2), mat);
+        tower.position.set(x + randRange(-inset, inset) * 0.4, h + setH / 2 + 0.8,
+          z + randRange(-inset, inset) * 0.4);
+        tower.castShadow = tower.receiveShadow = true;
+        g.add(tower);
+        w.solids.push(tower);
+        const capTop = new THREE.Mesh(boxGeo(bw - inset * 2 + 0.5, 0.6, bd - inset * 2 + 0.5, 3), conc);
+        capTop.position.set(tower.position.x, h + setH + 1.1, tower.position.z);
+        g.add(capTop);
+      }
+
+      // a ledge at the base grounds the block against the pavement
+      const skirt = new THREE.Mesh(boxGeo(bw + 0.5, 0.45, bd + 0.5, 3), conc);
+      skirt.position.set(x, 3.0, z);
+      skirt.castShadow = true;
+      g.add(skirt);
 
       // rooftop clutter
       if (h > 14) {

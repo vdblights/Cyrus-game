@@ -164,6 +164,42 @@ and clearing a wave awards a score bonus plus an ammo resupply. Kills sometimes
 drop ammo crates, medkits and frags. Health regenerates five seconds after you
 stop taking fire. Your best wave and score are kept between sessions.
 
+## Looks
+
+Dusk, and the light is doing the work. A single warm key sits low in the
+west with a cool sky fill opposite it, so a wall tells you which way it faces
+before you read anything else on it. The sun is a sprite placed at the light's
+own direction rather than painted into the sky, so it can never drift away
+from the shadows it casts. Fog is tinted to the sky's horizon, which drains
+colour out of distance.
+
+Surfaces carry a normal map derived from their own texture — the painted
+window reveals, mortar lines and pitted concrete become relief that catches
+the key light instead of reading as a decal. Facades are built with broken,
+boarded and intact windows, grime bleeding from every sill, and scorch licking
+up from the blown ones. Tall blocks step back near the top, which is most of
+what gives a skyline its shape.
+
+Hostiles carry a contact shadow under them, because the sun's shadow map only
+covers the ground near the player and anything beyond it would otherwise
+float.
+
+### Graphics settings
+
+Shadow mapping costs more than everything else in the scene put together, so
+it is the first thing the quality tiers drop:
+
+| Tier | Shadows | Normal maps | Pixel ratio | Dust |
+| --- | --- | --- | --- | --- |
+| High | 2048, soft | yes | up to 1.75 | yes |
+| Medium | 1024, hard | yes | up to 1.4 | yes |
+| Low | off | no | 1.0 | no |
+
+The default is **Auto**: it watches the first few seconds of a run and steps
+down a tier if the frame rate is under 40, telling you when it does. Picking a
+tier yourself in the pause menu turns that off — an explicit choice is never
+overridden.
+
 ## Vertical ground
 
 The city is not flat. Raised terraces of collapsed floor and stacked shipping
@@ -199,6 +235,9 @@ A few notes on the implementation:
 - **Nothing is loaded from disk or network.** Every texture is painted into a
   canvas at boot, every sound is synthesised from noise bursts and oscillator
   envelopes, and every model is assembled from boxes and cylinders.
+- **Normal maps are generated, not authored.** A Sobel pass over each
+  texture's own luminance becomes its normal map, so painted detail lights
+  like geometry without shipping a second set of images.
 - **The city is generated per session.** A 6×6 grid of lots is filled with
   towers, gutted low ruins and rubble lots, then dressed with wrecked cars,
   shipping containers, barricades, streetlights and burning barrels.

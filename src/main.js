@@ -27,11 +27,12 @@ class Game {
     this.renderer.autoClear = false;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.35;
+    this.renderer.toneMappingExposure = 1.45;
 
     // ---- world scene ----------------------------------------------------
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x7d6552, 0.0095);
+    // fog tinted to the sky's horizon, so distance drains colour toward it
+    this.scene.fog = new THREE.FogExp2(0x8a6748, 0.0100);
     this.baseFov = 78;
     this.camera = new THREE.PerspectiveCamera(this.baseFov, innerWidth / innerHeight, 0.06, 600);
 
@@ -90,6 +91,7 @@ class Game {
     this.embedded = window.self !== window.top;
     this.settings = this.loadSettings();
     this.records = this.loadRecords();
+    this.collectMaterials();
     this.bindUI();
     addEventListener('resize', () => this.resize());
     this.resize();
@@ -112,28 +114,45 @@ class Game {
   // ------------------------------------------------------------------ setup
   setupSky() {
     const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(420, 24, 16),
+      new THREE.SphereGeometry(420, 32, 20),
       new THREE.MeshBasicMaterial({ map: TEX.skyTexture(), side: THREE.BackSide, fog: false, depthWrite: false })
     );
     this.scene.add(sky);
     this.sky = sky;
 
-    // low haze layer that sells the dust in the air
-    const haze = new THREE.Mesh(
-      new THREE.SphereGeometry(200, 20, 12),
-      new THREE.MeshBasicMaterial({ color: 0x8a6b4e, transparent: true, opacity: 0.16, side: THREE.BackSide, depthWrite: false, fog: false })
-    );
-    this.scene.add(haze);
+    // The sun is placed at the light's own direction rather than painted into
+    // the sky, so the shadows always point away from the thing casting them.
+    this.sunDir = new THREE.Vector3(-60, 40, -30).normalize();
+    const sunGroup = new THREE.Group();
+
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: TEX.sunSprite(), blending: THREE.AdditiveBlending,
+      depthWrite: false, transparent: true, opacity: 0.5, fog: false,
+    }));
+    glow.scale.set(230, 230, 1);
+    sunGroup.add(glow);
+
+    const disc = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: TEX.sunSprite('#fffaf0', '#ffcf8a'), blending: THREE.AdditiveBlending,
+      depthWrite: false, transparent: true, opacity: 0.9, fog: false,
+    }));
+    disc.scale.set(52, 52, 1);
+    sunGroup.add(disc);
+
+    sunGroup.position.copy(this.sunDir).multiplyScalar(380);
+    this.scene.add(sunGroup);
+    this.sunSprite = sunGroup;
   }
 
   setupLights() {
-    this.scene.add(new THREE.HemisphereLight(0xb6c3d2, 0x7a6349, 1.35));
+    // low ambient, strong key: faces should separate by which way they point
+    this.scene.add(new THREE.HemisphereLight(0x9db4d6, 0x6e6152, 1.25));
 
-    const sun = new THREE.DirectionalLight(0xffc184, 2.7);
-    sun.position.set(-60, 48, -30);
+    const sun = new THREE.DirectionalLight(0xffc890, 3.0);
+    sun.position.set(-60, 40, -30);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    const s = 45;
+    const s = 58;      // wide enough that nearby blocks cast onto the street
     sun.shadow.camera.left = -s; sun.shadow.camera.right = s;
     sun.shadow.camera.top = s; sun.shadow.camera.bottom = -s;
     sun.shadow.camera.near = 1; sun.shadow.camera.far = 220;
@@ -144,9 +163,14 @@ class Game {
     this.sun = sun;
 
     // cool bounce from the opposite side so shadowed faces stay readable
-    const fill = new THREE.DirectionalLight(0x6d90c0, 0.9);
+    const fill = new THREE.DirectionalLight(0x5f82b8, 0.85);
     fill.position.set(40, 25, 50);
     this.scene.add(fill);
+
+    // a dim upward kick, standing in for light coming back off the pavement
+    const bounce = new THREE.DirectionalLight(0x8c8072, 0.18);
+    bounce.position.set(10, -20, 10);
+    this.scene.add(bounce);
   }
 
   setupDust() {
@@ -185,7 +209,81 @@ class Game {
   loadSettings() {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem('ashfall.settings') || '{}'); } catch { saved = {}; }
-    return { sens: 100, fov: 78, volume: 70, muted: false, invertY: false, ...saved };
+    return { sens: 100, fov: 78, volume: 70, muted: false, invertY: false, quality: 'auto', ...saved };
+  }
+
+  /** Every unique material, so a quality change can flag them all at once. */
+  collectMaterials() {
+    const seen = new Set();
+    for (const root of [this.scene, this.viewScene]) {
+      root.traverse((o) => {
+        if (!o.material) return;
+        for (const m of Array.isArray(o.material) ? o.material : [o.material]) seen.add(m);
+      });
+    }
+    this.materials = [...seen];
+    // remember the normal maps so switching quality can put them back
+    this.normalMapped = this.materials.filter((m) => m.normalMap).map((m) => ({ m, map: m.normalMap }));
+  }
+
+  /**
+   * Graphics tiers. Shadow mapping is far and away the most expensive thing
+   * in the scene, so it is the first thing to go.
+   */
+  applyQuality(tier = this.settings.quality) {
+    const level = tier === 'auto' ? (this.autoTier || 'high') : tier;
+    const cfg = {
+      high: { shadows: true, soft: true, shadowSize: 2048, span: 50, normals: true, pixel: 1.75, dust: true },
+      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, normals: true, pixel: 1.4, dust: true },
+      low: { shadows: false, soft: false, shadowSize: 512, span: 40, normals: false, pixel: 1, dust: false },
+    }[level];
+
+    this.renderer.shadowMap.enabled = cfg.shadows;
+    this.renderer.shadowMap.type = cfg.soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, cfg.pixel));
+
+    if (this.sun.shadow.mapSize.x !== cfg.shadowSize) {
+      this.sun.shadow.mapSize.set(cfg.shadowSize, cfg.shadowSize);
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null;          // three rebuilds it at the new size
+    }
+    const c = this.sun.shadow.camera;
+    c.left = -cfg.span; c.right = cfg.span; c.top = cfg.span; c.bottom = -cfg.span;
+    c.updateProjectionMatrix();
+
+    for (const { m, map } of this.normalMapped) m.normalMap = cfg.normals ? map : null;
+    for (const m of this.materials) m.needsUpdate = true;   // shadow state is compiled in
+    this.dust.visible = cfg.dust;
+
+    this.activeTier = level;
+    this.resize();
+  }
+
+  /**
+   * On 'auto', watch the first seconds of play and step down if the machine
+   * is struggling. An explicit choice is never overridden.
+   */
+  autoCalibrate() {
+    if (this.settings.quality !== 'auto' || this.autoDone) return;
+    // wall clock, not game time: the loop's dt is clamped, so a machine at
+    // 15 fps would otherwise look like 30 and never step down
+    const now = performance.now() / 1000;
+    if (!this.autoStart) { this.autoStart = now; this.autoFrames = 0; return; }
+    this.autoFrames++;
+    const elapsed = now - this.autoStart;
+    if (elapsed < 3) return;
+
+    const fps = this.autoFrames / elapsed;
+    const order = ['high', 'medium', 'low'];
+    const at = order.indexOf(this.activeTier || 'high');
+    if (fps < 40 && at < order.length - 1) {
+      this.autoTier = order[at + 1];
+      this.applyQuality();
+      this.hud.toast('GRAPHICS: ' + this.autoTier.toUpperCase() + ` (${Math.round(fps)} FPS)`);
+      this.autoStart = 0;
+    } else {
+      this.autoDone = true;
+    }
   }
 
   saveSettings() {
@@ -221,6 +319,9 @@ class Game {
       const el = document.getElementById(id);
       if (el) el.value = val;
     }
+    const q = document.getElementById('quality');
+    if (q) q.value = st.quality;
+    if (this.materials) this.applyQuality();
     const inv = document.getElementById('invert');
     if (inv) inv.checked = st.invertY;
     const mute = document.getElementById('mute');
@@ -243,6 +344,7 @@ class Game {
     bind('volume', 'volume', (el) => +el.value);
     bind('invert', 'invertY', (el) => el.checked);
     bind('mute', 'muted', (el) => el.checked);
+    bind('quality', 'quality', (el) => el.value);
     this.applySettings();
     this.showRecords();
 
@@ -334,6 +436,8 @@ class Game {
     this.spawnQueue.length = 0;
     this.waveClearedAt = 0;
     this.waveHpScale = 1;
+    this.autoStart = 0;
+    this.autoFrames = 0;
     this.bossPending = false;
     this.boss = null;
     this.runStart = this.time;
@@ -837,6 +941,7 @@ class Game {
     this.updateWaves(dt);
     this.updatePickups(dt);
     this.updateAmbience(dt);
+    this.autoCalibrate();
     this.effects.update(dt);
     this.hud.update(this);
 
@@ -850,11 +955,12 @@ class Game {
     }
 
     // keep the sun's shadow box on the player
-    this.sun.position.set(this.player.position.x - 60, 48, this.player.position.z - 30);
+    this.sun.position.set(this.player.position.x - 60, 40, this.player.position.z - 30);
     this.sun.target.position.set(this.player.position.x, 0, this.player.position.z);
     this.sun.target.updateMatrixWorld();
 
     this.sky.position.copy(this.camera.position);
+    this.sunSprite.position.copy(this.camera.position).addScaledVector(this.sunDir, 380);
     this.dust.position.set(
       Math.round(this.player.position.x / 30) * 30, 0, Math.round(this.player.position.z / 30) * 30);
   }
