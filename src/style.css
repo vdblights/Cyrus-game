@@ -116,6 +116,44 @@ html, body {
 #enemies-left { color: var(--red); font-weight: 700; }
 #score { color: #fff; font-weight: 700; }
 
+/* objective readout, under the wave block */
+#objective {
+  --obj: var(--amber);
+  margin-top: 14px; width: 232px;
+  padding: 7px 10px 8px;
+  background: rgba(10, 11, 13, 0.5);
+  border-left: 2px solid var(--obj);
+}
+#objective-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px; letter-spacing: 0.16em; color: var(--obj);
+}
+#objective-timer { font-size: 13px; font-weight: 700; color: rgba(255, 220, 180, 0.8); }
+#objective-timer.urgent { color: var(--red); animation: blink 0.8s infinite; }
+#objective-track {
+  height: 4px; margin: 6px 0 5px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 190, 130, 0.22);
+}
+#objective-fill { height: 100%; width: 0; background: var(--obj); transition: width 0.12s linear; }
+#objective-note { font-size: 11px; letter-spacing: 0.1em; color: rgba(255, 220, 180, 0.62); }
+
+/* waypoint: a diamond over the site, pinned to the screen edge when the site
+   is behind you or out of frame */
+#objective-marker {
+  position: absolute; left: 0; top: 0;
+  text-align: center; color: var(--amber);
+  font-size: 10px; letter-spacing: 0.12em;
+  will-change: transform;
+}
+#objective-marker .om-pip {
+  display: block; width: 11px; height: 11px; margin: 0 auto 4px;
+  border: 2px solid currentColor; transform: rotate(45deg);
+  box-shadow: 0 0 8px currentColor;
+}
+#objective-marker.edge .om-pip { background: currentColor; }
+#objective-marker .om-dist { color: rgba(255, 235, 210, 0.85); }
+
 #hud-topright { position: absolute; top: 18px; right: 22px; }
 #radar { opacity: 0.85; }
 

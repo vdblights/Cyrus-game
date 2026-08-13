@@ -36,7 +36,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 12 checks, headless
+npm test           # 16 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -53,9 +53,11 @@ second.
 
 It covers boot and city generation, hit registration and headshots, melee
 reach, grenade flight and blast falloff, cook-offs, stair climbing, fall
-damage, marksman perching and laser tracking, warlord spawns, aiming without
-pointer lock, settings and record persistence, and a four-minute scripted run
-that must reach wave 3 with hostiles still able to engage.
+damage, marksman perching and laser tracking, warlord spawns, the objective
+schedule and its payouts, objective decay and expiry, waypoint projection,
+aiming without pointer lock, settings and record persistence, and a
+four-minute scripted run that must reach wave 3 with hostiles still able to
+engage.
 
 Three things make it trustworthy rather than merely green: the random stream
 is seeded, every check reloads the page so none of them inherit another's
@@ -69,6 +71,7 @@ When something looks wrong, measure it rather than guessing:
 ```bash
 node tests/probe.js world                       # city stats for this seed
 node tests/probe.js enemies                     # every hostile's AI state
+node tests/probe.js objectives                  # where each objective lands
 node tests/probe.js shot                        # what a bullet actually hits
 node tests/probe.js perches                     # height profiles through each perch
 node tests/probe.js --seed=777 "g.startRun(); __step(45); return __enemies()"
@@ -164,6 +167,34 @@ and clearing a wave awards a score bonus plus an ammo resupply. Kills sometimes
 drop ammo crates, medkits and frags. Health regenerates five seconds after you
 stop taking fire. Your best wave and score are kept between sessions.
 
+## Objectives
+
+Wave survival on its own rewards standing still in the best cover you can
+find, and the other 200 m of city may as well not exist. So most waves put
+something worth having at the far end of it and start a clock.
+
+| Objective | Where | What it asks | What it pays |
+| --- | --- | --- | --- |
+| Supply cache | 40&ndash;80 m out | Stand on it for 4 s | Ammo, frags, 300 &times; wave |
+| Beacon | 40&ndash;75 m out | Hold a 6.5 m circle for 18 s | Ammo, 35 health, 500 &times; wave |
+| Evac point | 55&ndash;105 m out | Reach it before the window shuts | Full heal, full rearm, 750 &times; wave |
+
+One runs at a time. Wave 1 is left clean, every third wave calls for a beacon
+and the rest call for a cache; an evac window opens instead when a warlord
+goes down. Progress bleeds back if you are driven off rather than resetting,
+so being pushed out costs ground without wiping the job, and a beacon
+transmits &mdash; working one pulls hostiles in from 55 m while you stand there.
+
+Finding the site is most of the problem, because one ruined block looks much
+like the next. A light column marks it, occluded by whatever is in front of
+it so it reads as a bearing over the rooftops rather than a decal; a waypoint
+tracks it on screen and pins to the edge when it is behind you; the radar
+holds it at the rim when it is past the sweep.
+
+The payouts sit above a wave-clear bonus on purpose. Crossing the sector
+under fire should beat holding the plaza &mdash; otherwise there is no reason
+to leave, which was the problem to begin with.
+
 ## Looks
 
 Dusk, and the light is doing the work. A single warm key sits low in the
@@ -222,6 +253,7 @@ src/world.js        AABB collision, ground height, line-of-sight, bounds
 src/player.js       input, movement, camera, health
 src/weapons.js      weapon definitions, view models, firing and recoil
 src/enemies.js      hostile archetypes, AI, procedural bodies
+src/objectives.js   objective sites, channels, markers and waypoints
 src/grenades.js     thrown frags: fuse, bounce physics, detonation
 src/effects.js      pooled tracers, impacts, blood, casings, explosions
 src/textures.js     canvas-painted textures (asphalt, facades, rust, sky)

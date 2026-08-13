@@ -320,6 +320,212 @@ check('warlord waves spawn an elite with a health bar', async (page) => {
   return r;
 });
 
+check('waves cue objectives, and securing one pays out', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+
+    // what each wave calls for, read off the real wave manager
+    const schedule = [];
+    for (let w = 1; w <= 6; w++) {
+      g.wave = w - 1;
+      g.objectiveCue = null;
+      g.objectives.reset();
+      g.startWave();
+      schedule.push(g.objectiveCue ? g.objectiveCue.kind : null);
+      g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    }
+
+    g.startWave = () => {};              // hold the wave manager still from here
+    g.objectiveCue = null;
+    g.wave = 2;
+
+    // measure the payout around the handler itself: a cleared wave pays its
+    // own bonus in the same window and would otherwise be counted here
+    let payout = 0;
+    const secure = g.onObjectiveSecured.bind(g);
+    g.onObjectiveSecured = (obj) => {
+      const s = g.score;
+      secure(obj);
+      payout = g.score - s;
+    };
+
+    const before = { nades: g.nades };
+    const o = g.objectives.start('cache');
+
+    // the site has to be somewhere you can stand and fight: street level,
+    // clear of geometry, inside the walls, and a long way off
+    const spawnDist = Math.hypot(o.x - g.player.position.x, o.z - g.player.position.z);
+    const site = {
+      ground: +g.world.groundHeight(o.x, o.z, 1.4, 99).toFixed(2),
+      occupied: g.world.occupied(o.x, o.z, 1.5, 0.6),
+      inBounds: Math.abs(o.x) < g.world.bounds && Math.abs(o.z) < g.world.bounds,
+    };
+
+    // stand on it
+    g.player.reset(o.x, o.z);
+    window.__step(o.def.channel + 1);
+
+    return {
+      schedule, spawnDist: +spawnDist.toFixed(1), site,
+      cleared: !g.objectives.active,
+      secured: g.objectivesSecured,
+      gained: payout,
+      frags: g.nades - before.nades,
+      hidden: document.getElementById('objective').classList.contains('hidden'),
+    };
+  });
+  expect(JSON.stringify(r.schedule) === JSON.stringify([null, 'cache', 'hold', 'cache', null, 'hold']),
+    `unexpected wave schedule: ${JSON.stringify(r.schedule)}`);
+  expect(r.spawnDist > 25, `the cache landed only ${r.spawnDist} m away`);
+  expect(r.site.ground < 0.4 && !r.site.occupied && r.site.inBounds,
+    `unusable site: ${JSON.stringify(r.site)}`);
+  expect(r.cleared && r.secured === 1, 'standing on the cache did not secure it');
+  expect(r.gained === 600, `paid ${r.gained} for a wave-2 cache`);
+  expect(r.frags > 0, 'a secured cache handed out no frags');
+  expect(r.hidden, 'the objective readout stayed up after it was secured');
+  return r;
+});
+
+check('objective progress bleeds when you leave, and the clock runs out', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+
+    const o = g.objectives.start('hold');
+    g.player.reset(o.x, o.z);
+    window.__step(9);
+    const held = +o.progress.toFixed(1);
+
+    g.player.reset(o.x + 30, o.z);        // driven off it
+    window.__step(6);
+    const bled = +g.objectives.active.progress.toFixed(1);
+
+    g.player.reset(o.x, o.z);             // back on, and finish
+    window.__step(20);
+    const secured = g.objectivesSecured;
+
+    // a site nobody goes to expires on its own clock
+    const c = g.objectives.start('cache');
+    g.player.reset(c.x + 60, c.z);
+    window.__step(c.def.limit + 1);
+
+    return {
+      held, bled, secured,
+      lost: g.objectivesLost, stillActive: !!g.objectives.active,
+      hp: Math.round(g.player.health),
+    };
+  });
+  expect(r.held === 9, `9 s on a beacon logged ${r.held} s`);
+  expect(r.bled < r.held && r.bled > 0, `progress went ${r.held} -> ${r.bled} when the player left`);
+  expect(r.secured === 1, 'returning to the beacon never finished it');
+  expect(!r.stillActive && r.lost === 1, 'an abandoned cache never expired');
+  return r;
+});
+
+check('the waypoint tracks the site and pins to the edge behind you', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+
+    const W = 1100, H = 620;
+    const o = g.objectives.start('cache');
+    const face = () => {
+      g.player.yaw = Math.atan2(-(o.x - g.player.position.x), -(o.z - g.player.position.z));
+      g.player.pitch = 0;
+      g.step(1 / 60);
+    };
+
+    face();
+    const ahead = g.objectives.screenMarker(g.camera, W, H);
+    g.player.yaw += Math.PI * 0.75;                  // over the shoulder
+    g.step(1 / 60);
+    const behind = g.objectives.screenMarker(g.camera, W, H);
+    face();
+    g.player.yaw += 0.6;                             // just off to the side
+    g.step(1 / 60);
+    const side = g.objectives.screenMarker(g.camera, W, H);
+
+    const roofTop = g.objectives.active;
+    // standing on a roof directly above the site must not count as being on it
+    g.player.reset(roofTop.x, roofTop.z);
+    let roofProgress = 0;
+    for (let f = 0; f < 120; f++) { g.player.feetY = 6; g.time += 1 / 60; g.step(1 / 60); }
+    roofProgress = +g.objectives.active.progress.toFixed(2);
+
+    return {
+      ahead: { x: Math.round(ahead.x), y: Math.round(ahead.y), off: ahead.offscreen, dist: Math.round(ahead.dist) },
+      behind: { x: Math.round(behind.x), y: Math.round(behind.y), off: behind.offscreen },
+      side: { x: Math.round(side.x), off: side.offscreen },
+      roofProgress,
+      marked: !document.getElementById('objective-marker').classList.contains('hidden'),
+    };
+  });
+  expect(Math.abs(r.ahead.x - 550) < 40 && !r.ahead.off,
+    `facing the site put the waypoint at ${r.ahead.x},${r.ahead.y} (offscreen ${r.ahead.off})`);
+  expect(r.ahead.dist > 20, `waypoint reported ${r.ahead.dist} m to a distant site`);
+  expect(r.behind.off, 'a site behind the camera was not treated as offscreen');
+  expect(r.behind.x >= 44 && r.behind.x <= 1100 - 44 && r.behind.y >= 44 && r.behind.y <= 620 - 44,
+    `the offscreen waypoint left the viewport: ${JSON.stringify(r.behind)}`);
+  expect(r.side.x > 550, `turning left did not push the waypoint right (${r.side.x})`);
+  expect(r.roofProgress === 0, `a player 6 m above the site made ${r.roofProgress} s of progress`);
+  expect(r.marked, 'the waypoint element never showed');
+  return r;
+});
+
+check('a warlord going down opens an evac window', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.wave = 5; g.waveHpScale = 1;
+
+    let payout = 0;
+    const secure = g.onObjectiveSecured.bind(g);
+    g.onObjectiveSecured = (obj) => {
+      const s = g.score;                    // the wave-clear bonus lands here too
+      secure(obj);
+      payout = g.score - s;
+    };
+
+    const boss = g.spawnEnemy('brute', true);
+    boss.pos.set(g.player.position.x + 6, 0, g.player.position.z);
+    boss.group.position.copy(boss.pos);
+    const V = g.player.position.constructor;
+    const result = boss.damage(1e6, 'body', new V(1, 0, 0), boss.pos.clone());
+    g.registerHit(boss, result, 'TEST', false);
+    const cued = g.objectiveCue && g.objectiveCue.kind;
+
+    window.__step(6);                       // the cue is deliberately delayed
+    const o = g.objectives.active;
+    g.player.reset(o.x, o.z);
+    g.player.health = 40;                   // an evac is worth a full heal
+    window.__step(o.def.channel + 1);
+
+    return {
+      cued, kind: o.kind, limit: o.def.limit,
+      dist: Math.round(Math.hypot(o.x - boss.pos.x, o.z - boss.pos.z)),
+      secured: g.objectivesSecured, gained: payout,
+      hp: Math.round(g.player.health), nades: g.nades, done: !g.objectives.active,
+    };
+  });
+  expect(r.cued === 'extraction', `the warlord's death cued ${r.cued}`);
+  expect(r.kind === 'extraction', 'no evac point appeared');
+  expect(r.done && r.secured === 1, 'reaching the evac point did not close it');
+  expect(r.gained === 750 * 5, `evac paid ${r.gained} on wave 5`);
+  expect(r.hp === 100 && r.nades === 5, `evac did not fully rearm: hp ${r.hp}, frags ${r.nades}`);
+  return r;
+});
+
 check('a scripted run reaches wave 3 without stalling', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -401,6 +607,7 @@ check('a scripted run reaches wave 3 without stalling', async (page) => {
     return {
       wave: g.wave, kills: g.kills, score: g.score, waveAt,
       stallSeconds: +stallSeconds.toFixed(1), noContact: +noContact.toFixed(1),
+      objectives: g.objectivesSecured + g.objectivesLost,
     };
   });
   expect(!r.scoreBroke, `score stopped being a number at t=${r.at}s`);
@@ -411,6 +618,9 @@ check('a scripted run reaches wave 3 without stalling', async (page) => {
   // next group walking in from 30-60 m out. A real stall never recovers.
   expect(r.noContact < 90,
     `hostiles failed to reach the player for ${r.noContact}s — a wave stalled`);
+  // the bot never walks to a site, so these all expire — the point is that
+  // the wave manager kept handing them out across four minutes of real play
+  expect(r.objectives >= 2, `only ${r.objectives} objectives came up over ${r.wave} waves`);
   return r;
 });
 

@@ -37,6 +37,22 @@ const PRESETS = {
          'queued: g.spawnQueue.length, kills: g.kills, score: g.score, hp: Math.round(g.player.health) }',
   perches: 'return g.perches.map((p) => ({ at: [+p.x.toFixed(0), +p.z.toFixed(0)], top: +p.y.toFixed(2), ' +
            'profileZ: __profile(p.x, p.z, "z"), profileX: __profile(p.x, p.z, "x") }))',
+  objectives: `g.startRun(); g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const out = [];
+    for (const kind of ['cache', 'hold', 'extraction']) {
+      const o = g.objectives.start(kind);
+      if (!o) { out.push({ kind, placed: false }); continue; }
+      out.push({
+        kind, at: [+o.x.toFixed(0), +o.z.toFixed(0)], dist: +o.dist.toFixed(1),
+        limit: o.def.limit, channel: o.def.channel, radius: o.def.radius,
+        ground: +g.world.groundHeight(o.x, o.z, 1.4, 99).toFixed(2),
+        boxed: g.world.occupied(o.x, o.z, o.def.radius * 0.8, 0.6),
+        marker: g.objectives.screenMarker(g.camera, 1100, 620),
+      });
+      g.objectives.finish(false);
+    }
+    return out;`,
   shot: `g.startRun(); g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
     const { target, px, pz } = __place(12);
     g.player.reset(px, pz);

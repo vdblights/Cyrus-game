@@ -29,6 +29,7 @@ builds, never to play.
 | `src/player.js` | `Input` and `Player`: look, movement, footing, health |
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
 | `src/enemies.js` | Archetypes, AI, procedural bodies, laser telegraph |
+| `src/objectives.js` | Site placement, channel state machine, marker, waypoint |
 | `src/grenades.js` | Fuse, flight, bounce, detonation |
 | `src/effects.js` | Pooled tracers, impacts, blood, casings, explosions |
 | `src/textures.js` | Every texture, painted to canvas at boot |
@@ -67,6 +68,10 @@ These each cost real debugging time. Changing them needs a reason.
 - **Perch-holders never leave a perch.** Marksmen do not drift while unalerted,
   do not strafe on a perch, and get a longer stuck-watchdog leash. All three
   routes had to be closed before they stopped falling off roofs.
+- **An objective cue waits, it is not dropped.** Only one objective runs at a
+  time, and their clocks outlive the wave that called them. Refusing a cue
+  while one was up meant whole waves passed with no objective at all; cues now
+  queue and expire on their own deadline (`cueObjective`).
 
 ## Testing approach
 
@@ -87,6 +92,12 @@ hardcoded aim heights (use the actual part's world position), unvalidated
 firing lines (use `__place(range)`), and setups that kill the player, which
 flips `game.state` to `'dead'` and makes all later damage a silent no-op.
 
+Two more, both from the objective checks. Clearing `spawnQueue` after
+`startRun()` only holds for the three seconds until wave 1 begins — anything
+stepping longer than that needs `g.startWave = () => {}`. And score deltas
+measured across a long step pick up the wave-clear bonus, so wrap
+`onObjectiveSecured` to measure a payout rather than differencing `g.score`.
+
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
@@ -100,12 +111,15 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 
 ## State
 
-`main` has everything through the graphics pass (PR #1, merged). Suggested
-next work, in the order I would do it:
+`main` has everything through the graphics pass (PR #1, merged). Objectives
+landed after it: caches, beacons and evac windows, cued by the wave manager,
+with a light column, a screen waypoint and a radar bearing to find them by.
 
-1. **Objectives** — the map is 200m of city and the optimal play is still
-   standing in the plaza. Caches to reach, a position to hold, an extraction.
-   Wave-manager work; everything it needs already exists.
+Suggested next work, in the order I would do it:
+
+1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
+   clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
+   beats holding the plaza is a play question, not a code one.
 2. **Vault and mantle** — you can climb stairs but not onto a 1.5m car roof.
    `groundHeight()` already provides what a mantle check needs.
 3. **Positional audio** — sounds are mono, so you cannot hear which side fire
