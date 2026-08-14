@@ -112,8 +112,15 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 ## State
 
 `main` has everything through the graphics pass (PR #1, merged). Objectives
-landed after it: caches, beacons and evac windows, cued by the wave manager,
-with a light column, a screen waypoint and a radar bearing to find them by.
+landed after it (PR #3): caches, beacons and evac windows, cued by the wave
+manager, with a light column, a screen waypoint and a radar bearing to find
+them by.
+
+CI runs the suite and the one-file build on every push to `main` and every PR
+(`.github/workflows/ci.yml`), and attaches the built `ashfall.html` to the run.
+Chromium is cached on the resolved Playwright version, so a run is a couple of
+minutes rather than the download. If the browser install ever starts failing,
+the harness falls back to `PLAYWRIGHT_BROWSERS_PATH` and `ASHFALL_CHROME`.
 
 Suggested next work, in the order I would do it:
 
@@ -125,4 +132,3 @@ Suggested next work, in the order I would do it:
 3. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
 4. **Merge static city geometry** — cuts draw calls by an order of magnitude.
-5. **CI** — `npm test` exists but nothing runs it on push.

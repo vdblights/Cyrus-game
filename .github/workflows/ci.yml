@@ -1,0 +1,68 @@
+name: CI
+
+# The suite drives a real headless browser, so it needs Chromium and a couple
+# of minutes — too slow for a pre-commit hook, which is the reason it runs here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Keyed on the resolved Playwright version rather than the lockfile hash:
+      # the browser build is pinned per release, so any other dependency
+      # changing would otherwise throw away a good cache.
+      - name: Resolve Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('./node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright.outputs.version }}
+
+      # --with-deps pulls the system libraries Chromium needs on a bare runner.
+      # It is cheap when they are already present and cannot be cached, so it
+      # runs on a cache hit too.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # The runner has no GPU; the harness already asks for SwiftShader.
+      - name: Run checks
+        run: npm test
+
+      - name: Build the one-file copy
+        run: npm run build
+
+      # A playable copy of the commit, for anyone who wants to try a change
+      # without checking the branch out.
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ashfall-${{ github.sha }}
+          path: dist/ashfall.html
+          if-no-files-found: error
+          retention-days: 14

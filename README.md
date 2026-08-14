@@ -1,5 +1,7 @@
 # ASHFALL
 
+[![CI](https://github.com/vdblights/Cyrus-game/actions/workflows/ci.yml/badge.svg)](https://github.com/vdblights/Cyrus-game/actions/workflows/ci.yml)
+
 A small browser first-person shooter set in an abandoned city at dusk. Hold a
 ruined plaza in Sector 7 against waves of scavengers and raiders with a modern
 weapon set.
@@ -63,6 +65,13 @@ Three things make it trustworthy rather than merely green: the random stream
 is seeded, every check reloads the page so none of them inherit another's
 state, and the render loop is stopped during checks — otherwise it steps the
 game on real frame timing underneath the test and results stop repeating.
+
+### On every push
+
+GitHub Actions runs the same suite, plus the one-file build, on every push to
+`main` and every pull request. The built `ashfall.html` is attached to the run
+as an artifact, so a change can be played from the Actions tab without checking
+the branch out.
 
 ### Asking the game questions
 
