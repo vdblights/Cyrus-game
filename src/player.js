@@ -127,6 +127,10 @@ const EYE_CROUCH = 1.05;
 const GRAVITY = 22;
 const STEP_HEIGHT = 0.55;      // how high you can walk up without jumping
 const FALL_SAFE = 13;          // impact speed you can absorb unhurt (~4 m drop)
+const MANTLE_HEIGHT = 1.8;     // highest ledge you can haul yourself onto
+const MANTLE_TIME = 0.45;      // seconds the pull-up takes
+
+const smooth = (t) => t * t * (3 - 2 * t);
 
 export class Player {
   constructor(camera, world) {
@@ -162,6 +166,7 @@ export class Player {
     this.dead = false;
     this.stepTimer = 0;
     this.shake = 0;
+    this.mantle = null;
   }
 
   applyRecoil(v, h) {
@@ -218,6 +223,13 @@ export class Player {
       return;
     }
 
+    // A pull-up already in flight runs to completion before anything else.
+    if (this.mantle) {
+      this._advanceMantle(dt);
+      this._applyCamera(dt, 0);
+      return;
+    }
+
     // ---- intent --------------------------------------------------------
     let ix = 0, iz = 0;
     if (input.down('KeyW')) iz -= 1;
@@ -255,6 +267,17 @@ export class Player {
     const accel = this.onGround ? 14 : 3.5;
     this.velocity.x = THREE.MathUtils.damp(this.velocity.x, target.x, accel, dt);
     this.velocity.z = THREE.MathUtils.damp(this.velocity.z, target.z, accel, dt);
+
+    // ---- mantle ----------------------------------------------------------
+    // Jump into a waist-to-chest ledge and you climb it instead of bouncing
+    // off it. Direction of travel if you are moving, where you are looking if
+    // you are standing still — so a car roof is one keypress either way.
+    if (input.down('Space')
+        && this.tryMantle(moving ? wx : -sin, moving ? wz : -cos)) {
+      this._advanceMantle(dt);
+      this._applyCamera(dt, 0);
+      return;
+    }
 
     // ---- jump / gravity -------------------------------------------------
     if (input.down('Space') && this.onGround) {
@@ -311,7 +334,10 @@ export class Player {
       this.health = Math.min(this.maxHealth, this.health + dt * 9);
     }
 
-    // ---- apply to camera -------------------------------------------------
+    this._applyCamera(dt, roll);
+  }
+
+  _applyCamera(dt, roll) {
     this.shake = Math.max(0, this.shake - dt * 1.6);
     const trauma = this.shake * this.shake;
     const sx = trauma * (Math.random() - 0.5) * 0.09;
@@ -324,5 +350,52 @@ export class Player {
       this.pitch + this.recoilPitch + sy,
       this.yaw + this.recoilYaw + sx,
       roll + sr, 'YXZ');
+  }
+
+  /**
+   * Advance a pull-up. It owns the player's position for its duration — no
+   * gravity, no collision, no walking — so it cannot be interrupted halfway
+   * and leave you inside the ledge you were climbing.
+   */
+  _advanceMantle(dt) {
+    const m = this.mantle;
+    m.t = Math.min(1, m.t + dt / MANTLE_TIME);
+    // hands go up first, feet swing over after: rising leads the reach
+    const rise = smooth(Math.min(1, m.t / 0.55));
+    const reach = smooth(Math.max(0, (m.t - 0.28) / 0.72));
+    this.feetY = m.fromY + (m.top - m.fromY) * rise;
+    this.position.x = m.fromX + (m.x - m.fromX) * reach;
+    this.position.z = m.fromZ + (m.z - m.fromZ) * reach;
+    // ducked through the climb, standing again as you top out
+    this.eyeHeight = EYE_CROUCH + (EYE_STAND - EYE_CROUCH) * smooth(Math.max(0, (m.t - 0.5) / 0.5));
+    if (m.t >= 1) {
+      this.mantle = null;
+      this.onGround = true;
+      this.velocity.set(0, 0, 0);
+    }
+    this.position.y = this.feetY + this.eyeHeight;
+  }
+
+  /**
+   * Start a pull-up if there is a ledge to grab in the given direction.
+   * @returns {boolean} whether one started
+   */
+  tryMantle(dirX, dirZ) {
+    if (this.mantle || this.dead || this.crouching || this.stamina < 0.12) return false;
+    const ledge = this.world.mantleTarget(
+      this.position.x, this.position.z, this.radius, this.feetY,
+      dirX, dirZ, STEP_HEIGHT + 0.05, MANTLE_HEIGHT);
+    if (!ledge) return false;
+
+    this.mantle = {
+      t: 0,
+      fromX: this.position.x, fromZ: this.position.z, fromY: this.feetY,
+      x: ledge.x, z: ledge.z, top: ledge.top,
+    };
+    this.stamina = Math.max(0, this.stamina - 0.12);
+    this.velocity.set(0, 0, 0);
+    this.onGround = false;
+    if (this.onMantle) this.onMantle();
+    return true;
   }
 }

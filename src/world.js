@@ -75,6 +75,39 @@ export class World {
     return best;
   }
 
+  /**
+   * Find a ledge in front of an entity that it could pull itself onto.
+   *
+   * Reads the same box list as everything else: a ledge is any surface
+   * between `minRise` and `maxRise` above the feet with nothing taller at the
+   * same spot (that would be a wall face, not a lip) and enough deck past the
+   * edge to stand on.
+   *
+   * @returns {{top:number,x:number,z:number}|null} the landing spot
+   */
+  mantleTarget(x, z, radius, feet, dirX, dirZ, minRise, maxRise) {
+    const len = Math.hypot(dirX, dirZ);
+    if (len < 1e-4) return null;
+    const nx = dirX / len, nz = dirZ / len;
+    const grip = radius * 0.55;          // the hands, not the whole body
+
+    for (let d = radius + 0.1; d <= radius + 0.95; d += 0.18) {
+      const gx = x + nx * d, gz = z + nz * d;
+      const top = this.groundHeight(gx, gz, grip, feet + maxRise);
+      if (top < feet + minRise) continue;
+      // anything taller here means we are staring at a wall, not gripping a lip
+      if (this.groundHeight(gx, gz, grip, Infinity) > top + 0.05) continue;
+
+      // room for a body past the edge, at the same height
+      const lx = x + nx * (d + radius + 0.15), lz = z + nz * (d + radius + 0.15);
+      if (this.groundHeight(lx, lz, radius, Infinity) > top + 0.05) continue;
+      if (this.groundHeight(lx, lz, radius, top + 0.05) < top - 0.25) continue;
+
+      return { top, x: lx, z: lz };
+    }
+    return null;
+  }
+
   /** True when a point is inside (or within `pad` of) any solid box. */
   occupied(x, z, pad = 0, minTop = 1.2) {
     for (const b of this.boxes) {

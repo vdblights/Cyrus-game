@@ -157,6 +157,14 @@ class Audio {
     this._noise(0.09, 'bandpass', crouch ? 500 : 900, 1.2, crouch ? 0.05 : 0.10, 260);
   }
 
+  /** Hauling yourself over a ledge: boots scraping, then a landing scuff. */
+  mantle() {
+    if (!this.ctx) return;
+    this._noise(0.26, 'bandpass', 420, 0.9, 0.09, 1100);
+    this._tone('sawtooth', 150, 105, 0.20, 0.06);
+    this._tone('sine', 70, 45, 0.09, 0.10, 0.34);   // boots hitting the deck
+  }
+
   /** Grenade: pin, bounce, and the blast itself. */
   pinPull() { if (this.ctx) { this._tone('square', 1200, 700, 0.05, 0.10); this._noise(0.05, 'highpass', 3000, 1, 0.08); } }
 
