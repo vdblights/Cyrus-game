@@ -54,8 +54,8 @@ second.
 | `--shots` | Also write screenshots to `tests/shots/` |
 
 It covers boot and city generation, hit registration and headshots, melee
-reach, grenade flight and blast falloff, cook-offs, stair climbing, fall
-damage, marksman perching and laser tracking, warlord spawns, the objective
+reach, grenade flight and blast falloff, cook-offs, stair climbing, mantling
+onto ledges (and not onto walls), fall damage, marksman perching and laser tracking, warlord spawns, the objective
 schedule and its payouts, objective decay and expiry, waypoint projection,
 aiming without pointer lock, settings and record persistence, and a
 four-minute scripted run that must reach wave 3 with hostiles still able to
@@ -105,7 +105,7 @@ scale had no initial value.
 | `W` `A` `S` `D` | Move |
 | `Shift` | Sprint (drops when you fire or aim) |
 | `Ctrl` / `C` | Crouch — tighter spread |
-| `Space` | Jump |
+| `Space` | Jump — held against a ledge, mantle onto it (~1.8 m from the ground, ~2.6 m off a jump) |
 | Left mouse | Fire |
 | Right mouse | Aim down sights |
 | `R` | Reload |
@@ -247,6 +247,14 @@ containers are scattered through the blocks, each reachable by a stair run of
 half-metre steps — low enough that you simply walk up them, no jumping. Take
 the high ground and the ground-level hostiles lose their shot at you; step to
 the edge and you get yours.
+
+Anything between a step and chest height is climbed rather than walked around:
+hold `Space` facing a car roof, a planter or a low wall and you haul yourself
+up over about half a second, ducked and unable to shoot until you top out.
+Hold it through a jump and the reach extends to roughly two and a half metres.
+Hostiles still only walk — they climb the same half-metre steps and nothing
+taller — so a car roof is a spot a melee rusher has to go around while it can
+still be shot from.
 
 The same rules apply to everyone: hostiles climb, stand on, and fall off the
 same surfaces, and a melee rusher cannot reach you across a height gap. Drops

@@ -53,6 +53,25 @@ const PRESETS = {
       g.objectives.finish(false);
     }
     return out;`,
+  mantle: `g.startRun(); g.startWave = () => {};
+    g.input.locked = true;
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const out = [];
+    for (const b of g.world.boxes) {
+      if (out.length >= 8 || b.top < 0.6 || b.top > 3) continue;
+      const px = (b.minX + b.maxX) / 2, pz = b.minZ - 0.62;
+      if (g.world.groundHeight(px, pz, 0.42, 99) > 0.2) continue;
+      g.player.reset(px, pz);
+      g.player.yaw = Math.PI;                    // face +Z, into the box
+      const grab = g.world.mantleTarget(px, pz, 0.42, 0, 0, 1, 0.6, 1.8);
+      g.input.keys.clear(); g.input.keys.add('Space');
+      let started = false;
+      for (let f = 0; f < 120; f++) { g.time += 1/60; g.step(1/60); if (g.player.mantle) started = true; else if (started) break; }
+      g.input.keys.clear();
+      for (let f = 0; f < 90; f++) { g.time += 1/60; g.step(1/60); }
+      out.push({ top: +b.top.toFixed(2), grab: grab && +grab.top.toFixed(2), started, feet: +g.player.feetY.toFixed(2) });
+    }
+    return out;`,
   shot: `g.startRun(); g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
     const { target, px, pz } = __place(12);
     g.player.reset(px, pz);

@@ -216,6 +216,57 @@ check('stairs carry the player onto a perch', async (page) => {
   return { tested: r.tested, climbed: r.climbed };
 });
 
+check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.startWave = () => {};        // this steps well past the first wave timer
+
+    // Walk up to a box's -Z face from the street and hold jump. Camera forward
+    // is (-sin yaw, -cos yaw), so yaw = PI faces +Z.
+    const attempt = (box) => {
+      const px = (box.minX + box.maxX) / 2, pz = box.minZ - 0.62;
+      if (g.world.groundHeight(px, pz, 0.42, 99) > 0.2) return null;   // not on the street
+      if (g.world.occupied(px, pz, 0.42, 0.6)) return null;            // stuck inside something
+      g.player.reset(px, pz);
+      g.player.yaw = Math.PI;
+      g.input.keys.clear(); g.input.keys.add('Space');
+      let started = false;
+      for (let f = 0; f < 120; f++) {
+        g.time += 1 / 60; g.step(1 / 60);
+        if (g.player.mantle) started = true;
+        else if (started) break;
+      }
+      g.input.keys.clear();
+      for (let f = 0; f < 90; f++) { g.time += 1 / 60; g.step(1 / 60); }   // let it settle
+      return { started, top: +box.top.toFixed(2), feet: +g.player.feetY.toFixed(2) };
+    };
+
+    const ledges = [], walls = [];
+    for (const b of g.world.boxes) {
+      if (ledges.length < 8 && b.top > 0.8 && b.top < 1.75) {
+        const a = attempt(b); if (a) ledges.push(a);
+      } else if (walls.length < 5 && b.top > 6) {
+        const a = attempt(b); if (a) walls.push(a);
+      }
+    }
+    return { ledges, walls };
+  });
+
+  expect(r.ledges.length >= 4, `only ${r.ledges.length} reachable ledges to try`);
+  const up = r.ledges.filter((l) => l.started && Math.abs(l.feet - l.top) < 0.15);
+  expect(up.length === r.ledges.length,
+    `only ${up.length}/${r.ledges.length} ledges climbed: ${JSON.stringify(r.ledges)}`);
+
+  expect(r.walls.length >= 2, `only ${r.walls.length} walls to try`);
+  const stuck = r.walls.filter((w) => !w.started && w.feet < 0.2);
+  expect(stuck.length === r.walls.length,
+    `a building face was climbable: ${JSON.stringify(r.walls)}`);
+  return { ledges: r.ledges.length, walls: r.walls.length };
+});
+
 check('long falls hurt, short drops do not', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

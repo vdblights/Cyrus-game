@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 12 headless checks (needs npm install first)
+npm test                       # 17 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -68,6 +68,10 @@ These each cost real debugging time. Changing them needs a reason.
 - **Perch-holders never leave a perch.** Marksmen do not drift while unalerted,
   do not strafe on a perch, and get a longer stuck-watchdog leash. All three
   routes had to be closed before they stopped falling off roofs.
+- **A mantle owns the player for its duration.** `Player.update` returns early
+  while `player.mantle` is set — no gravity, no collision, no walking, no
+  firing — so a pull-up cannot be interrupted halfway and leave you standing
+  inside the ledge you were climbing.
 - **An objective cue waits, it is not dropped.** Only one objective runs at a
   time, and their clocks outlive the wave that called them. Refusing a cue
   while one was up meant whole waves passed with no objective at all; cues now
@@ -114,7 +118,12 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 `main` has everything through the graphics pass (PR #1, merged). Objectives
 landed after it (PR #3): caches, beacons and evac windows, cued by the wave
 manager, with a light column, a screen waypoint and a radar bearing to find
-them by.
+them by. Mantling came next: `Space` against a waist-to-chest ledge pulls you
+onto it (`World.mantleTarget` + the `Player.mantle` state machine), so car
+roofs, planters and low walls are now cover you can take rather than obstacles
+you bounce off. Reach is 1.8 m above the feet, so holding `Space` through a
+jump reaches about 2.6 m; a building face is never a ledge because the test
+rejects anything with no deck to stand on past the edge.
 
 CI runs the suite and the one-file build on every push to `main` and every PR
 (`.github/workflows/ci.yml`), and attaches the built `ashfall.html` to the run.
@@ -127,8 +136,9 @@ Suggested next work, in the order I would do it:
 1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-2. **Vault and mantle** — you can climb stairs but not onto a 1.5m car roof.
-   `groundHeight()` already provides what a mantle check needs.
-3. **Positional audio** — sounds are mono, so you cannot hear which side fire
+2. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
-4. **Merge static city geometry** — cuts draw calls by an order of magnitude.
+3. **Merge static city geometry** — cuts draw calls by an order of magnitude.
+4. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
+   only the player calls it, so a car roof is still a place they cannot follow
+   you to.

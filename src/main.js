@@ -427,6 +427,7 @@ class Game {
 
     this.player.reset(-17, 24);            // the plaza near the middle of the map
     this.player.onStep = () => audio.step(this.player.crouching);
+    this.player.onMantle = () => { audio.mantle(); this.player.addShake(0.08); };
     this.player.onFallDamage = (amount) => {
       this.player.addShake(0.4);
       this.damagePlayer(amount, null);
@@ -989,7 +990,7 @@ class Game {
 
     // firing
     const w = this.weapons.current;
-    if (input.fire && !this.player.dead) {
+    if (input.fire && !this.player.dead && !this.player.mantle) {   // both hands on the ledge
       const moving = Math.hypot(this.player.velocity.x, this.player.velocity.z) > 2.5;
       if (this.weapons.fire(this.time, this.camera, moving)) {
         if (!w.def.auto) input.fire = false;
