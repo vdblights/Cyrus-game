@@ -1,4 +1,5 @@
 import { WEAPON_DEFS } from './weapons.js';
+import { cssColour } from './objectives.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -15,6 +16,9 @@ export class HUD {
       nades: $('nades'), nadeCount: $('nade-count'),
       cookBar: $('cook-bar'), cookFill: $('cook-fill'),
       bossBar: $('boss-bar'), bossFill: $('boss-fill'),
+      objective: $('objective'), objLabel: $('objective-label'), objTimer: $('objective-timer'),
+      objFill: $('objective-fill'), objNote: $('objective-note'),
+      objMarker: $('objective-marker'), objDist: $('objective-marker').querySelector('.om-dist'),
       captureHint: $('capture-hint'), captureText: $('capture-text'),
       captureNewTab: $('capture-newtab'),
     };
@@ -115,7 +119,39 @@ export class HUD {
       embedded: game.embedded,
     });
 
+    this.objective(game);
     this.drawRadar(game);
+  }
+
+  /**
+   * Objective readout and its waypoint. The waypoint matters more than the
+   * panel: the city is a maze of identical blocks, and a bearing is the only
+   * thing that makes a site 70 m away findable.
+   */
+  objective(game) {
+    const o = game.objectives.active;
+    this.el.objective.classList.toggle('hidden', !o);
+    this.el.objMarker.classList.toggle('hidden', !o);
+    if (!o) return;
+
+    const left = Math.max(0, o.expiresAt - game.time);
+    const mins = Math.floor(left / 60);
+    const secs = Math.floor(left % 60).toString().padStart(2, '0');
+    this.el.objLabel.textContent = o.def.label;
+    this.el.objTimer.textContent = `${mins}:${secs}`;
+    this.el.objTimer.classList.toggle('urgent', left < 20);
+    this.el.objFill.style.width = (o.progress / o.def.channel) * 100 + '%';
+    this.el.objNote.textContent = o.inside
+      ? `${o.def.verb} ${Math.round((o.progress / o.def.channel) * 100)}%`
+      : `${o.def.brief} — ${Math.round(o.dist)} M`;
+
+    const m = game.objectives.screenMarker(game.camera, innerWidth, innerHeight);
+    if (!m) return;
+    this.el.objMarker.style.transform = `translate(${Math.round(m.x)}px, ${Math.round(m.y)}px) translate(-50%, -50%)`;
+    this.el.objMarker.style.color = m.colour;
+    this.el.objMarker.classList.toggle('edge', m.offscreen);
+    this.el.objDist.textContent = Math.round(m.dist) + ' M';
+    this.el.objective.style.setProperty('--obj', m.colour);
   }
 
   hitmark(kill) {
@@ -224,6 +260,24 @@ export class HUD {
       const rz = dx * Math.sin(yaw) + dz * Math.cos(yaw);
       ctx.fillStyle = pk.kind === 'health' ? '#7ad06a' : '#ffd23f';
       ctx.fillRect(cx + (rx / range) * r - 2, cy + (rz / range) * r - 2, 4, 4);
+    }
+
+    // objective bearing, clamped to the rim when the site is past the sweep —
+    // the radar should always say which way to run, not just what is close
+    const obj = game.objectives.active;
+    if (obj) {
+      const dx = obj.x - p.position.x, dz = obj.z - p.position.z;
+      const rx = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+      const rz = dx * Math.sin(yaw) + dz * Math.cos(yaw);
+      const d = Math.hypot(rx, rz) || 1;
+      const s = (Math.min(d, range) / range) * r / d;
+      ctx.save();
+      ctx.translate(cx + rx * s, cy + rz * s);
+      ctx.rotate(Math.PI / 4);
+      ctx.strokeStyle = cssColour(obj.def.colour);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(-3.4, -3.4, 6.8, 6.8);
+      ctx.restore();
     }
 
     // player marker

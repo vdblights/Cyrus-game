@@ -178,6 +178,30 @@ class Audio {
     this._noise(0.14, 'lowpass', 900, 1, 0.30, 240);
   }
 
+  /** Objective cues: a site going live, progress, the payoff, the loss. */
+  objectiveStart() {
+    if (!this.ctx) return;
+    this._tone('square', 660, 660, 0.10, 0.09);
+    this._tone('square', 990, 990, 0.14, 0.08, 0.11);
+    this._noise(0.5, 'bandpass', 1200, 1.4, 0.05, 500);
+  }
+
+  objectiveTick() { if (this.ctx) this._tone('square', 880, 1120, 0.05, 0.07); }
+
+  objectiveDone() {
+    if (!this.ctx) return;
+    for (const [i, f] of [660, 880, 1320].entries()) {
+      this._tone('triangle', f, f, 0.18, 0.11, i * 0.09);
+    }
+    this._noise(0.7, 'lowpass', 700, 0.7, 0.07, 200);
+  }
+
+  objectiveFail() {
+    if (!this.ctx) return;
+    this._tone('sawtooth', 420, 200, 0.30, 0.10);
+    this._tone('sawtooth', 300, 130, 0.42, 0.09, 0.12);
+  }
+
   /** Distant firefight somewhere else in the city — pure atmosphere. */
   distantFire() {
     if (!this.ctx) return;

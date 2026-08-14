@@ -5,6 +5,7 @@ import { WeaponSystem, MELEE_RANGE, MELEE_DAMAGE } from './weapons.js';
 import { GrenadeSystem, FUSE, BLAST_RADIUS, BLAST_DAMAGE } from './grenades.js';
 import { Effects } from './effects.js';
 import { Enemy, ENEMY_TYPES } from './enemies.js';
+import { ObjectiveSystem, objectiveForWave } from './objectives.js';
 import { HUD } from './hud.js';
 import { audio } from './audio.js';
 import * as TEX from './textures.js';
@@ -62,6 +63,7 @@ class Game {
     this.hud = new HUD();
 
     this.grenades = new GrenadeSystem(this.scene, this);
+    this.objectives = new ObjectiveSystem(this.scene, this);
     this.nades = 3;
     this.maxNades = 5;
     this.fuseLength = FUSE;
@@ -84,6 +86,9 @@ class Game {
     this.pendingSpawns = 0;
     this.spawnQueue = [];
     this.nextWaveAt = 0;
+    this.objectivesSecured = 0;
+    this.objectivesLost = 0;
+    this.objectiveCue = null;
     this.runStart = 0;
     this.waveHpScale = 1;      // set per wave, but never left undefined
 
@@ -415,6 +420,7 @@ class Game {
     this.pickups.length = 0;
     this.effects.reset();
     this.grenades.reset();
+    this.objectives.reset();
     this.nades = 3;
     this.cookStart = -1;
     this.nextAmbience = 10;
@@ -440,6 +446,9 @@ class Game {
     this.autoFrames = 0;
     this.bossPending = false;
     this.boss = null;
+    this.objectivesSecured = 0;
+    this.objectivesLost = 0;
+    this.objectiveCue = null;
     this.runStart = this.time;
 
     document.getElementById('menu').classList.add('hidden');
@@ -497,6 +506,8 @@ class Game {
         `<div>SCORE <b>${this.score.toLocaleString()}</b></div>` +
         `<div>KILLS <b>${this.kills}</b> &middot; HEADSHOTS <b>${this.headshots}</b></div>` +
         `<div>ACCURACY <b>${acc}%</b> &middot; SURVIVED <b>${mins}:${secs}</b></div>` +
+        `<div>OBJECTIVES <b>${this.objectivesSecured}</b>` +
+        (this.objectivesLost ? ` &middot; LOST <b>${this.objectivesLost}</b>` : '') + '</div>' +
         (beatScore || beatWave ? '<div class="record">NEW PERSONAL BEST</div>' : '');
       document.getElementById('gameover').classList.remove('hidden');
       this.hud.show(false);
@@ -530,13 +541,38 @@ class Game {
     this.waveHpScale = 1 + (w - 1) * 0.09;
     this.nextSpawnAt = this.time;
 
+    const kind = objectiveForWave(w);
+    if (kind) this.cueObjective(kind, 6);
+
     const unlocked = this.weapons.unlockForWave(w);
     audio.wave();
     this.hud.banner('WAVE ' + w, this.bossPending ? `${total} HOSTILES &middot; WARLORD` : `${total} HOSTILES`);
     if (unlocked.length) setTimeout(() => this.hud.toast('WEAPON RECOVERED: ' + unlocked.join(', ')), 1200);
   }
 
+  /**
+   * Objectives are cued a few seconds behind whatever triggered them, so the
+   * call comes in after the wave banner has cleared rather than under it.
+   *
+   * Only one runs at a time. A cue that arrives while one is still up waits
+   * for it rather than being dropped — objectives outlive the wave that
+   * called them, and dropping meant a whole wave could quietly pass without
+   * one — but it gives up after a while rather than arriving three waves late.
+   */
+  cueObjective(kind, delay) {
+    this.objectiveCue = { kind, at: this.time + delay, until: this.time + delay + 60 };
+  }
+
   updateWaves(dt) {
+    const cue = this.objectiveCue;
+    if (cue && this.time >= cue.at) {
+      if (this.time > cue.until) this.objectiveCue = null;
+      else if (!this.objectives.active) {
+        this.objectiveCue = null;
+        this.objectives.start(cue.kind);
+      }
+    }
+
     if (this.spawnQueue.length === 0 && this.pendingSpawns === 0 && !this.bossPending) {
       if (this.wave === 0) {
         if (this.time >= this.nextWaveAt) this.startWave();
@@ -642,6 +678,42 @@ class Game {
     }
     this.enemies.push(e);
     return e;
+  }
+
+  // ----------------------------------------------------------- objectives
+  /**
+   * What finishing one pays. The scale is deliberately above a wave clear
+   * bonus: crossing the sector under fire should beat holding the plaza.
+   */
+  onObjectiveSecured(obj) {
+    const w = Math.max(1, this.wave);
+    const payout = { cache: 300, hold: 500, extraction: 750 }[obj.kind] * w;
+    this.score += payout;
+    this.objectivesSecured++;
+    audio.objectiveDone();
+
+    if (obj.kind === 'cache') {
+      this.weapons.addAmmo(0.5, true);
+      const frags = Math.min(2, this.maxNades - this.nades);
+      this.nades += frags;
+      this.hud.banner('CACHE SECURED', `+${payout} &middot; RESUPPLIED`);
+      this.hud.toast(frags ? `AMMO + FRAG &times;${frags}` : 'AMMO RESUPPLY');
+    } else if (obj.kind === 'hold') {
+      this.weapons.addAmmo(0.35, true);
+      this.player.heal(35);
+      this.hud.banner('BEACON HELD', `+${payout}`);
+    } else {
+      this.weapons.addAmmo(0.6, true);
+      this.nades = this.maxNades;
+      this.player.heal(this.player.maxHealth);
+      this.hud.banner('EVAC COMPLETE', `+${payout} &middot; FULL REARM`);
+    }
+  }
+
+  onObjectiveLost(obj) {
+    this.objectivesLost++;
+    audio.objectiveFail();
+    this.hud.toast(obj.def.label + ' LOST');
   }
 
   // --------------------------------------------------------------- combat
@@ -756,6 +828,7 @@ class Game {
       if (enemy.elite) {
         this.hud.banner('WARLORD DOWN', `+${enemy.scoreValue}`);
         this.player.addShake(0.2);
+        this.cueObjective('extraction', 4);   // the window opens once it drops
       }
       audio.kill();
       this.maybeDrop(enemy.pos);
@@ -938,6 +1011,7 @@ class Game {
     if (this.cookStart >= 0 && this.time - this.cookStart >= FUSE) this.throwGrenade();
 
     this.grenades.update(dt, this.world);
+    this.objectives.update(dt);
     this.updateWaves(dt);
     this.updatePickups(dt);
     this.updateAmbience(dt);
