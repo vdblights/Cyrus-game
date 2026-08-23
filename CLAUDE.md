@@ -131,6 +131,22 @@ Chromium is cached on the resolved Playwright version, so a run is a couple of
 minutes rather than the download. If the browser install ever starts failing,
 the harness falls back to `PLAYWRIGHT_BROWSERS_PATH` and `ASHFALL_CHROME`.
 
+**PR #4 is open and unmerged**, carrying all three of those: the CI workflow,
+mantling, and the Vercel config. `main` has none of them. It is also the first
+run of that workflow anywhere, so a green check on #4 is the only evidence CI
+actually works on a machine that is not this container.
+
+Deployment is static and must stay that way. `vercel.json` overrides the build
+and install commands to no-ops and serves the repo root; `.vercelignore` keeps
+`tests/`, `dist/` and `.github/` out of the upload. Autodetect breaks two ways:
+`npm install` pulls Playwright, which fetches a browser on postinstall, and
+`npm run build` writes `dist/ashfall.html` — never an `index.html` — so there
+is nothing to serve at `/`. That diagnosis was inferred from how the repo is
+built, not read off a failing Vercel log. The published file set was verified
+by staging exactly what `.vercelignore` leaves (22 files) and booting it from a
+bare static server: no console errors, no failed requests. Pointer lock needs a
+secure origin, which Vercel provides.
+
 Suggested next work, in the order I would do it:
 
 1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
@@ -142,3 +158,9 @@ Suggested next work, in the order I would do it:
 4. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
    only the player calls it, so a car roof is still a place they cannot follow
    you to.
+
+One piece of housekeeping that cannot be done from here: the merged branch
+`claude/project-memory` still exists on the remote. Deleting it returns 403
+through the agent proxy, and the GitHub tools available here have no
+delete-branch call, so it needs a hand on a normal client. Do not spend time
+retrying it.
