@@ -776,7 +776,15 @@ check('a scripted run reaches wave 3 without stalling', async (page) => {
         // wall forever is a limitation of the bot, not of the game
         if (blind > 90) {
           g.input.keys.add(f % 200 < 100 ? 'KeyA' : 'KeyD');
-          if (blind > 300) g.input.keys.add('KeyS');
+          // Flanking means moving sideways *and* closing, and backing off is
+          // the answer to something inside your guard — not to an empty
+          // street. Strafing in place never reaches anyone, and retreating
+          // from a hostile it cannot even see walks at 5.2 m/s from an
+          // archetype that tops out at 4.6, so that retreat never ends: the
+          // bot outran the wave it was measuring, holding back for 56% of a
+          // four-minute run. Either way the check graded the bot, not the game.
+          if (blind > 300 && nd < 12) g.input.keys.add('KeyS');
+          else g.input.keys.add('KeyW');
         } else if (nd > 10 || !canSee) {
           g.input.keys.add('KeyW');
         }
