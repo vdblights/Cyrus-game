@@ -187,7 +187,9 @@ PR #4 carried all three of those — the CI workflow, mantling and the Vercel
 config — and is merged, as is PR #5 above it; `main` has both. That also
 settled the open question about the workflow, which had never run outside this
 container: it has passed on every pull request and every push to `main` since,
-about five minutes a run. Nothing is open. Both PRs merged from
+about five minutes a run. **PR #6 is open and unmerged**, carrying the
+corrected scripted-run bot and these notes — everything below this paragraph
+describes the branch, not `main`. Both merged PRs came from
 `claude/abandoned-city-fps-game-j2xn80`, so that branch keeps being restarted
 from `main` rather than stacked on finished history.
 
