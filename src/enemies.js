@@ -205,7 +205,12 @@ export class Enemy {
     this.avoidDir = 0;
     this.avoidTimer = 0;
     this.stuckTimer = 0;
+    this.noProgress = 0;
     this.lastDistCheck = Infinity;
+    this.watchX = this.pos.x;
+    this.watchZ = this.pos.z;
+    this.watchPx = Infinity;
+    this.watchPz = Infinity;
     this.pos.y = 0;
     if (this.parts.beam) this.parts.beam.visible = false;
     this.applyElite(false);
@@ -234,6 +239,23 @@ export class Enemy {
     this.hp = this.maxHp = Math.round(this.type.hp * waveScale);
     this.pos.set(x, y, z);
     this.group.position.copy(this.pos);
+    this.markWatchdog();
+  }
+
+  /**
+   * Snapshot what the stuck watchdog measures progress against: where this
+   * hostile stood, where its target stood, and how far apart the two were.
+   * Taken after every window, and after any move that is not the hostile's
+   * own walking — measuring a window against a position it no longer
+   * occupies is what turned one relocation into a chain of them.
+   */
+  markWatchdog(player = this.game.player) {
+    this.watchX = this.pos.x;
+    this.watchZ = this.pos.z;
+    this.watchPx = player.position.x;
+    this.watchPz = player.position.z;
+    this.lastDistCheck = Math.hypot(player.position.x - this.pos.x, player.position.z - this.pos.z);
+    this.stuckTimer = 0;
   }
 
   /**
@@ -371,22 +393,44 @@ export class Enemy {
     }
 
     // ---- stuck watchdog --------------------------------------------------
-    // Geometry can still trap a hostile in a corner. If an alerted one has
-    // not made progress for a while, pull it out and re-insert it elsewhere
-    // so a wave can never stall forever.
+    // Geometry can still trap a hostile in a corner. If one has made no
+    // progress for a long stretch, pull it out and re-insert it elsewhere so
+    // a wave can never stall forever.
     // Someone holding a perch is doing their job while they wait for a target
     // to walk into view, so give them far longer before the watchdog moves
     // them — but not forever, or a wave could stall on a roof.
     this.stuckTimer += dt;
-    if (this.stuckTimer > (onPerch ? 12 : 4)) {
-      // Judge progress by closing distance, not by movement: a hostile can
-      // orbit a wall forever and look busy. One holding its preferred range
-      // on purpose is exempt, so nobody gets yanked mid-firefight.
+    const checkEvery = onPerch ? 12 : 4;
+    if (this.stuckTimer > checkEvery) {
+      const elapsed = this.stuckTimer;
+      // Progress needs two measurements, because either one alone lies.
+      // Closing distance alone condemns a hostile chasing a player who simply
+      // walks faster than it — which is all of them — and that hostile is
+      // doing nothing wrong. Own movement alone lets one orbit a wall forever
+      // and look busy. So: wedged means it went nowhere at all; lost means it
+      // covered ground without gaining any on a target that was not running.
+      const travelled = Math.hypot(this.pos.x - this.watchX, this.pos.z - this.watchZ);
+      const targetMoved = Math.hypot(player.position.x - this.watchPx, player.position.z - this.watchPz);
       const closed = this.lastDistCheck - dist;
+      const wedged = travelled < 1;
+      const lost = closed < 1.5 && targetMoved < travelled * 0.6;
+      // One holding its preferred range on purpose is exempt, so nobody gets
+      // yanked mid-firefight, and neither is anyone already on top of you.
       const holdingRange = sees && (onPerch || dist <= this.type.preferred * 1.4);
-      if (dist > 4 && closed < 1.5 && !holdingRange) this.game.relocateEnemy(this);
-      this.lastDistCheck = dist;
-      this.stuckTimer = 0;
+      const stalled = (wedged || lost) && dist > 4 && !holdingRange;
+      this.noProgress = stalled ? this.noProgress + elapsed : 0;
+
+      // Several failed windows, not one. Walking around a city block costs
+      // more than a single window, and a hostile that vanishes mid-approach
+      // reads as a bug to the person watching it — which is why the last
+      // guard is line of sight: never teleport one the player can see.
+      if (this.noProgress >= (onPerch ? 24 : 12) &&
+          !(sees || world.lineOfSight(player.position.x, player.position.y, player.position.z,
+            this.pos.x, this.pos.y + 1.3 * this.type.scale, this.pos.z))) {
+        this.game.relocateEnemy(this);
+        this.noProgress = 0;
+      }
+      this.markWatchdog(player);
     }
 
     const speed = this.type.speed * (this.alerted ? 1 : 0.45);

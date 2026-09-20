@@ -112,6 +112,85 @@ check('melee kills what is in reach and misses what is not', async (page) => {
   return r;
 });
 
+check('an empty gun reaches for a loaded one instead of clicking', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    // no waves: a sector-clear resupply would quietly refill what this check
+    // is trying to run empty
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    for (const w of g.weapons.weapons) w.unlocked = true;
+
+    const run = (frames, firing) => {
+      for (let f = 0; f < frames; f++) {
+        g.input.fire = firing;          // a semi-auto consumes the flag on each shot
+        g.time += 1 / 60;
+        g.step(1 / 60);
+        g.input.endFrame();
+      }
+    };
+    const hold = (frames) => run(frames, true);
+    const idle = (frames) => run(frames, false);
+    // a hidden prompt is no prompt: the element keeps its last text either way
+    const prompt = () => (g.hud.el.reloadHint.classList.contains('hidden')
+      ? '' : g.hud.el.reloadHint.textContent);
+
+    // a gun with an empty mag but reserve behind it prompts a reload — read
+    // with the trigger up, because pulling it starts the reload by itself
+    const first = g.weapons.current;
+    first.mag = 0;
+    idle(2);
+    const reloadHint = prompt();
+    hold(4);
+    const reloads = g.weapons.reloading;
+    hold(Math.ceil(first.def.reload * 60) + 30);
+    const reloaded = first.mag > 0;
+
+    // now run it dry: empty mag, empty reserve, nothing to reload from
+    const startIndex = g.weapons.index;
+    const dry = g.weapons.current;
+    dry.mag = 0; dry.reserve = 0;
+    idle(2);
+    const dryHint = prompt();
+    hold(8);
+    const switched = g.weapons.index !== startIndex;
+    const pickedUpLoaded = g.weapons.current.mag > 0 || g.weapons.current.reserve > 0;
+    const magBefore = g.weapons.current.mag;
+    hold(45);                            // past the swap animation and the rpm gate
+    const firedAgain = g.weapons.current.mag < magBefore || g.weapons.reloading;
+
+    // with the whole loadout dry there is nowhere to switch to, and the HUD
+    // has to say so rather than leaving the player clicking at nothing
+    for (const w of g.weapons.weapons) { w.mag = 0; w.reserve = 0; }
+    const beforeAllDry = g.weapons.index;
+    hold(40);
+    return {
+      reloadHint, dryHint, reloads, reloaded,
+      switched, pickedUpLoaded, firedAgain,
+      dryLeft: `${dry.mag}/${dry.reserve}`,
+      stayedPut: g.weapons.index === beforeAllDry,
+      emptyHint: prompt(),
+      alive: !g.player.dead,
+    };
+  });
+  expect(r.reloads || r.reloaded, 'an empty mag with reserve behind it did not reload');
+  expect(r.reloadHint.includes('RELOAD'), `reload prompt read "${r.reloadHint}"`);
+  expect(r.reloaded, 'the reload never finished');
+  // the reported bug: the trigger kept clicking on a dead gun while loaded
+  // weapons sat in the loadout, with nothing on screen to explain it
+  expect(r.dryHint.includes('OUT OF AMMO'), `dry gun prompt read "${r.dryHint}"`);
+  expect(r.switched, `a dry gun (${r.dryLeft}) kept the trigger instead of swapping`);
+  expect(r.pickedUpLoaded, 'swapped to a weapon that was also empty');
+  expect(r.firedAgain, 'the swapped-to weapon never fired');
+  expect(r.stayedPut, 'swapped weapons with the whole loadout empty');
+  expect(r.emptyHint.includes('MELEE'),
+    `no melee prompt with everything dry — HUD read "${r.emptyHint}"`);
+  expect(r.alive, 'the player died during an ammo check');
+  return r;
+});
+
 check('frags arc, detonate, and fall off with distance', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -343,6 +422,59 @@ check('marksmen take a perch and telegraph with a laser', async (page) => {
   expect(r.sawBeam, 'the aiming laser never showed');
   expect(r.worstAim < 0.05, `laser pointed ${r.worstAim} rad off target`);
   expect(r.playerHp < 100, 'the marksman never landed a shot');
+  return r;
+});
+
+check('the stuck watchdog never teleports a hostile in plain sight', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+
+    // The watchdog exists so a wedged hostile cannot stall a wave, but it
+    // moves them 20-45 m away, usually somewhere the player cannot see — so
+    // one fired on a hostile that was merely walking, or merely visible,
+    // looks exactly like an enemy vanishing mid-charge.
+    const jumps = [];
+    const seen = new Map();
+    const relocate = g.relocateEnemy.bind(g);
+    let id = 0;
+    g.relocateEnemy = (e) => {
+      if (e.__id === undefined) e.__id = ++id;
+      const p = g.player.position;
+      jumps.push({
+        id: e.__id, type: e.typeKey, t: +g.time.toFixed(1),
+        dist: +Math.hypot(e.pos.x - p.x, e.pos.z - p.z).toFixed(1),
+        // line of sight is symmetric, so this is also "could the player see it"
+        inSight: g.world.lineOfSight(p.x, p.y, p.z, e.pos.x, e.pos.y + 1.3 * e.type.scale, e.pos.z),
+      });
+      relocate(e);
+    };
+
+    window.__step(120);
+
+    let shortestGap = Infinity;
+    for (const j of jumps) {
+      if (seen.has(j.id)) shortestGap = Math.min(shortestGap, j.t - seen.get(j.id));
+      seen.set(j.id, j.t);
+    }
+    return {
+      jumps: jumps.length,
+      inSight: jumps.filter((j) => j.inSight).length,
+      shortestGap: shortestGap === Infinity ? null : +shortestGap.toFixed(1),
+      hostiles: seen.size,
+      alive: g.aliveCount,
+      sample: jumps.slice(0, 5),
+    };
+  });
+  expect(r.inSight === 0,
+    `${r.inSight} of ${r.jumps} relocations happened while the player could see the hostile`);
+  // Relocating the same hostile again a window later means the watchdog is
+  // measuring its next window from where it was pulled out of, not from where
+  // it landed — that is what turns one teleport into a chain of them.
+  expect(r.shortestGap === null || r.shortestGap >= 10,
+    `a hostile was relocated twice ${r.shortestGap}s apart`);
+  expect(r.alive > 0, 'no hostiles survived two minutes of standing still');
   return r;
 });
 

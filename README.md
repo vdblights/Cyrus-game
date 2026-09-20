@@ -139,6 +139,10 @@ Every weapon has its own recoil pattern, spread (which tightens when you aim or
 crouch and opens when you move), reload timing and ADS zoom. Headshots do
 extra damage and are called out in the killfeed; limb hits do less.
 
+An empty magazine reloads when you pull the trigger. A weapon with an empty
+reserve behind it has nothing left to reload from, so the trigger reaches for
+the next weapon that can still shoot instead of clicking at nothing.
+
 You also carry **frags** (three to start, five max, dropped by kills). The fuse
 starts the moment you pull the pin, not when the grenade lands — hold `G` to
 cook one so it airbursts on arrival, and watch the fuse bar, because holding it

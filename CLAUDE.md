@@ -76,6 +76,23 @@ These each cost real debugging time. Changing them needs a reason.
   time, and their clocks outlive the wave that called them. Refusing a cue
   while one was up meant whole waves passed with no objective at all; cues now
   queue and expire on their own deadline (`cueObjective`).
+- **The stuck watchdog is a last resort, never a nudge.** It relocates a
+  hostile 20-45 m away, usually out of view, so every false trigger is an
+  enemy vanishing mid-charge in front of the player. Three guards keep it
+  honest: progress is judged by *both* the hostile's own travel and the
+  distance it closed on a target that was not itself running (closing distance
+  alone condemns anything chasing a player who walks faster than it — which is
+  all of them); the failure has to persist across several windows, because
+  walking around a city block takes longer than one; and it never fires while
+  the player can see the hostile. Whatever moves a hostile outside its own
+  walking must re-snapshot with `markWatchdog` — measuring the next window
+  from where it was pulled out of is what turned one teleport into a chain.
+- **A gun with nothing behind it is not a weapon.** An empty mag reloads; an
+  empty mag over an empty reserve swaps to something loaded (`switchToArmed`).
+  Holding the trigger on a dead gun gives a dry click every 0.28 s and nothing
+  else, and the reload prompt hides itself in exactly that case, so it reads
+  as the gun having jammed. A bot that emptied its pistol spent 167 seconds of
+  a 4-minute run clicking at hostiles with a full rifle in its loadout.
 
 ## Testing approach
 
@@ -124,6 +141,17 @@ roofs, planters and low walls are now cover you can take rather than obstacles
 you bounce off. Reach is 1.8 m above the feet, so holding `Space` through a
 jump reaches about 2.6 m; a building face is never a ledge because the test
 rejects anything with no deck to stand on past the edge.
+
+Two bugs came back from play and are fixed on top of that, both found by
+measuring rather than reading (`tests/probe.js`, then a check in the suite —
+each new check was confirmed to fail against the old code before being kept).
+Hostiles appeared to teleport: the stuck watchdog was firing on healthy
+hostiles roughly every nine seconds of ordinary play, twice a minute in full
+view of the player, and chaining because it re-measured from the position it
+had just moved them off. And the gun appeared to jam: once a weapon's reserve
+hit zero the trigger only clicked, with no reload prompt, no swap and no
+explanation — a scripted run spent 167 of 240 seconds like that, reaching wave
+2 instead of wave 4. Both invariants are written up above.
 
 CI runs the suite and the one-file build on every push to `main` and every PR
 (`.github/workflows/ci.yml`), and attaches the built `ashfall.html` to the run.

@@ -233,6 +233,31 @@ export class WeaponSystem {
     }
   }
 
+  /** Has this weapon anything left to fire, loaded or in reserve? */
+  static armed(w) { return w.unlocked && (w.mag > 0 || w.reserve > 0); }
+
+  /** Is anything in the loadout still able to shoot? */
+  get anyArmed() { return this.weapons.some((w) => WeaponSystem.armed(w)); }
+
+  /**
+   * Swap to the next weapon that can still shoot.
+   *
+   * A gun with an empty mag and an empty reserve is scenery: holding the
+   * trigger on one gets you a dry click every quarter second and nothing
+   * else, which reads as the gun having broken rather than as being out of
+   * ammo — there is not even a reload prompt, because there is nothing to
+   * reload from. Reaching for a loaded weapon is what a person would do.
+   * @returns {boolean} whether a swap happened
+   */
+  switchToArmed(time) {
+    const n = this.weapons.length;
+    for (let k = 1; k <= n; k++) {
+      const i = (this.index + k) % n;
+      if (WeaponSystem.armed(this.weapons[i])) { this.select(i, time); return true; }
+    }
+    return false;
+  }
+
   addAmmo(fraction = 0.35, all = false) {
     let gained = false;
     for (const w of this.weapons) {
