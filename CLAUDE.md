@@ -119,6 +119,15 @@ stepping longer than that needs `g.startWave = () => {}`. And score deltas
 measured across a long step pick up the wave-clear bonus, so wrap
 `onObjectiveSecured` to measure a payout rather than differencing `g.score`.
 
+A third, from the ledge check, and the reason it only showed on one seed:
+the centre of a box's face is not always a place you can climb from. A crate
+can overlap something much taller, and then the deck you would land on has a
+wall standing in it — refusing that climb is right, so a setup that demands
+it is testing the wrong spot. Validate the landing before demanding the
+climb, the same discipline `__place` applies to a firing line. A check that
+only ever tries one approach per obstacle is asserting something the game
+never promised.
+
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
