@@ -1457,6 +1457,37 @@ check('look still works when pointer lock is denied', async (page) => {
   return r;
 });
 
+check('the best-score line sits clear of the deploy button', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.records = { bestScore: 128450, bestWave: 12 };   // wide enough to wrap if it were going to
+    g.showRecords();
+    const btn = document.getElementById('start-btn');
+    btn.classList.remove('hidden');                    // as it is once boot finishes
+    const records = document.getElementById('records');
+
+    const gapNow = () => {
+      const b = btn.getBoundingClientRect(), t = records.getBoundingClientRect();
+      return +(t.top - b.bottom).toFixed(1);
+    };
+    const gap = gapNow();
+
+    // The same measurement with the rules this replaced: a button left in a
+    // line box, and a negative top margin hand-tuned to cancel the strut's
+    // descender under it.
+    btn.style.display = 'inline-block';
+    btn.style.margin = '6px';
+    records.style.marginTop = '-14px';
+    const gapPulled = gapNow();
+    btn.style.display = records.style.marginTop = btn.style.margin = '';
+
+    return { gap, gapPulled, shown: records.textContent.trim(), hidden: records.classList.contains('hidden') };
+  });
+  expect(!r.hidden && r.shown.includes('128,450'), `the record is not on the menu: ${JSON.stringify(r)}`);
+  expect(r.gap > 0, `the best-score line runs into the deploy button by ${-r.gap} px`);
+  return r;
+});
+
 check('settings and records survive a reload', async (page) => {
   await page.evaluate(() => {
     const g = window.__game;
