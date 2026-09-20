@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 27 checks, headless
+npm test           # 29 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -61,8 +61,9 @@ tracking, warlord spawns, the objective schedule and its payouts, objective
 decay and expiry, waypoint projection, the texel density of every baked
 surface, the ambient darkening baked under the city, the view model being
 solid and unwrapped at its own scale, the route field covering the whole
-sector, a hostile walking around a building rather than into it, aiming
-without pointer lock, settings and record persistence, and a four-minute scripted run that
+sector, a hostile walking around a building rather than into it, a turned prop
+stopping you where you can see it, the ground you stand on being the ground
+you can see, aiming without pointer lock, settings and record persistence, and a four-minute scripted run that
 must reach wave 3 with hostiles still able to engage.
 
 Three things make it trustworthy rather than merely green: the random stream
@@ -317,7 +318,7 @@ of more than about four metres hurt, and a long enough fall will kill you.
 index.html          page shell, HUD markup, import map
 src/main.js         game loop, scene/lighting setup, waves, hit resolution
 src/city.js         procedural city generation
-src/world.js        AABB collision, ground height, line-of-sight, bounds
+src/world.js        box collision (square or turned), ground height, line-of-sight
 src/nav.js          walkable grid over the city, and a route field to the player
 src/player.js       input, movement, camera, health
 src/weapons.js      weapon definitions, view models, firing and recoil

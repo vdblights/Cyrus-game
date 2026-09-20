@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 27 headless checks (needs npm install first)
+npm test                       # 29 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -38,7 +38,7 @@ builds, never to play.
 | File | Owns |
 | --- | --- |
 | `src/main.js` | `Game`: loop, scene, lighting, waves, hit resolution, blasts |
-| `src/world.js` | AABB collision, ground height, line of sight, sphere bounce |
+| `src/world.js` | Box collision (square or turned), ground height, line of sight, sphere bounce |
 | `src/city.js` | Procedural generation; returns `{ world, fireBarrels, perches }` |
 | `src/player.js` | `Input` and `Player`: look, movement, footing, health |
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
@@ -397,13 +397,10 @@ The layout is untouched by all of it: seed 1 still lays out 332 boxes, 405
 solids and 12 perches. Nothing here adds an `Object3D` or spends the seeded
 stream, and `addRotatedBox` pushes exactly one box where `addBox` pushed one.
 
-Nothing below is open work. The section is a record of what was built and what
-it cost to learn — read the invariants and the testing traps first, since
-those are the parts that bite. The list at the end is what to do next.
-
-Nothing below is open work. The section is a record of what was built and what
-it cost to learn — read the invariants and the testing traps first, since
-those are the parts that bite. The list at the end is what to do next.
+Nothing below is open work apart from what the block above names. The section
+is a record of what was built and what it cost to learn — read the invariants
+and the testing traps first, since those are the parts that bite. The list at
+the end is what to do next.
 
 `main` has everything through the graphics pass (PR #1, merged). Objectives
 landed after it (PR #3): caches, beacons and evac windows, cued by the wave
