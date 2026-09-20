@@ -325,9 +325,9 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 
 ## State
 
-**Right now:** PRs #1-#9 are merged into `main`. The branch carries the
+**Right now:** PRs #1-#9 are merged into `main`. **PR #10 is open** with the
 pathfinding work described below — `src/nav.js`, the committed avoidance, the
-perch fix — with 27/27 checks passing on seed 1 and a clean one-file build.
+perch fix — 27/27 on seeds 1, 7 and 99991, one-file build clean.
 That was item 1 of the old next-work list, so the list at the bottom now
 starts somewhere else. Nothing in this file is described as open work; the
 list is what to do next, not what was left half done. Restart the branch from
