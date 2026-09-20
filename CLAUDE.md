@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 24 headless checks (needs npm install first)
+npm test                       # 27 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -49,6 +49,7 @@ builds, never to play.
 | `src/post.js` | Bloom, tone mapping, grade, vignette, grain |
 | `src/audio.js` | Every sound, synthesised via Web Audio |
 | `src/hud.js` | DOM readouts, killfeed, radar, capture banner |
+| `src/nav.js` | Walkable grid over `world.boxes`, and a route field to the player |
 | `src/rng.js` | Seeded `Math.random` for the page's lifetime |
 
 The whole game hangs off `window.__game`, which is how tests and probes drive it.
@@ -103,6 +104,24 @@ These each cost real debugging time. Changing them needs a reason.
   something bullets ignore — so it has to live where you can do neither, on a
   wall, on a roof, or above head height. That is why the fire escape's lowest
   platform is at 4.6 m and why there are no bollards.
+- **The route field is a hint, never an authority.** `nav.js` builds a 1.5 m
+  grid off `world.boxes` and a Dijkstra cost field from the player, rebuilt
+  only when they cross a cell. Nothing in it moves a hostile or decides what
+  is solid — `World.resolve` still does that — and `heading()` answers "no
+  idea" for anywhere it does not cover, which includes every rooftop, because
+  a perch stands in a blocked cell by construction. Every caller must have a
+  fallback, and the fallback is the old behaviour: steer at the player.
+  Two things about the bake are load-bearing. It marks cells a solid
+  physically overlaps *and* cells whose centre is within a shoulder of it,
+  and neither pass can replace the other: without the first, a wall thinner
+  than a cell slips between two centres and routes run through it; with the
+  second written as "every cell the widened solid touches", a cell loses its
+  whole 1.5 m for being clipped at one corner and the streets close up. On
+  seed 1 that is 9,328 walkable cells and 99.9% coverage against 7,622 and
+  97.2% — measured, and guarded by a check at 0.995.
+  And it builds no three objects at all, not even a Vector3, because every
+  `Object3D` spends four numbers of the seeded stream on a UUID. Typed arrays
+  only. That is why the file imports nothing.
 - **Hit detection raycasts before the renderer runs**, so `Enemy.update` calls
   `group.updateMatrixWorld(true)` itself. Anything else raycast against needs
   its transform current too — the aiming laser had to refresh it before using
@@ -306,12 +325,13 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 
 ## State
 
-**Right now:** PRs #1-#8 are merged into `main`. PR #9 is open from
-`claude/abandoned-city-fps-game-j2xn80` with the deadlock fix, the pull-up
-rework and the decoration pass — 24/24 checks pass on seed 1 and the one-file
-build is clean. Nothing in this file is described as open work any more; the
-list at the bottom is what to do next, not what was left half done. Once #9
-merges, restart the branch from `main` rather than stacking on it.
+**Right now:** PRs #1-#9 are merged into `main`. The branch carries the
+pathfinding work described below — `src/nav.js`, the committed avoidance, the
+perch fix — with 27/27 checks passing on seed 1 and a clean one-file build.
+That was item 1 of the old next-work list, so the list at the bottom now
+starts somewhere else. Nothing in this file is described as open work; the
+list is what to do next, not what was left half done. Restart the branch from
+`main` after this merges rather than stacking on it.
 
 `main` has everything through the graphics pass (PR #1, merged). Objectives
 landed after it (PR #3): caches, beacons and evac windows, cued by the wave
@@ -472,9 +492,8 @@ it reboots onto seed 7 to do so, because whether a city has a corner that
 traps a hostile is a property of the layout and the pinned seed does not have
 one. If a future layout move takes the bug away from seed 7 as well, that
 check stops testing anything — it will still pass, which is the failure mode
-to watch for. The honest fix underneath is pathfinding, or at least an
-avoidance that commits to a direction instead of re-rolling a side every
-1.4 s while blocked; the watchdog is a backstop and is written as one.
+to watch for. The honest fix underneath is pathfinding, which the branch
+now has — see below; the watchdog stays as the backstop it was written as.
 
 The graphics pass on top of all that is three changes that only make sense
 together, each one paying for the next:
@@ -591,6 +610,54 @@ materials — `viewScene` has its own ambient, key and rim in `main.js`, plus
 the lever. Raising the texture base values instead is the wrong end of it,
 and was already tried once: it made the polymer look like clay.
 
+Hostiles can now find their way round a building, which was item 1 of the old
+list and the honest fix under the deadlock backstop. Three parts.
+
+`src/nav.js` is a 1.5 m grid over `world.boxes` and a Dijkstra field from the
+player, rebuilt only when they cross a cell — about twice a second at a run,
+nothing at all standing still. A hostile that cannot see the player descends
+the field instead of steering at them, takes the furthest waypoint it can
+reach in a straight line so it walks lines rather than the staircase of a
+diagonal, and falls back to the old steering wherever the field declines to
+answer. It is a hint, never an authority: the invariant above has the rules,
+and they matter more than the algorithm does.
+
+The avoidance fan underneath it used to re-roll which way round an obstacle
+every 1.4 s at random, so a hostile walked one way, reversed and walked back —
+34 m of path for half a metre of progress, measured on seed 7. It now picks
+the side with more room, settles a tie at random so two hostiles meeting one
+corner do not file round it, and keeps that side for six seconds or until the
+way ahead opens.
+
+And the rooftop half, which is the same deadlock somewhere the grid cannot
+help: a perch stands in a blocked cell by construction, so a marksman is never
+routed. A blind one is `parked` after 15 s without a sight line, which only
+drops its watchdog leash back to the ordinary one — it never walks a marksman
+off a roof — and a relocation now prefers a perch with a line to the player,
+because moving a blind sniper to another blind roof is a coin flip, and a wave
+whose last hostile is one waits out the watchdog once per perch until it gets
+lucky. Spawns deliberately do *not* get that preference: spending it there as
+well put the damage the sector deals up by about half again.
+
+Three checks came with it, each confirmed to fail against what it guards:
+`the route field reaches the whole sector from wherever you stand`, `a hostile
+walks around the building between you, not into it` — which disconnects the
+watchdog first, because otherwise a hostile that routes nowhere still arrives,
+by being teleported there — and `a marksman is moved to a perch that overlooks
+you`.
+
+Two things found while checking that the checks were real, both worth keeping.
+The perch check first passed on every seed while asserting nothing: whether
+any perch overlooks the plaza is a property of the layout, the pinned seed has
+none, and the assertion sat behind an `if (withView > 0)`. It reboots onto
+seed 99991 now, which has five, and fails outright if a future layout move
+takes them away — which is exactly the failure mode the deadlock check's note
+warns about, caught in the act. And the route-field check's threshold was set
+at 0.95 against a claim that the naive bake left "4% of the sector reachable",
+which did not reproduce: the milder way of getting it wrong leaves 97.2%, and
+sailed through. The real rule measures 0.999-1.000 across seven seeds, so the
+threshold is 0.995 now and the three measurements are written into the check.
+
 Deployment is static and must stay that way. `vercel.json` overrides the build
 and install commands to no-ops and serves the repo root; `.vercelignore` keeps
 `tests/`, `dist/` and `.github/` out of the upload. Autodetect breaks two ways:
@@ -604,33 +671,22 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Give hostiles real pathfinding, or at least a committed one.** The
-   deadlock is fixed at the backstop, not at the cause: a hostile with a
-   building in the way still slides along the face for up to twenty seconds
-   before the watchdog pulls it out, and the pull-out is a relocation, which
-   is a hostile vanishing. The cheap half of this is the avoidance fan in
-   `Enemy.update`, which re-rolls which side to go round every 1.4 s while it
-   stays blocked, so a hostile walks one way, reverses, and walks back — 34 m
-   of path for half a metre of progress. Committing to a side until it is
-   clear would turn most of those slides into detours. The expensive half is
-   a navigation grid over `world.boxes`, which the city already has the data
-   for.
-2. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
+1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-3. **Road markings as geometry.** The one thing the texture pass deliberately
+2. **Road markings as geometry.** The one thing the texture pass deliberately
    did not do. Lane paint cannot live in a tiled asphalt texture — painted
    once, it comes out as a grid of stripes across the whole sector instead of
    a line down a street, which is what it was doing before — so the old tile's
    centre line was dropped rather than fixed. Doing it properly means thin
    quads laid along the streets at generation time, which the grid already
    knows the position of. Crossings and stop bars fall out of the same work.
-4. **Positional audio** — sounds are mono, so you cannot hear which side fire
+3. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
-5. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
+4. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
    only the player calls it, so a car roof is still a place they cannot follow
    you to.
-6. **Convert the hostiles to PBR.** The city and the view model are Standard
+5. **Convert the hostiles to PBR.** The city and the view model are Standard
    materials reading the sky environment; enemies are still Lambert and mint
    four materials each, so they neither catch the sky nor batch.
 

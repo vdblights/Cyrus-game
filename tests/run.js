@@ -887,6 +887,202 @@ check('a wave never deadlocks on a hostile that cannot path to you', async (page
   return r;
 });
 
+check('the route field reaches the whole sector from wherever you stand', async (page) => {
+  // A route field is a hint, and one that covers a quarter of the streets is
+  // worse than no hint at all: every hostile on the far side of the gap falls
+  // back to steering at the player, which is the deadlock again.
+  //
+  // This also catches the way the grid is naturally written wrong. Blocking
+  // cells by what a shoulder-widened solid *touches*, rather than by which
+  // cell centres stand inside it, costs a cell its whole 1.5 m for being
+  // clipped at one corner. Measured on seed 1 against the rule that ships:
+  //
+  //   centres inside the widened solid (shipped)   9,328 open, 99.9% covered
+  //   every cell the widened solid overlaps        7,622 open, 97.2% covered
+  //   the same, rounded outward at both edges      5,772 open, 12.6% covered
+  //
+  // The real rule sits at 0.999-1.000 across seeds 1, 7, 4242, 31337, 99991,
+  // 20260101 and 20260813, so the threshold is set where it separates that
+  // from the first way of getting it wrong, not just the worst way.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    const nav = g.nav;
+    const p = g.player.position;
+    const inPlay = (k) => {
+      const i = k % nav.size, j = (k / nav.size) | 0;
+      return Math.abs(nav.mid(i)) <= g.world.bounds && Math.abs(nav.mid(j)) <= g.world.bounds;
+    };
+
+    // The biggest island of connected street, measured over the grid itself
+    // rather than from anywhere in particular. Asking instead how much is
+    // reachable from a handful of sampled spots looks equivalent and is not:
+    // a spot that lands in a courtyard reports its courtyard, and the check
+    // fails for a pocket the size of a room.
+    let open = 0;
+    for (let k = 0; k < nav.blocked.length; k++) if (!nav.blocked[k] && inPlay(k)) open++;
+
+    const seen = new Uint8Array(nav.blocked.length);
+    let biggest = 0;
+    for (let s = 0; s < nav.blocked.length; s++) {
+      if (nav.blocked[s] || seen[s] || !inPlay(s)) continue;
+      let size = 0;
+      const stack = [s];
+      seen[s] = 1;
+      while (stack.length) {
+        const k = stack.pop();
+        size++;
+        const i = k % nav.size, j = (k / nav.size) | 0;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const ni = i + dx, nj = j + dz;
+          if (!nav.inside(ni, nj)) continue;
+          const nk = nj * nav.size + ni;
+          if (nav.blocked[nk] || seen[nk] || !inPlay(nk)) continue;
+          seen[nk] = 1;
+          stack.push(nk);
+        }
+      }
+      biggest = Math.max(biggest, size);
+    }
+
+    // and what the game's own field actually covers from where you stand
+    nav.update(p.x, p.z, true);
+    let reach = 0;
+    for (let k = 0; k < nav.dist.length; k++) if (nav.dist[k] >= 0 && inPlay(k)) reach++;
+
+    return {
+      open, biggest, reach,
+      connected: +(biggest / open).toFixed(3),
+      covered: +(reach / open).toFixed(3),
+    };
+  });
+  expect(r.open > 2000, `only ${r.open} walkable cells in the whole sector`);
+  expect(r.connected > 0.995,
+    `the walkable sector is in pieces — its biggest is ${(r.connected * 100).toFixed(1)}% of it`);
+  expect(r.covered > 0.995,
+    `the field only covers ${(r.covered * 100).toFixed(1)}% of the walkable sector from the player`);
+  return r;
+});
+
+check('a hostile walks around the building between you, not into it', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    // a thirty second step outlives the three seconds until wave 1
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false; g.waveHpScale = 1;
+
+    // The stuck watchdog is the backstop this is meant to stop needing, so it
+    // is disconnected for the duration. Left in, a hostile that routes
+    // nowhere still arrives — by being teleported there — and the check
+    // passes for the wrong reason.
+    let relocations = 0;
+    g.relocateEnemy = () => { relocations++; };
+
+    const p = g.player.position;
+    // A spot with a building in the way, that the field agrees is connected.
+    // Demanding a hostile reach somewhere it cannot get to is asserting
+    // something the game never promised, so the route is validated first.
+    g.nav.update(p.x, p.z, true);
+    let start = null;
+    for (let attempt = 0; attempt < 200 && !start; attempt++) {
+      const s = g.findSpawnPoint(26, 40);
+      if (g.world.lineOfSight(s.x, 1.5, s.z, p.x, p.y, p.z)) continue;   // wants no view
+      if (g.world.groundHeight(s.x, s.z, 0.5, 99) > 0.05) continue;      // on the street
+      const i = g.nav.col(s.x), j = g.nav.col(s.z);
+      if (!g.nav.inside(i, j)) continue;
+      if (g.nav.dist[j * g.nav.size + i] < 0) continue;                  // no route: not ours to test
+      start = s;
+    }
+    if (!start) return { noSetup: true };
+
+    const e = g.spawnEnemy('raider');
+    e.pos.set(start.x, 0, start.z);
+    e.group.position.copy(e.pos);
+    e.alert(g.time, 0);
+    e.nextFire = 1e9;                       // it is walking here, not shooting
+    const from = Math.hypot(start.x - p.x, start.z - p.z);
+
+    // The player stands still, so this measures the hostile's route and
+    // nothing else. Health is held up because a dead player flips the game
+    // to 'dead' and quietly stops the run.
+    let path = 0, best = from, sawPlayer = false;
+    let px = e.pos.x, pz = e.pos.z;
+    for (let f = 0; f < 30 * 60; f++) {
+      g.time += 1 / 60;
+      g.player.health = 100; g.player.dead = false;
+      g.step(1 / 60);
+      path += Math.hypot(e.pos.x - px, e.pos.z - pz);
+      px = e.pos.x; pz = e.pos.z;
+      const d = Math.hypot(e.pos.x - p.x, e.pos.z - p.z);
+      best = Math.min(best, d);
+      if (g.world.lineOfSight(e.pos.x, e.pos.y + 1.5, e.pos.z, p.x, p.y, p.z)) { sawPlayer = true; break; }
+    }
+    return {
+      from: +from.toFixed(1), closest: +best.toFixed(1), path: Math.round(path),
+      sawPlayer, relocations, routed: e.routed,
+    };
+  });
+  expect(!r.noSetup, 'no blind-but-connected spot on this seed — the setup found nothing to test');
+  // Getting a line on the player is the whole job. Closing to contact range
+  // without one would do as well, and is what a melee type would have done.
+  expect(r.sawPlayer || r.closest < 6,
+    `hostile started ${r.from} m away with a building in the way and got no closer than ` +
+    `${r.closest} m in 30 s, walking ${r.path} m to do it`);
+  expect(r.relocations === 0,
+    `the watchdog fired ${r.relocations} times — it should not have been needed`);
+  return r;
+});
+
+check('a marksman is moved to a perch that overlooks you', async (page) => {
+  // The rooftop half of the same deadlock. A marksman on a perch is exempt
+  // from nearly everything that moves a hostile — no drift, no strafe, four
+  // times the watchdog leash — all of it there to stop it walking off the
+  // edge. So when a wave's last hostile is a sniper with no line to anyone,
+  // the wave waits on it, and moving it to another perch picked purely on
+  // distance lands it somewhere equally blind about as often as not.
+  //
+  // Whether any perch overlooks the plaza at all is a property of the layout,
+  // and the suite's own seed has none: it reported 0 of 8 eligible perches
+  // with a line to the player, so the assertion below was skipped and the
+  // check passed without testing anything. Seed 99991 has five, and 20260101
+  // three. Bring one, the way the deadlock check does.
+  await reloadGame({ seed: 99991 });
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    const p = g.player.position;
+    const perches = g.perches.map((q) => ({
+      x: q.x, z: q.z,
+      d: Math.hypot(q.x - p.x, q.z - p.z),
+      sees: g.world.lineOfSight(q.x, q.y + 1.5, q.z, p.x, p.y, p.z),
+    }));
+    // only the ones findPerch is allowed to choose from
+    const eligible = perches.filter((q) => q.d >= 16 && q.d <= 95);
+    const withView = eligible.filter((q) => q.sees).length;
+
+    let picked = 0, blind = 0;
+    for (let i = 0; i < 40; i++) {
+      const q = g.findPerch(true);      // what a relocation asks for
+      if (!q) continue;
+      picked++;
+      if (!g.world.lineOfSight(q.x, q.y + 1.5, q.z, p.x, p.y, p.z)) blind++;
+    }
+    return { perches: perches.length, eligible: eligible.length, withView, picked, blind };
+  });
+  expect(r.picked > 0, 'findPerch returned nothing at all');
+  // The seed is chosen so this is never vacuous. If a future layout move
+  // takes the overlooking perches away from it too, that is what this catches
+  // — rather than the check quietly going green while testing nothing.
+  expect(r.withView > 0,
+    `no eligible perch on this seed overlooks the player, so this check asserts nothing`);
+  expect(r.blind === 0,
+    `${r.blind} of ${r.picked} perches picked had no line to the player, ` +
+    `though ${r.withView} of ${r.eligible} eligible perches did`);
+  return r;
+});
+
 check('every surface is textured at the world scale it declares', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

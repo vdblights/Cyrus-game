@@ -20,6 +20,29 @@ const HORIZON = 10;
 const DRIFT = 5;
 
 /**
+ * How long a hostile that has run into something sticks with the side it
+ * chose to go round. This used to be 1.4 s and was re-rolled at random, so a
+ * hostile walked one way round a corner, reversed, and walked back — metres
+ * of path for centimetres of progress. A detour is only a detour if you
+ * finish it.
+ */
+const COMMIT = 6;
+
+/**
+ * How long a perch-holder gets to see nobody before its perch stops counting
+ * as a post it is holding.
+ *
+ * A marksman on a roof is exempt from most of what moves a hostile: it does
+ * not drift while unalerted, does not strafe, and waits four times as long
+ * before the stuck watchdog believes it is stuck — all three deliberate, all
+ * three there to stop it walking off the edge. The cost is a hostile that can
+ * sit on a roof with no line to anyone for the better part of a minute, and
+ * when it is the last of its wave the wave waits on it. Overwatch is a job
+ * while there is something to overwatch; past this it is furniture.
+ */
+const PERCH_PATIENCE = 15;
+
+/**
  * Hostile archetypes. `preferred` is the range the AI tries to hold; melee
  * types simply close to contact.
  */
@@ -214,6 +237,8 @@ export class Enemy {
     this.group.scale.setScalar(this.type.scale);
     this.avoidDir = 0;
     this.avoidTimer = 0;
+    this.routed = false;
+    this.blindFor = 0;
     this.stuckTimer = 0;
     this.noProgress = 0;
     this.lastDistCheck = Infinity;
@@ -321,6 +346,28 @@ export class Enemy {
     audio.flesh();
   }
 
+  /**
+   * Point `out` at the player.
+   *
+   * With a clear view that is simply toward them, which is what it has always
+   * been and what makes a hostile in a firefight read as coming for you.
+   * Without one it is whichever way the route field says, because straight at
+   * someone you cannot see is how a hostile ends up walking into the wall of
+   * the building standing between you and sliding along it until the watchdog
+   * takes pity. The field declines to answer for anywhere it does not cover —
+   * a rooftop, a spot cut off from the player entirely — and then this falls
+   * back to the old behaviour, which is the right fallback: steering at them
+   * is wrong far less often than it is right.
+   */
+  _approach(out, toPlayer, sees, nav) {
+    if (!sees && nav && nav.heading(this.pos.x, this.pos.z, out)) {
+      this.routed = true;
+      return out;
+    }
+    this.routed = false;
+    return out.copy(toPlayer);
+  }
+
   update(dt, time, player, world) {
     if (!this.alive) {
       this.deathT += dt;
@@ -357,37 +404,48 @@ export class Enemy {
     // Anything that fights from high ground stays on it: it overwatches while
     // unalerted and never walks itself back down to street level.
     const onPerch = this.type.perch && this.pos.y > 1.5;
+    this.blindFor = sees ? 0 : this.blindFor + dt;
+    // A post with nothing in front of it is not a post. This never walks a
+    // marksman off its roof — it only stops the watchdog treating a blind
+    // one as busy, and the watchdog relocates rather than walks.
+    const parked = onPerch && this.blindFor > PERCH_PATIENCE;
 
+    const nav = this.game.nav;
     let moveDir = V2.set(0, 0, 0);
     if (!this.alerted) {
       // still hunting: drift toward the player at a walk
-      if (!onPerch) moveDir.copy(toPlayer);
+      if (!onPerch) this._approach(moveDir, toPlayer, sees, nav);
     } else {
       const t = this.type;
       const holdPerch = onPerch;
       const wantCloser = !holdPerch && dist > t.preferred * (t.melee ? 1 : 1.15);
       const wantBack = !t.melee && !holdPerch && dist < t.preferred * 0.6;
 
-      if (wantCloser) moveDir.copy(toPlayer);
-      else if (wantBack) moveDir.copy(toPlayer).negate();
+      if (!sees && !onPerch) {
+        // Nothing to hold a range against and nothing to strafe around: go
+        // and find them, by whatever way there is to get there. Holding high
+        // ground is the one reason not to.
+        this._approach(moveDir, toPlayer, sees, nav);
+      } else {
+        if (wantCloser) moveDir.copy(toPlayer);
+        else if (wantBack) moveDir.copy(toPlayer).negate();
 
-      // strafe when holding position and able to see the target — but never
-      // on a perch, where side-stepping walks you off the edge
-      if (!wantCloser && sees && !onPerch) {
-        this.strafeTimer -= dt;
-        if (this.strafeTimer <= 0) { this.strafe *= -1; this.strafeTimer = randRange(1.2, 3); }
-        moveDir.x += -toPlayer.z * this.strafe * 0.9;
-        moveDir.z += toPlayer.x * this.strafe * 0.9;
+        // strafe when holding position and able to see the target — but never
+        // on a perch, where side-stepping walks you off the edge
+        if (!wantCloser && sees && !onPerch) {
+          this.strafeTimer -= dt;
+          if (this.strafeTimer <= 0) { this.strafe *= -1; this.strafeTimer = randRange(1.2, 3); }
+          moveDir.x += -toPlayer.z * this.strafe * 0.9;
+          moveDir.z += toPlayer.x * this.strafe * 0.9;
+        }
       }
-      // no line of sight: push toward the player to break the wall, unless
-      // that would mean abandoning high ground
-      if (!sees && !onPerch) moveDir.copy(toPlayer);
     }
 
     // ---- obstacle avoidance --------------------------------------------
-    // Probe the desired heading; if it is blocked, fan outwards (keeping a
-    // consistent side, so hostiles commit to going around rather than
-    // jittering) and take the first clear direction.
+    // The last few metres, which the route field is too coarse to see: a
+    // wreck in the street, another hostile's corner, the kerb of the very
+    // building being rounded. Probe the heading; if it is blocked, fan
+    // outwards and take the first clear direction.
     if (moveDir.lengthSq() > 1e-4) {
       moveDir.normalize();
       const probe = 1.8 + this.radius;
@@ -398,10 +456,27 @@ export class Enemy {
       };
 
       if (!clear(moveDir.x, moveDir.z)) {
+        // Which way round, decided once and then kept. `avoidDir` of zero
+        // means uncommitted, and it goes back to zero the moment the way
+        // ahead opens up, so each new obstacle is judged on its own.
         this.avoidTimer -= dt;
-        if (this.avoidTimer <= 0) {
-          this.avoidDir = Math.random() < 0.5 ? 1 : -1;
-          this.avoidTimer = 1.4;
+        if (this.avoidDir === 0 || this.avoidTimer <= 0) {
+          // Take the side with more room rather than flipping a coin. Only a
+          // tie is settled at random, which keeps two hostiles meeting the
+          // same corner from filing round it in single file.
+          const room = (side) => {
+            let n = 0;
+            for (const a of [0.6, 1.2, 1.8]) {
+              const cand = rot(a * side, V4);
+              if (clear(cand.x, cand.z)) n++;
+            }
+            return n;
+          };
+          const right = room(1), left = room(-1);
+          this.avoidDir = right === left
+            ? (this.avoidDir || (Math.random() < 0.5 ? 1 : -1))
+            : (right > left ? 1 : -1);
+          this.avoidTimer = COMMIT;
         }
         let found = false;
         for (const a of [0.5, 1.0, 1.5, 2.0, 2.5]) {
@@ -412,6 +487,8 @@ export class Enemy {
           if (found) break;
         }
         if (!found) moveDir.set(-moveDir.x, 0, -moveDir.z);   // boxed in: back out
+      } else {
+        this.avoidDir = 0;
       }
     }
 
@@ -423,7 +500,7 @@ export class Enemy {
     // to walk into view, so give them far longer before the watchdog moves
     // them — but not forever, or a wave could stall on a roof.
     this.stuckTimer += dt;
-    const checkEvery = onPerch ? 12 : 4;
+    const checkEvery = onPerch && !parked ? 12 : 4;
     if (this.stuckTimer > checkEvery) {
       const elapsed = this.stuckTimer;
       // Progress needs three measurements, because every one of them alone
@@ -468,7 +545,7 @@ export class Enemy {
       // more than a single window, and a hostile that vanishes mid-approach
       // reads as a bug to the person watching it — which is why the last
       // guard is line of sight: never teleport one the player can see.
-      if (this.noProgress >= (onPerch ? 24 : 12) &&
+      if (this.noProgress >= (onPerch && !parked ? 24 : 12) &&
           !(sees || world.lineOfSight(player.position.x, player.position.y, player.position.z,
             this.pos.x, this.pos.y + 1.3 * this.type.scale, this.pos.z))) {
         this.game.relocateEnemy(this);
