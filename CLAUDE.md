@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 22 headless checks (needs npm install first)
+npm test                       # 24 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -66,14 +66,30 @@ These each cost real debugging time. Changing them needs a reason.
   built inside it. **Shared look — a material, a texture, a view model —
   belongs in a `reserve`.** It works: adding three more rust materials and the
   nine textures behind them, late in the texture pass, left seed 1 with the
-  same 332 boxes, 405 solids and 12 perches it had before them. What each builder mints
-  *per object* still spends the stream and has to, because those objects are
-  the city; a purely decorative mesh added inside a builder will still move
-  every seed, and there is no way around that short of giving generation its
-  own generator. None of this undoes the moves already made: the texture pass
-  shifted every seed one last time, because the setup that no longer spends
-  the stream used to. A seed in a note older than that pass does not point at
-  the city it did.
+  same 332 boxes, 405 solids and 12 perches it had before them. What each
+  builder mints *per object* still spends the stream and has to, because those
+  objects are the city. None of this undoes the moves already made: the texture
+  pass shifted every seed one last time, because the setup that no longer
+  spends the stream used to. A seed in a note older than that pass does not
+  point at the city it did.
+- **Decoration draws from its own generator, so it is free.** The note above
+  used to end by saying a purely decorative mesh added inside a builder would
+  move every seed regardless, "short of giving generation its own generator".
+  `decor()` in `city.js` is that generator, and it turns out to be the whole
+  answer: it points `Math.random` at a private mulberry32 for the duration of
+  the call and rewinds the global stream underneath, so both the UUIDs the
+  decoration mints and the choices it makes cost the layout nothing. The
+  relief pass — plinths, pilasters, string courses, roof furniture, awnings,
+  downpipes, fire escapes, overhead cables, about 1,300 boxes and 19k
+  triangles — left seeds 1, 7 and 20260101 with exactly the boxes, solids and
+  perches they had before it.
+  Two rules keep it true. **Anything registered in `world.boxes` or
+  `world.solids` is not decoration** and must not be built inside `decor`:
+  its placement *is* the city, and the city is what a seed is for. And
+  because decoration is in neither list, it is something you walk through and
+  something bullets ignore — so it has to live where you can do neither, on a
+  wall, on a roof, or above head height. That is why the fire escape's lowest
+  platform is at 4.6 m and why there are no bollards.
 - **Hit detection raycasts before the renderer runs**, so `Enemy.update` calls
   `group.updateMatrixWorld(true)` itself. Anything else raycast against needs
   its transform current too — the aiming laser had to refresh it before using
@@ -111,12 +127,17 @@ These each cost real debugging time. Changing them needs a reason.
 - **A texture declares the world size it covers, and the geometry obeys.**
   `TILE` in `textures.js` is the contract — 8 m of asphalt, 4 m of concrete,
   10 m of facade, 0.3 m of gun polymer — and `boxGeo` unwraps every face planar at that scale from
-  its own position and normal, which is why it survives subdivision. Get it
-  wrong and nothing errors, it just looks bad in a way that is hard to name:
-  the ground used to stretch one 512px tile over 54 m, nine pixels to the
-  metre, and a facade crammed four floors into four metres so buildings read
-  as noise. A check measures texels per metre off the merged city now and
-  fails if any material drifts from what it declares. Wall UVs are snapped on
+  its own position and normal, which is why it survives subdivision. `cylGeo`
+  does the same for the round props, which had been outside the contract
+  entirely: three's own cylinder unwrap runs 0..1 around the barrel whatever
+  its size, so a 0.4 m drum and a 7 m pole wore the same tile at completely
+  different scales, and the fountain ring stretched one tile over twenty
+  metres of circumference. Get it wrong and nothing errors, it just looks bad
+  in a way that is hard to name: the ground used to stretch one 512px tile
+  over 54 m, nine pixels to the metre, and a facade crammed four floors into
+  four metres so buildings read as noise. A check measures texels per metre
+  off the merged city now and fails if any material drifts from what it
+  declares. Wall UVs are snapped on
   top of that to the window bay and the storey (`wallUV`), so a corner never
   cuts a window in half and floor lines meet the ground and the roof square.
 - **A canvas `filter` blur costs a full-canvas convolution per draw call.**
@@ -145,7 +166,15 @@ These each cost real debugging time. Changing them needs a reason.
 - **A mantle owns the player for its duration.** `Player.update` returns early
   while `player.mantle` is set — no gravity, no collision, no walking, no
   firing — so a pull-up cannot be interrupted halfway and leave you standing
-  inside the ledge you were climbing.
+  inside the ledge you were climbing. Owning the view means owning every
+  discontinuity in it: the climb starts from the eye height and the momentum
+  the player actually had and hands both back where it left them. The first
+  version set the eye height straight to `EYE_CROUCH`, which dropped the view
+  0.63 m between one frame and the next, and zeroed the velocity on
+  completion, which stopped you dead on the ledge. A check measures the view's
+  movement at each of the three seams — the frame the climb starts, the curve
+  in between, and the frame it hands back — because a climb is allowed to be
+  quick and is not allowed to teleport.
 - **An objective cue waits, it is not dropped.** Only one objective runs at a
   time, and their clocks outlive the wave that called them. Refusing a cue
   while one was up meant whole waves passed with no objective at all; cues now
@@ -153,14 +182,21 @@ These each cost real debugging time. Changing them needs a reason.
 - **The stuck watchdog is a last resort, never a nudge.** It relocates a
   hostile 20-45 m away, usually out of view, so every false trigger is an
   enemy vanishing mid-charge in front of the player. Three guards keep it
-  honest: progress is judged by *both* the hostile's own travel and the
-  distance it closed on a target that was not itself running (closing distance
-  alone condemns anything chasing a player who walks faster than it — which is
-  all of them); the failure has to persist across several windows, because
-  walking around a city block takes longer than one; and it never fires while
-  the player can see the hostile. Whatever moves a hostile outside its own
-  walking must re-snapshot with `markWatchdog` — measuring the next window
-  from where it was pulled out of is what turned one teleport into a chain.
+  honest: progress is judged by *three* measures, any of which can condemn;
+  the failure has to persist across several windows, because walking around a
+  city block takes longer than one; and it never fires while the player can
+  see the hostile. The three measures each lie on their own. The hostile's own
+  travel over one window misses anything that orbits a wall and looks busy.
+  The distance it closed misses a hostile chasing a player who simply walks
+  faster than it, which is all of them. And both of those are read over four
+  seconds, which is too short to tell a slide along a wall from a lap around a
+  block — a detour looks identical for its first few seconds, and only where
+  it *ends up* separates them. So the third is net displacement over a ten
+  second horizon (`trail`): cover ground for ten seconds and finish within
+  five metres of where you started and you are not going anywhere. Whatever
+  moves a hostile outside its own walking must clear that history with
+  `markWatchdog` — measuring the next window, or the next horizon, from where
+  it was pulled out of is what turned one teleport into a chain.
 - **A gun with nothing behind it is not a weapon.** An empty mag reloads; an
   empty mag over an empty reserve swaps to something loaded (`switchToArmed`).
   Holding the trigger on a dead gun gives a dry click every 0.28 s and nothing
@@ -223,6 +259,13 @@ faults in the weapon pass within one render each: a gun turned to a
 silhouette by a colour multiplying its map, and facets missing because their
 winding was inside out. Neither would have shown up in any assertion that
 was plausible to write first.
+
+A sixth, which is really a tool rather than a trap: the bot that plays the
+scripted run lives in `tests/harness.js` as `window.__botRun(seconds)`, not
+inside a check, because more than one check now reads it and two divergent
+copies of a bot with this much history is worse than one. `game.reload({ seed })`
+reboots on a different city mid-suite, which is what a check needs when the
+bug it guards is a property of a layout the pinned seed does not have.
 
 ## Performance
 
@@ -301,8 +344,44 @@ baked tint and occlusion, `softLayer`, `reserve` in `rng.js`, the
 two-triangle collision ground, the chamfered and textured view models, and
 the three checks that guard all of it.
 
-So `main` has everything in this file and no pull request is open. The only
-open *work* is the wave deadlock, which is first on the list below.
+PR #9 is this branch's current work, and it is three things that came out of
+play rather than out of a plan: the wave deadlock (written up below, and now
+closed), the pull-up feeling jumpy, and the city still reading as boxes.
+
+The pull-up was two discontinuities and a fixed duration. It set the eye
+height straight to `EYE_CROUCH` on its first frame — a 0.63 m drop of the
+view between two frames, from a standing start — dipped by the full crouch
+depth, and zeroed the velocity at the top so every climb ended in a standstill
+and a quarter-second of re-acceleration. It also took 0.45 s whatever the
+height, so a 1.8 m wall moved the camera three times as fast as a 0.6 m kerb.
+It now starts from the eye height and the direction of travel it actually
+had, dips 0.26 m instead of 0.63, runs on smootherstep (zero acceleration at
+both ends, not just zero velocity), takes 0.32 s plus 0.22 s a metre, clears
+the lip and then settles onto the deck if the two differ, and leaves you
+walking at 2.6 m/s in the direction you climbed. The camera also dips and
+leans a little through it, which is what makes it read as a haul rather than
+a lift. Measured on seed 1: the first frame of a climb moves the view 0.0245 m
+against 0.617 m before, and the biggest change in the view's speed between two
+frames inside a climb is 0.0109 m against 0.5805 m. `a pull-up carries the
+view, it does not jump it` guards all three seams — the frame it starts, the
+curve in between, and the frame it hands back — and was confirmed to fail on
+the old code.
+
+The city read as boxes because it was boxes: a prism wearing a tiled
+photograph of a wall, with a flat top and nothing between the pavement and
+the roof. It now has a base course, pilasters on the window-bay lines, a
+string course under the cap, roof furniture (stair bulkheads, water tanks on
+legs, vent stacks, a run of parapet still standing), shopfront canopies,
+downpipes, fire escapes on the taller blocks, and cables slung between the
+streetlights — the only lines in the sector that are neither vertical nor
+horizontal. `cylGeo` also brings the round props into the `TILE` contract,
+which the pole, the drum and the fountain ring had never been in.
+
+All of it is decoration and none of it costs the layout anything, which is
+the interesting part and is written up as an invariant above: seeds 1, 7 and
+20260101 lay out exactly the cities they did before. Merged triangles go from
+78,898 to 97,614 in the same 26 draw batches, with the same 71 textures, and
+boot to the menu is unchanged at 12.0 s against 12.1 s.
 
 After PR #5 the scripted-run check began failing on seed 1, and the first
 reading of that was wrong: it looked like PR #5 had slowed wave pacing,
@@ -330,40 +409,52 @@ walkable. That seed no longer generates that city (see the `generateUUID`
 invariant), so it is unreproduced rather than fixed, and there is nothing
 left to reproduce it with. If it comes back it will come back somewhere else.
 
-**A wave can deadlock on a hostile that cannot path to you, and this is
-open.** A hostile steers straight at the player and has no pathfinding; with
+**A wave could deadlock on a hostile that cannot path to you. This is
+fixed.** A hostile steers straight at the player and has no pathfinding; with
 a building between them it slides along the wall face indefinitely. The stuck
-watchdog is supposed to be the backstop and does not fire, because a hostile
-sliding along a wall keeps *changing* its distance to the player — any window
-where it closes 1.5 m resets `noProgress`, so the several-window requirement
-is never met. The wave never clears and the run is over.
+watchdog was supposed to be the backstop and never fired: measured on seed 7,
+the last hostile of wave 1 covered 34.5 m of path every ten seconds for 0.5 m
+of net displacement, and its `noProgress` sat at zero for the whole run.
+Nothing a single four-second window measures separates that from a detour,
+because a detour looks the same for its first few seconds. What separates
+them is where the hostile ends up, so the watchdog now also judges net
+displacement over a ten-second horizon — cover ground and land within five
+metres of where you started and you are going nowhere. The invariant above
+has the detail; all three existing guards are kept.
 
-Measured over six seeds, on the code from *both* sides of the graphics pass:
+Measured over seven seeds with the scripted bot, four minutes each, as the
+longest stretch with no hostile reaching or shooting at the player:
 
 | seed | before | after |
 | --- | --- | --- |
-| 1 | pass | pass |
-| 7 | pass | **fail** — wave 2, 156 s no contact |
-| 4242 | **fail** — wave 1, 224 s | pass |
-| 31337 | pass | pass |
-| 99991 | pass | **fail** — wave 3, 144 s |
-| 20260101 | pass | pass |
+| 1 | 16.3 s, wave 5 | 8.0 s, wave 4 |
+| 7 | **196 s, wave 1, 6 kills** | 9.0 s, wave 4, 27 kills |
+| 4242 | 5.5 s, wave 4 | 27.5 s, wave 4 |
+| 31337 | **113.8 s, wave 3** | 16.7 s, wave 4 |
+| 99991 | 13.4 s, wave 5 | 14.6 s, wave 5 |
+| 20260101 | **219 s, wave 1, 6 kills** | 18.3 s, wave 4 |
+| 20260813 | 11.7 s, wave 4 | 5.7 s, wave 4 |
 
-So it is roughly one city in four either way, it predates this work, and the
-graphics pass only moved *which* cities have it, by moving every seed's city.
-The suite's pinned seed moved with them: 20260813 now generates a deadlock
-city, which is why the default seed in `tests/run.js` is 1. That is the same
-kind of pin it always was — a seed whose city happens not to trip the bug —
-but it is worth being clear that the suite is one allocation away from
-re-rolling into a red build, and that the real fix is the watchdog, not the
-pin. The reproducer while it lasts is `node tests/run.js --seed=20260813`.
+Three cities in seven were deadlocked and none is now; the worst gap left is
+27.5 s, against a check threshold of 90 s. Note that 20260813 no longer
+deadlocks either — the texture pass moved every seed again after the note
+that named it as the reproducer, which is the same lesson as before: a seed
+in a note older than the last layout move does not point at the city it did.
 
-The fix, when someone takes it: judge progress over a longer horizon than one
-window. Net displacement from where a hostile was ten seconds ago separates
-sliding along a wall (small) from a genuine chase around a block (large),
-where per-window closing distance cannot. It has to keep all three existing
-guards, because a false relocation is a hostile vanishing in front of the
-player.
+The cost is more relocations, which is the thing PR #5 spent its time
+removing, so it was measured too: seed 1 goes from 12 to 16 over four minutes
+(one per 15 s across 8-16 hostiles), and 0 of them happened in view of the
+player on any seed. The two deadlocked seeds went from 1 and 0 relocations in
+four minutes — the watchdog doing nothing at all — to 15 and 8.
+
+`a wave never deadlocks on a hostile that cannot path to you` guards it, and
+it reboots onto seed 7 to do so, because whether a city has a corner that
+traps a hostile is a property of the layout and the pinned seed does not have
+one. If a future layout move takes the bug away from seed 7 as well, that
+check stops testing anything — it will still pass, which is the failure mode
+to watch for. The honest fix underneath is pathfinding, or at least an
+avoidance that commits to a direction instead of re-rolling a side every
+1.4 s while blocked; the watchdog is a backstop and is written as one.
 
 The graphics pass on top of all that is three changes that only make sense
 together, each one paying for the next:
@@ -493,10 +584,17 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Fix the wave deadlock**, written up above. It is the only thing here that
-   ends a run outright, it hits roughly one city in four, and the pinned test
-   seed is one allocation away from landing on it. Net displacement over ~10 s
-   rather than per-window closing distance, keeping all three existing guards.
+1. **Give hostiles real pathfinding, or at least a committed one.** The
+   deadlock is fixed at the backstop, not at the cause: a hostile with a
+   building in the way still slides along the face for up to twenty seconds
+   before the watchdog pulls it out, and the pull-out is a relocation, which
+   is a hostile vanishing. The cheap half of this is the avoidance fan in
+   `Enemy.update`, which re-rolls which side to go round every 1.4 s while it
+   stays blocked, so a hostile walks one way, reverses, and walks back — 34 m
+   of path for half a metre of progress. Committing to a side until it is
+   clear would turn most of those slides into detours. The expensive half is
+   a navigation grid over `world.boxes`, which the city already has the data
+   for.
 2. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.

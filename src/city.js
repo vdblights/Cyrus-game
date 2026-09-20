@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { World, randRange, pick } from './world.js';
 import * as TEX from './textures.js';
 import { TILE, FACADE_BAYS, FACADE_FLOORS, FACADE_VARIANTS } from './textures.js';
-import { reserve } from './rng.js';
+import { reserve, makeRandom } from './rng.js';
 
 const BLOCK = 34;      // centre-to-centre distance between city lots
 const GRID = 6;        // lots per axis
@@ -54,6 +54,64 @@ function boxGeo(w, h, d, tile = TILE.concrete, opts = {}) {
   }
   uv.needsUpdate = true;
   return g;
+}
+
+/**
+ * Cylinder with UVs at a declared world scale, the way `boxGeo` does it.
+ *
+ * Three's own unwrap runs 0..1 around the barrel and 0..1 up it, so a 0.4 m
+ * drum and a 7 m pole wear the same tile stretched to completely different
+ * scales, and neither matches the boxes standing next to them.
+ */
+function cylGeo(rTop, rBot, h, tile = TILE.metal, seg = 8, open = false) {
+  const g = new THREE.CylinderGeometry(rTop, rBot, h, seg, 1, open);
+  const nor = g.attributes.normal, uv = g.attributes.uv;
+  const r = (rTop + rBot) / 2;
+  const around = (2 * Math.PI * r) / tile;
+  for (let i = 0; i < uv.count; i++) {
+    if (Math.abs(nor.getY(i)) > 0.9) {
+      // an end cap: unwrap it across its own diameter
+      const s = (2 * r) / tile;
+      uv.setXY(i, (uv.getX(i) - 0.5) * s + 0.5, (uv.getY(i) - 0.5) * s + 0.5);
+    } else {
+      uv.setXY(i, uv.getX(i) * around, uv.getY(i) * (h / tile));
+    }
+  }
+  uv.needsUpdate = true;
+  return g;
+}
+
+/**
+ * A generator that decoration draws from, so it can draw at all.
+ *
+ * `rng.js` explains why: three spends four `Math.random()` calls on a UUID for
+ * every object, so a mesh added anywhere inside generation shifts the seeded
+ * stream and hands the same seed a different city. `reserve` already covers
+ * shared materials and textures by rewinding the stream afterwards, but the
+ * note there concluded that a decorative mesh built *inside a builder* could
+ * never be free "short of giving generation its own generator".
+ *
+ * This is that generator, and it turns out to be the whole answer. Decoration
+ * runs with `Math.random` pointed at a stream of its own and the global one
+ * rewound underneath it, so both the UUIDs it mints and the choices it makes
+ * cost the layout nothing. In practice every choice in here is drawn from
+ * `hash2` instead, so what a block wears depends only on where it stands; the
+ * private stream is what catches the UUIDs, and anything that slips.
+ *
+ * The rule to keep: anything registered in `world.boxes` or `world.solids` —
+ * anything the player can walk into, shoot or stand on — is not decoration
+ * and does not belong in here, because its placement is the city and the city
+ * is what the seed is for. The corollary is that decoration is invisible to
+ * collision and to `hitscan`, so it has to sit where neither matters: flat
+ * against a wall, on a roof, or above head height.
+ */
+const decorRandom = makeRandom(0x9e3779b9);
+function decor(fn) {
+  return reserve(() => {
+    const real = Math.random;
+    Math.random = decorRandom;
+    try { return fn(); } finally { Math.random = real; }
+  });
 }
 
 /* ------------------------------------------------------------- shading bake */
@@ -309,6 +367,7 @@ function bakeStatic(group, world) {
 export function buildCity(scene) {
   const world = new World();
   world.bounds = (GRID * BLOCK) / 2 - 2;
+  decorRandom.rewind(0x9e3779b9);     // one city per page, but start it level anyway
 
   const group = new THREE.Group();
   scene.add(group);
@@ -508,6 +567,7 @@ export function buildCity(scene) {
   }
 
   // ----------------------------------------------------------- street junk
+  const lamps = [];
   for (let i = 0; i < GRID; i++) {
     for (let j = 0; j < GRID; j++) {
       const cx = lotCenter(i), cz = lotCenter(j);
@@ -515,7 +575,7 @@ export function buildCity(scene) {
 
       // streetlight on a lot corner
       if (Math.random() < 0.55) {
-        streetlight(group, world, cx + half + 1.5, cz + half + 1.5, metalMat);
+        lamps.push(streetlight(group, world, cx + half + 1.5, cz + half + 1.5, metalMat));
       }
       // wrecked vehicles along the street running +Z of this lot
       if (Math.random() < 0.8) {
@@ -540,6 +600,30 @@ export function buildCity(scene) {
       rubblePile(group, cx + randRange(-half, half), cz + half + randRange(1, 5), darkConcrete);
     }
   }
+
+  // Overhead cables, strung between streetlights that already exist — which
+  // is why this runs after the pass that places them rather than inside it.
+  // Each lamp reaches to its nearest neighbour up-street and across, so the
+  // sky gets lines over it without turning into a net.
+  decor(() => {
+    for (const a of lamps) {
+      for (const axis of ['x', 'z']) {
+        let best = null, bestD = 1e9;
+        for (const b of lamps) {
+          if (b === a || b[axis] <= a[axis]) continue;
+          const other = axis === 'x' ? 'z' : 'x';
+          if (Math.abs(b[other] - a[other]) > 2.5) continue;     // along a street
+          // lot corners are one BLOCK apart, so the reach has to clear that
+          const d = b[axis] - a[axis];
+          if (d < 8 || d > BLOCK + 3 || d >= bestD) continue;
+          best = b; bestD = d;
+        }
+        if (best && hash2(Math.round(a.x), Math.round(a.z), axis === 'x' ? 70 : 71) < 0.8) {
+          cable(group, a, best, metalMat);
+        }
+      }
+    }
+  });
 
   // ---------------------------------------------------- perimeter blockade
   const edge = (GRID * BLOCK) / 2;
@@ -684,7 +768,7 @@ export function buildCity(scene) {
           g.add(unit);
         }
         if (Math.random() < 0.5) {
-          const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, randRange(4, 9), 5), metal);
+          const mast = new THREE.Mesh(cylGeo(0.09, 0.09, randRange(4, 9), TILE.metal, 5), metal);
           mast.position.set(x + randRange(-bw / 3, bw / 3), h + 4 + 0.6, z + randRange(-bd / 3, bd / 3));
           g.add(mast);
         }
@@ -698,6 +782,14 @@ export function buildCity(scene) {
       shut.position.set(x + randRange(-bw / 4, bw / 4), 1.4, z + bd / 2 + 0.12);
       shut.userData.tint = tintAt(x, z, 2, 0.1);
       g.add(shut);
+
+      // relief, roofline and street level — none of it costs the layout a
+      // draw, so the same seed lays out the same city with or without it
+      basePlinth(g, x, z, bw, bd, conc, tint);
+      facadeRelief(g, x, z, bw, bd, h, conc, tint);
+      roofFurniture(g, x, z, bw, bd, h, conc, metal);
+      streetFurniture(g, x, z, bw, bd, h, metal, cx, cz);
+      fireEscape(g, x, z, bw, bd, h, metal, cx, cz);
     }
   }
 
@@ -766,7 +858,7 @@ export function buildCity(scene) {
     g.add(slab);
 
     // dry fountain in the middle: cover to fight from
-    const ring = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 3.4, 1, 16, 1, true), conc);
+    const ring = new THREE.Mesh(cylGeo(3.2, 3.4, 1, TILE.concrete, 16, true), conc);
     ring.position.set(cx, 0.5, cz);
     ring.material = conc;
     ring.castShadow = ring.receiveShadow = true;
@@ -884,7 +976,7 @@ export function buildCity(scene) {
   }
 
   function streetlight(g, w, x, z, metal) {
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.17, 7, 6), metal);
+    const pole = new THREE.Mesh(cylGeo(0.13, 0.17, 7, TILE.metal, 6), metal);
     pole.position.set(x, 3.5, z);
     pole.castShadow = true;
     g.add(pole);
@@ -895,6 +987,278 @@ export function buildCity(scene) {
     head.position.set(x + 1.7, 6.78, z);
     g.add(head);
     w.addBox(x - 0.25, z - 0.25, x + 0.25, z + 0.25, 7);
+    return { x, y: 6.4, z };
+  }
+
+  /* ------------------------------------------------------------- decoration
+   *
+   * Everything below runs inside `decor` and costs the layout nothing — see
+   * the note on `decorRandom`. None of it registers a box or a solid: it is
+   * what a block *looks* like, not what it is.
+   */
+
+  /**
+   * Which way a projection should hang: away from the middle of the lot, so
+   * an awning or a fire escape reaches over the street rather than into the
+   * building sharing the lot with this one. A lot holding a single building
+   * has no inward side, so that case falls back to the hash.
+   */
+  function outward(offset, roll) {
+    if (Math.abs(offset) < 0.5) return roll < 0.5 ? -1 : 1;
+    return offset >= 0 ? 1 : -1;
+  }
+
+  /**
+   * Pilasters and a string course.
+   *
+   * A building here is a rectangular prism wearing a tiled photograph of a
+   * wall, and under one low sun that is two lit faces, two dark ones and no
+   * line anywhere between them — which is most of what reads as "boxy" from
+   * the street. Ribs standing a hand's width proud of the face on the window
+   * bay lines give the sun something to catch and cast, at four boxes a face.
+   */
+  function facadeRelief(gr, x, z, bw, bd, h, conc, tint) {
+    decor(() => {
+      const key = [Math.round(x), Math.round(z)];
+      if (hash2(key[0], key[1], 31) > 0.78) return;        // not every block
+      const foot = 3.5, head = 1.4;                        // clear of skirt and cap
+      const runH = h - foot - head;
+      if (runH < 3.5) return;
+      const proud = 0.24, ribW = 0.5;
+
+      const rib = (px, pz, rw, rd) => {
+        const m = new THREE.Mesh(boxGeo(rw, runH, rd, TILE.concrete), conc);
+        m.position.set(px, foot + runH / 2, pz);
+        m.castShadow = m.receiveShadow = true;
+        m.userData.tint = tint;
+        gr.add(m);
+      };
+      // on the bay lines, so the ribs land between windows rather than across
+      // them — the same snap `wallUV` gives the texture
+      const onBays = (span, place) => {
+        const bays = Math.max(1, Math.round(span / BAY));
+        const every = bays > 5 ? 2 : 1;
+        for (let k = every; k < bays; k += every) place(-span / 2 + (span / bays) * k);
+      };
+      onBays(bw, (ox) => {
+        rib(x + ox, z - bd / 2 - proud / 2 + 0.04, ribW, proud);
+        rib(x + ox, z + bd / 2 + proud / 2 - 0.04, ribW, proud);
+      });
+      onBays(bd, (oz) => {
+        rib(x - bw / 2 - proud / 2 + 0.04, z + oz, proud, ribW);
+        rib(x + bw / 2 + proud / 2 - 0.04, z + oz, proud, ribW);
+      });
+
+      const band = new THREE.Mesh(boxGeo(bw + proud * 2, 0.42, bd + proud * 2, TILE.concrete), conc);
+      band.position.set(x, h - head + 0.2, z);
+      band.castShadow = true;
+      band.userData.tint = tint;
+      gr.add(band);
+    });
+  }
+
+  /** A base course, so a tower meets the pavement on something. */
+  function basePlinth(gr, x, z, bw, bd, conc, tint) {
+    decor(() => {
+      const hgt = 0.7 + hash2(Math.round(x), Math.round(z), 32) * 0.5;
+      const m = new THREE.Mesh(boxGeo(bw + 0.55, hgt, bd + 0.55, TILE.concrete), conc);
+      m.position.set(x, hgt / 2, z);
+      m.castShadow = m.receiveShadow = true;
+      m.userData.tint = tint;
+      gr.add(m);
+    });
+  }
+
+  /**
+   * What stands on a roof: a stair bulkhead, a water tank on legs, vent
+   * stacks, and a length of parapet still up where the rest came down. A
+   * skyline of flat-topped rectangles is the one part of the city you see
+   * from everywhere, and it was the one part with nothing on it.
+   */
+  function roofFurniture(gr, x, z, bw, bd, h, conc, metal) {
+    decor(() => {
+      const r = (s) => hash2(Math.round(x), Math.round(z), s);
+      const deck = h + 0.8;
+
+      if (r(33) < 0.75) {
+        const bwd = 2.0 + r(34) * 1.5, bhh = 1.9 + r(35) * 1.0;
+        const m = new THREE.Mesh(boxGeo(bwd, bhh, bwd * 0.82, TILE.concrete), conc);
+        m.position.set(x + (r(36) - 0.5) * bw * 0.45, deck + bhh / 2, z + (r(37) - 0.5) * bd * 0.45);
+        m.castShadow = m.receiveShadow = true;
+        m.userData.tint = tintAt(x, z, 8, 0.08);
+        gr.add(m);
+      }
+
+      if (h > 11 && r(38) < 0.6) {
+        const tr = 1.0 + r(39) * 0.5, th = 1.8 + r(40) * 0.9, legH = 1.1;
+        const tx = x + (r(41) - 0.5) * bw * 0.4, tz = z + (r(42) - 0.5) * bd * 0.4;
+        const tank = new THREE.Mesh(cylGeo(tr, tr, th, TILE.rust, 10), rustFor(tx, tz));
+        tank.position.set(tx, deck + legH + th / 2, tz);
+        tank.castShadow = true;
+        tank.userData.tint = tintAt(tx, tz, 2, 0.14);
+        gr.add(tank);
+        for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+          const leg = new THREE.Mesh(boxGeo(0.16, legH, 0.16, TILE.metal), metal);
+          leg.position.set(tx + lx * tr * 0.62, deck + legH / 2, tz + lz * tr * 0.62);
+          leg.castShadow = true;
+          gr.add(leg);
+        }
+      }
+
+      const stacks = 1 + Math.floor(r(43) * 3);
+      for (let k = 0; k < stacks; k++) {
+        const sh = 0.9 + r(44 + k) * 1.6;
+        const pipe = new THREE.Mesh(cylGeo(0.13, 0.13, sh, TILE.metal, 6), metal);
+        pipe.position.set(x + (r(47 + k) - 0.5) * bw * 0.7, deck + sh / 2, z + (r(50 + k) - 0.5) * bd * 0.7);
+        pipe.castShadow = true;
+        gr.add(pipe);
+      }
+
+      // a run of parapet still standing above the cap, on one edge
+      if (r(53) < 0.55) {
+        const along = r(54) < 0.5;
+        const len = (along ? bw : bd) * (0.35 + r(55) * 0.4);
+        const ph = 0.7 + r(56) * 0.8;
+        const m = new THREE.Mesh(
+          boxGeo(along ? len : 0.45, ph, along ? 0.45 : len, TILE.concrete), conc);
+        m.position.set(
+          x + (along ? (r(57) - 0.5) * (bw - len) : (r(57) < 0.5 ? -1 : 1) * (bw / 2 + 0.05)),
+          deck + ph / 2,
+          z + (along ? (r(58) < 0.5 ? -1 : 1) * (bd / 2 + 0.05) : (r(58) - 0.5) * (bd - len)));
+        m.castShadow = m.receiveShadow = true;
+        m.userData.tint = tintAt(x, z, 8, 0.08);
+        gr.add(m);
+      }
+    });
+  }
+
+  /**
+   * A canopy over the shopfront and a downpipe on a corner. Both live in the
+   * bottom eight metres, which is the only part of a building you ever stand
+   * close to — and the only part a silhouette change cannot reach.
+   */
+  function streetFurniture(gr, x, z, bw, bd, h, metal, cx, cz) {
+    decor(() => {
+      const r = (s) => hash2(Math.round(x), Math.round(z), s);
+
+      if (r(60) < 0.65) {
+        // out over the street, not into the building sharing this lot
+        const faceZ = outward(z - cz, r(61));
+        const reachOut = 1.2 + r(62) * 0.6;
+        const cw = bw * (0.45 + r(63) * 0.4);
+        const y = 3.05;
+        const slab = new THREE.Mesh(boxGeo(cw, 0.18, reachOut, TILE.metal), metal);
+        slab.position.set(x + (r(64) - 0.5) * (bw - cw), y, z + faceZ * (bd / 2 + reachOut / 2));
+        slab.castShadow = true;
+        gr.add(slab);
+        for (const side of [-1, 1]) {
+          const stay = new THREE.Mesh(boxGeo(0.09, 1.0, 0.09, TILE.metal), metal);
+          stay.position.set(slab.position.x + side * cw * 0.42, y + 0.5,
+            z + faceZ * (bd / 2 + 0.12));
+          gr.add(stay);
+        }
+      }
+
+      // a downpipe: one unbroken vertical line on a building that otherwise
+      // has none between the pavement and the roof
+      if (r(65) < 0.8 && h > 6) {
+        const sx = r(66) < 0.5 ? -1 : 1, sz = r(67) < 0.5 ? -1 : 1;
+        const len = h - 0.6;
+        const pipe = new THREE.Mesh(cylGeo(0.1, 0.1, len, TILE.metal, 6), metal);
+        pipe.position.set(x + sx * (bw / 2 + 0.14), 0.4 + len / 2, z + sz * (bd / 2 - 0.35));
+        pipe.castShadow = true;
+        gr.add(pipe);
+        const shoe = new THREE.Mesh(boxGeo(0.26, 0.5, 0.26, TILE.metal), metal);
+        shoe.position.set(pipe.position.x, 0.4, pipe.position.z);
+        gr.add(shoe);
+      }
+    });
+  }
+
+  /**
+   * A fire escape down one street face.
+   *
+   * The strongest thing available against a flat wall: a stack of platforms
+   * and stairs hanging a metre off it, casting a ladder of shadow down the
+   * whole elevation. Its lowest platform sits above head height, which is not
+   * an aesthetic choice — decoration is registered in neither `world.boxes`
+   * nor `world.solids`, so anything low enough to walk into would be
+   * something you walk *through*, and anything at chest height would be
+   * something bullets ignore.
+   */
+  function fireEscape(gr, x, z, bw, bd, h, metal, cx, cz) {
+    decor(() => {
+      const r = (s) => hash2(Math.round(x), Math.round(z), s);
+      if (r(80) > 0.45 || h < 11) return;
+
+      const onX = r(81) < 0.5;                   // which elevation it hangs on
+      const side = outward(onX ? x - cx : z - cz, r(82));
+      const out = 1.15;
+      const wide = 2.8;
+      const faceOff = (onX ? bw : bd) / 2;
+      const levels = Math.min(5, Math.floor((h - 5.5) / STOREY));
+      if (levels < 2) return;
+
+      // (along, outward) in the face's own frame, mapped to world at the end
+      const place = (mesh, along, outward, y) => {
+        mesh.position.set(
+          onX ? x + side * (faceOff + outward) : x + along,
+          y,
+          onX ? z + along : z + side * (faceOff + outward));
+        mesh.castShadow = true;
+        gr.add(mesh);
+      };
+      const slab = (w, d) => boxGeo(onX ? d : w, 0.12, onX ? w : d, TILE.metal);
+      const bar = (w, d) => boxGeo(onX ? d : w, 0.09, onX ? w : d, TILE.metal);
+
+      const along0 = (r(83) - 0.5) * ((onX ? bd : bw) - wide - 1);
+      for (let k = 0; k < levels; k++) {
+        const y = 4.6 + k * STOREY;
+        place(new THREE.Mesh(slab(wide, out), metal), along0, out / 2, y);
+        place(new THREE.Mesh(bar(wide, 0.09), metal), along0, out - 0.05, y + 0.95);
+        for (const end of [-1, 1]) {
+          place(new THREE.Mesh(boxGeo(0.08, 1.0, 0.08, TILE.metal), metal),
+            along0 + end * wide / 2, out - 0.05, y + 0.5);
+        }
+        // the stair run up to the next platform, as one raked slab
+        if (k < levels - 1) {
+          const run = new THREE.Mesh(slab(1.9, out * 0.7), metal);
+          place(run, along0 + (k % 2 ? -1 : 1) * (wide / 2 + 0.7), out * 0.55, y + STOREY / 2);
+          // rake it toward the platform above, alternating the way it climbs
+          const tilt = Math.atan2(STOREY - 0.6, 1.9);
+          if (onX) run.rotation.x = (k % 2 ? -1 : 1) * tilt;
+          else run.rotation.z = (k % 2 ? 1 : -1) * tilt;
+        }
+      }
+    });
+  }
+
+  /**
+   * A cable slung between two streetlights.
+   *
+   * Nothing in this city curves. A sagging wire across a street is six thin
+   * boxes and it is the only line in the skyline that is not vertical or
+   * horizontal, which is worth more than its triangle count suggests.
+   */
+  function cable(gr, a, b, metal) {
+    const UP = new THREE.Vector3(0, 1, 0);
+    const p = new THREE.Vector3(), q = new THREE.Vector3(), dir = new THREE.Vector3();
+    const segs = 6;
+    const span = Math.hypot(b.x - a.x, b.z - a.z);
+    const sag = 0.7 + span * 0.045;
+    const at = (t, out) => out.set(
+      a.x + (b.x - a.x) * t,
+      a.y + (b.y - a.y) * t - Math.sin(t * Math.PI) * sag,
+      a.z + (b.z - a.z) * t);
+
+    for (let k = 0; k < segs; k++) {
+      at(k / segs, p); at((k + 1) / segs, q);
+      const len = p.distanceTo(q);
+      const m = new THREE.Mesh(boxGeo(0.075, len, 0.075, TILE.metal), metal);
+      m.position.copy(p).lerp(q, 0.5);
+      m.quaternion.setFromUnitVectors(UP, dir.copy(q).sub(p).normalize());
+      gr.add(m);
+    }
   }
 
   function wreckedCar(g, w, x, z, rot, metal, glass) {
@@ -980,7 +1344,7 @@ export function buildCity(scene) {
   }
 
   function fireBarrel(g, w, x, z) {
-    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.05, 10), rustFor(x, z));
+    const drum = new THREE.Mesh(cylGeo(0.42, 0.42, 1.05, TILE.rust, 10), rustFor(x, z));
     drum.userData.tint = tintAt(x, z, 2, 0.16);
     drum.position.set(x, 0.52, z);
     drum.castShadow = true;

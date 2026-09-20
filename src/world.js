@@ -83,7 +83,13 @@ export class World {
    * same spot (that would be a wall face, not a lip) and enough deck past the
    * edge to stand on.
    *
-   * @returns {{top:number,x:number,z:number}|null} the landing spot
+   * `top` is the lip you grip; `land` is what you end up standing on past it,
+   * which is allowed to sit a little lower. A climb that aims straight at
+   * `land` cuts the corner off through the lip, and one that stops at `top`
+   * hands back in mid-air — so the caller gets both and clears one before
+   * settling onto the other.
+   *
+   * @returns {{top:number,land:number,x:number,z:number}|null} the landing spot
    */
   mantleTarget(x, z, radius, feet, dirX, dirZ, minRise, maxRise) {
     const len = Math.hypot(dirX, dirZ);
@@ -101,9 +107,10 @@ export class World {
       // room for a body past the edge, at the same height
       const lx = x + nx * (d + radius + 0.15), lz = z + nz * (d + radius + 0.15);
       if (this.groundHeight(lx, lz, radius, Infinity) > top + 0.05) continue;
-      if (this.groundHeight(lx, lz, radius, top + 0.05) < top - 0.25) continue;
+      const land = this.groundHeight(lx, lz, radius, top + 0.05);
+      if (land < top - 0.25) continue;
 
-      return { top, x: lx, z: lz };
+      return { top, land, x: lx, z: lz };
     }
     return null;
   }

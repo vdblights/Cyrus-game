@@ -128,9 +128,22 @@ const GRAVITY = 22;
 const STEP_HEIGHT = 0.55;      // how high you can walk up without jumping
 const FALL_SAFE = 13;          // impact speed you can absorb unhurt (~4 m drop)
 const MANTLE_HEIGHT = 1.8;     // highest ledge you can haul yourself onto
-const MANTLE_TIME = 0.45;      // seconds the pull-up takes
+// A pull-up runs at a roughly constant climb rate rather than a fixed
+// duration: one fixed duration means a 0.6 m kerb and a 1.8 m wall move the
+// camera at three times the speed of each other, and the tall one reads as
+// being fired upwards.
+const MANTLE_BASE = 0.32;      // seconds of reach-and-settle, whatever the height
+const MANTLE_PER_M = 0.22;     // plus this per metre climbed
 
-const smooth = (t) => t * t * (3 - 2 * t);
+/**
+ * Smoothstep leaves acceleration discontinuous at both ends: the camera
+ * starts and stops moving smoothly but *changes* speed instantly, which is
+ * exactly the jolt you feel at the top of a climb. The quintic is zero in
+ * both derivatives at 0 and 1.
+ */
+const smoother = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+/** A 0 → 1 → 0 hump with no corner at the peak. */
+const hump = (t) => Math.sin(Math.min(1, Math.max(0, t)) * Math.PI);
 
 export class Player {
   constructor(camera, world) {
@@ -167,6 +180,7 @@ export class Player {
     this.stepTimer = 0;
     this.shake = 0;
     this.mantle = null;
+    this.climbLean = 0;
   }
 
   applyRecoil(v, h) {
@@ -344,12 +358,18 @@ export class Player {
     const sy = trauma * (Math.random() - 0.5) * 0.09;
     const sr = trauma * (Math.random() - 0.5) * 0.07;
 
+    // A climb dips the head and leans into the ledge. Without it a pull-up is
+    // a camera being translated, which is the part that reads as a lift
+    // rather than a haul. It rides a hump, so it is back at zero by the time
+    // the climb hands control back.
+    const lean = this.climbLean;
+
     this.camera.position.copy(this.position);
     this.camera.position.y += trauma * (Math.random() - 0.5) * 0.06;
     this.camera.rotation.set(
-      this.pitch + this.recoilPitch + sy,
+      this.pitch + this.recoilPitch + sy - lean * 0.1,
       this.yaw + this.recoilYaw + sx,
-      roll + sr, 'YXZ');
+      roll + sr + lean * 0.06, 'YXZ');
   }
 
   /**
@@ -359,19 +379,34 @@ export class Player {
    */
   _advanceMantle(dt) {
     const m = this.mantle;
-    m.t = Math.min(1, m.t + dt / MANTLE_TIME);
+    m.t = Math.min(1, m.t + dt / m.dur);
     // hands go up first, feet swing over after: rising leads the reach
-    const rise = smooth(Math.min(1, m.t / 0.55));
-    const reach = smooth(Math.max(0, (m.t - 0.28) / 0.72));
-    this.feetY = m.fromY + (m.top - m.fromY) * rise;
+    const rise = smoother(Math.min(1, m.t / 0.75));
+    const reach = smoother(Math.max(0, (m.t - 0.3) / 0.7));
+    // The lip you grip and the deck you land on are not always the same
+    // height — `mantleTarget` allows a quarter-metre of drop past the edge.
+    // Clearing the lip and then settling onto the deck is the difference
+    // between stepping down and falling the moment the climb hands back.
+    const settle = smoother(Math.max(0, (m.t - 0.72) / 0.28));
+    this.feetY = m.fromY + (m.top - m.fromY) * rise - (m.top - m.land) * settle;
     this.position.x = m.fromX + (m.x - m.fromX) * reach;
     this.position.z = m.fromZ + (m.z - m.fromZ) * reach;
-    // ducked through the climb, standing again as you top out
-    this.eyeHeight = EYE_CROUCH + (EYE_STAND - EYE_CROUCH) * smooth(Math.max(0, (m.t - 0.5) / 0.5));
+
+    // Ducked through the climb — but from the eye height you actually had,
+    // not from a crouch. Snapping straight to `EYE_CROUCH` on the first frame
+    // dropped the camera 0.63 m between one frame and the next, which is the
+    // single biggest thing a pull-up used to do to the view.
+    const lean = hump(m.t);
+    this.climbLean = lean;
+    this.eyeHeight = m.fromEye + (EYE_STAND - m.fromEye) * smoother(m.t) - lean * 0.26;
+
     if (m.t >= 1) {
       this.mantle = null;
       this.onGround = true;
-      this.velocity.set(0, 0, 0);
+      // Walk out of it rather than stopping dead on top. Zeroing the velocity
+      // handed control back at a standstill, so every climb ended in the same
+      // quarter-second of re-acceleration.
+      this.velocity.set(m.dirX * 2.6, 0, m.dirZ * 2.6);
     }
     this.position.y = this.feetY + this.eyeHeight;
   }
@@ -387,10 +422,16 @@ export class Player {
       dirX, dirZ, STEP_HEIGHT + 0.05, MANTLE_HEIGHT);
     if (!ledge) return false;
 
+    const climb = Math.max(0, ledge.top - this.feetY);
+    const dx = ledge.x - this.position.x, dz = ledge.z - this.position.z;
+    const len = Math.hypot(dx, dz) || 1;
     this.mantle = {
       t: 0,
+      dur: MANTLE_BASE + climb * MANTLE_PER_M,
       fromX: this.position.x, fromZ: this.position.z, fromY: this.feetY,
-      x: ledge.x, z: ledge.z, top: ledge.top,
+      fromEye: this.eyeHeight,
+      dirX: dx / len, dirZ: dz / len,
+      x: ledge.x, z: ledge.z, top: ledge.top, land: ledge.land,
     };
     this.stamina = Math.max(0, this.stamina - 0.12);
     this.velocity.set(0, 0, 0);

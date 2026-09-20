@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 22 checks, headless
+npm test           # 24 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -341,10 +341,16 @@ A few notes on the implementation:
   random numbers per material, texture and geometry to build a UUID, off the
   same seeded stream the city is laid out from, so adding a texture used to
   hand every seed a different city. Boot-time graphics now run inside a call
-  that rewinds the stream afterwards.
+  that rewinds the stream afterwards, and the decorative pass over the city
+  draws from a generator of its own — so a seed lays out the same streets
+  whether or not the buildings are wearing any of their detail.
 - **The city is generated per session.** A 6×6 grid of lots is filled with
   towers, gutted low ruins and rubble lots, then dressed with wrecked cars,
-  shipping containers, barricades, streetlights and burning barrels.
+  shipping containers, barricades, streetlights and burning barrels — and the
+  blocks themselves with base courses, pilasters, roof tanks and bulkheads,
+  shopfront canopies, downpipes, fire escapes and cables strung across the
+  streets, because a rectangular prism under one low sun is two lit faces and
+  two dark ones with no line anywhere between them.
 - **Collision is AABB-based.** Everything solid registers a box; entities are
   cylinders pushed out along the shallowest axis. Line of sight uses a slab
   test against the same boxes, so shots can pass over low cover.
@@ -362,7 +368,10 @@ A few notes on the implementation:
   are recycled, so firefights allocate nothing.
 - **Hostiles have a stuck watchdog.** If one stops closing on the player and
   is not deliberately holding its range, it is quietly re-inserted elsewhere
-  so a wave can never stall.
+  so a wave can never stall. Judging that takes a ten-second horizon as well
+  as a four-second window: a hostile working its way around a block and one
+  sliding back and forth along a wall look identical for the first few
+  seconds, and only where each ends up tells them apart.
 - **Grenades use a sphere-vs-AABB solver** that resolves along the shallowest
   of the three axes, distinguishing a bounce from resting contact so a frag
   rolls to a halt instead of stopping dead where it lands.
