@@ -226,10 +226,15 @@ config — and is merged, as is PR #5 above it; `main` has both. That also
 settled the open question about the workflow, which had never run outside this
 container: it has passed on every pull request and every push to `main` since,
 about five minutes a run. PR #6 merged after them, carrying the corrected
-scripted-run bot and its notes, so everything described in this file is on
-`main` and nothing is open. All three merged from
+scripted-run bot and its notes. All four merged from
 `claude/abandoned-city-fps-game-j2xn80`, so that branch keeps being restarted
 from `main` rather than stacked on finished history.
+
+**PR #7 is open and unmerged**: the graphics pass described below — the bake,
+the PBR-and-sky lighting, the post chain — together with the `generateUUID`
+and tone-mapping invariants, the deadlock write-up, and the default test seed
+moving to 1. `main` has none of that. Everything else in this file is on
+`main`.
 
 After PR #5 the scripted-run check began failing on seed 1, and the first
 reading of that was wrong: it looked like PR #5 had slowed wave pacing,
@@ -333,10 +338,14 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
+1. **Fix the wave deadlock**, written up above. It is the only thing here that
+   ends a run outright, it hits roughly one city in four, and the pinned test
+   seed is one allocation away from landing on it. Net displacement over ~10 s
+   rather than per-window closing distance, keeping all three existing guards.
+2. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-2. **Break the texture repetition.** This is the biggest remaining *visual*
+3. **Break the texture repetition.** This is the biggest remaining *visual*
    gap, and it is not a resolution problem — at 512² over a 4 m tile the
    texel density is fine. It is that there are five facade textures, every
    building of a style gets the identical one, and `TEX.facade(style, seed)`
@@ -346,12 +355,12 @@ Suggested next work, in the order I would do it:
    geometry is merged — the attribute rides along in `mergeIntoOne`); bake
    vertex AO the same way, darkening ground contacts and inside corners,
    which is what a city of right angles is really missing.
-3. **Positional audio** — sounds are mono, so you cannot hear which side fire
+4. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
-4. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
+5. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
    only the player calls it, so a car roof is still a place they cannot follow
    you to.
-5. **Convert the hostiles to PBR.** The city and the view model are Standard
+6. **Convert the hostiles to PBR.** The city and the view model are Standard
    materials reading the sky environment; enemies are still Lambert and mint
    four materials each, so they neither catch the sky nor batch.
 
