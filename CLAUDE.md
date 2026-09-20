@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 27 headless checks (needs npm install first)
+npm test                       # 29 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -24,8 +24,9 @@ builds, never to play.
 - **A feature branch ends in a pull request.** When the work on
   `claude/abandoned-city-fps-game-j2xn80` is finished and pushed, open the PR
   against `main` — do not leave the branch sitting pushed and wait to be
-  asked. Every one of PRs #1-#9 came off that branch, which is restarted from
-  `main` after each merge rather than stacked on finished history.
+  asked. Every PR in this repo's history came off that branch, which is
+  restarted from `main` after each merge rather than stacked on finished
+  history.
 - **This file is the only memory that survives.** Sessions run in a container
   that is reclaimed when they end, so anything worth keeping — a preference, a
   measurement, a trap someone already fell into — belongs in here or in
@@ -37,7 +38,7 @@ builds, never to play.
 | File | Owns |
 | --- | --- |
 | `src/main.js` | `Game`: loop, scene, lighting, waves, hit resolution, blasts |
-| `src/world.js` | AABB collision, ground height, line of sight, sphere bounce |
+| `src/world.js` | Box collision (square or turned), ground height, line of sight, sphere bounce |
 | `src/city.js` | Procedural generation; returns `{ world, fireBarrels, perches }` |
 | `src/player.js` | `Input` and `Player`: look, movement, footing, health |
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
@@ -61,6 +62,44 @@ These each cost real debugging time. Changing them needs a reason.
 - **One box list drives everything.** Collision, ground height, line of sight
   and grenade bounce all read `world.boxes`. Register a solid once and every
   system sees it. Anything decorative (rubble, lips, sky) stays out of it.
+- **A box may be turned, and the turn is part of the collider.** Every box
+  carries `cx/cz/hx/hz` and the `cos/sin` of a Y rotation alongside
+  `minX..maxZ`. The min/max is the enclosing AABB, kept as a cheap reject and
+  for the readers that only want a bound — `occupied`, where every caller is
+  placing something and wants clearance rather than contact, and the nav bake,
+  where claiming slightly too much is the safe direction. `resolve`,
+  `groundHeight` and `bounceSphere` transform into the box's own frame, where
+  every box is axis-aligned and the transform is the identity for the ones
+  that already are, so there is one code path and not two. `lineOfSight` is
+  the exception in form only: it uses the AABB slabs as a reject and confirms
+  against the footprint, because it is the AABB's *corners* that stick out
+  past a turned prop. Registering the enclosing AABB and living with it is
+  what the turned props used to do, and it is worse than it sounds. A 2.5 x
+  6 m container at 30 degrees claimed 5.2 x 5.8 m of street; a barricade — a
+  2.2 x 0.7 m slab — registered a 2.2 m square whatever its angle, three
+  times its own footprint, so three quarters of a metre of nothing stopped
+  you either side of every barrier. Measured on seed 1 over 99 turned props
+  and 16 headings each, the empty air between a prop and where you come to
+  rest went from 2.98 m at worst and 0.40 m on average to 0.43 m and 0.089 m.
+  What is left is a cylinder meeting a corner at the corner, which is honest.
+  `addRotatedBox` is how a turned prop registers; `addBox` still covers
+  everything square, which is the whole city apart from four props.
+- **Footing asks how much floor is under the feet, not how wide the body is.**
+  The `radius` argument to `groundHeight` is a question, not a constant. The
+  footing checks in `Player.update` and `Enemy.update` pass `SUPPORT_RADIUS`
+  (0.12 m); a clearance test — "is there room for a whole body here?" — passes
+  the body radius (0.42 m). Passing the body radius to both, which is what
+  they used to do, supports an entity anywhere its cylinder so much as clips a
+  surface: you stood 0.42 m out past every roof edge on nothing, every gap
+  narrower than two radii was invisibly bridged so you ran between crates that
+  are plainly separate, and a kerb lifted you before you had reached it. Seed
+  1 measures 0.12 m of overhang across 82 clear edges against 0.42 m, and no
+  walkable gap wider than a quarter metre against 17. The floor under the
+  constant is the construction seams between abutting boxes — a stacked
+  container is jittered up to 0.4 m, leaving joints of 0.05-0.15 m — which it
+  has to span or you fall down them. `mantleTarget` asks the same way for the
+  deck it promises, or a climb finishes onto ground the footing check will not
+  then find and drops you straight off it.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -325,13 +364,43 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 
 ## State
 
-**Right now:** PRs #1-#9 are merged into `main`. **PR #10 is open** with the
-pathfinding work described below — `src/nav.js`, the committed avoidance, the
-perch fix — 27/27 on seeds 1, 7 and 99991, one-file build clean.
-That was item 1 of the old next-work list, so the list at the bottom now
-starts somewhere else. Nothing in this file is described as open work; the
-list is what to do next, not what was left half done. Restart the branch from
-`main` after this merges rather than stacking on it.
+**Right now:** PRs #1-#10 are merged and PR #11 — the collision pass below —
+is open off `claude/abandoned-city-fps-game-j2xn80`. The suite is 29/29 on
+seeds 1, 7 and 99991 with a clean one-file build.
+
+PR #11 came from play: mantling and standing on things felt wrong, reported
+as running into objects too early and then running between objects that are
+plainly separate once on top of them. Both halves were real, both were
+collision rather than the mantle state machine, and the two compound — an
+oversized collider closes the gap between two props at the same time as it
+stops you early at each of them.
+
+The first half is that a turned prop registered the *AABB around* its
+footprint rather than the footprint. The second is that footing asked
+`groundHeight` with the body radius, so any surface within 0.42 m of you held
+you up. Both are written up as invariants above, with the numbers. Two checks
+guard them — `a prop stops you where you can see it, not a metre before` and
+`the ground you stand on is the ground you can see` — and each computes the
+old value alongside the new one, so the result line carries its own
+before-and-after (`worstAsAabb` 2.98 m against `worst` 0.43 m;
+`overhangAsBody` 0.42 m and `bridgedAsBody` 17 against 0.12 m and 0).
+
+Both were confirmed to fail against the old behaviour, and the first one is
+worth a note: reverting the *registration* makes it fail with "only 0 turned
+props to measure", because its subjects are boxes that carry a turn and those
+only exist after the fix. That is a real failure but a weak one. Reverting
+the *consumer* instead — store the footprint, collide against the AABB — is
+the honest revert, and it fails on the assertion itself at 2.98 m. Prefer
+breaking the reader over breaking the data when confirming a check bites.
+
+The layout is untouched by all of it: seed 1 still lays out 332 boxes, 405
+solids and 12 perches. Nothing here adds an `Object3D` or spends the seeded
+stream, and `addRotatedBox` pushes exactly one box where `addBox` pushed one.
+
+Nothing below is open work apart from what the block above names. The section
+is a record of what was built and what it cost to learn — read the invariants
+and the testing traps first, since those are the parts that bite. The list at
+the end is what to do next.
 
 `main` has everything through the graphics pass (PR #1, merged). Objectives
 landed after it (PR #3): caches, beacons and evac windows, cued by the wave
@@ -384,9 +453,9 @@ baked tint and occlusion, `softLayer`, `reserve` in `rng.js`, the
 two-triangle collision ground, the chamfered and textured view models, and
 the three checks that guard all of it.
 
-PR #9 is open and carries this branch's current work — three things that came
-out of play rather than out of a plan: the wave deadlock (written up below, and now
-closed), the pull-up feeling jumpy, and the city still reading as boxes.
+PR #9 merged three things that came out of play rather than out of a plan:
+the wave deadlock (written up below), the pull-up feeling jumpy, and the city
+still reading as boxes.
 
 The pull-up was two discontinuities and a fixed duration. It set the eye
 height straight to `EYE_CROUCH` on its first frame — a 0.63 m drop of the
@@ -492,8 +561,8 @@ it reboots onto seed 7 to do so, because whether a city has a corner that
 traps a hostile is a property of the layout and the pinned seed does not have
 one. If a future layout move takes the bug away from seed 7 as well, that
 check stops testing anything — it will still pass, which is the failure mode
-to watch for. The honest fix underneath is pathfinding, which the branch
-now has — see below; the watchdog stays as the backstop it was written as.
+to watch for. The honest fix underneath is pathfinding, which landed in
+PR #10 — see below; the watchdog stays as the backstop it was written as.
 
 The graphics pass on top of all that is three changes that only make sense
 together, each one paying for the next:
@@ -609,6 +678,9 @@ materials — `viewScene` has its own ambient, key and rim in `main.js`, plus
 `environmentIntensity`. If it ever needs to read brighter in hand, those are
 the lever. Raising the texture base values instead is the wrong end of it,
 and was already tried once: it made the polymer look like clay.
+
+PR #10 merged the pathfinding below: `src/nav.js`, the committed avoidance and
+the perch fix.
 
 Hostiles can now find their way round a building, which was item 1 of the old
 list and the honest fix under the deadlock backstop. Three parts.

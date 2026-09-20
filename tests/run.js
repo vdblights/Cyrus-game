@@ -487,6 +487,169 @@ check('a pull-up carries the view, it does not jump it', async (page) => {
   return { climbs: r.length, entry: start.entry, shift: jump.worstShift, exit: exit.handover };
 });
 
+/*
+ * The two checks below guard the same complaint from opposite ends: a prop
+ * whose collider is not the shape you can see. One measures the air in front
+ * of it, the other the air on top of it. Both were confirmed to fail against
+ * the code they replaced — see the notes on each.
+ */
+
+check('a prop stops you where you can see it, not a metre before', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const R = g.player.radius;
+
+    // What each turned prop used to register: the enclosing AABB. A 2.5 x 6 m
+    // container at 30 degrees claimed 5.2 x 5.8 m of street.
+    const asAabb = (b) => {
+      const ex = Math.abs(b.hx * b.cos) + Math.abs(b.hz * b.sin);
+      const ez = Math.abs(b.hx * b.sin) + Math.abs(b.hz * b.cos);
+      return { minX: b.cx - ex, maxX: b.cx + ex, minZ: b.cz - ez, maxZ: b.cz + ez,
+               top: b.top, cx: b.cx, cz: b.cz, hx: ex, hz: ez, cos: 1, sin: 0 };
+    };
+    // distance from the prop's centre to its own surface along a heading
+    const surface = (b, ux, uz) => {
+      const lx = b.cos * ux - b.sin * uz, lz = b.sin * ux + b.cos * uz;
+      return Math.min(Math.abs(lx) > 1e-9 ? b.hx / Math.abs(lx) : 1e9,
+                      Math.abs(lz) > 1e-9 ? b.hz / Math.abs(lz) : 1e9);
+    };
+    // walk a body in from 8 m out until World.resolve first pushes back
+    const probe = g.player.position.clone();
+    const stop = (box, ux, uz) => {
+      const one = { boxes: [box] };
+      for (let d = 8; d > 0.02; d -= 0.01) {
+        probe.set(box.cx + ux * d, 0, box.cz + uz * d);
+        const px = probe.x, pz = probe.z;
+        g.world.resolve.call(one, probe, R, 0, 0.35);
+        if (Math.abs(probe.x - px) > 1e-6 || Math.abs(probe.z - pz) > 1e-6) return d;
+      }
+      return 0;
+    };
+
+    const turned = g.world.boxes.filter((b) => b.sin !== 0);
+    let nowWorst = 0, oldWorst = 0, nowSum = 0, oldSum = 0, n = 0;
+    for (const b of turned) {
+      const old = asAabb(b);
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2, ux = Math.cos(a), uz = Math.sin(a);
+        const truth = surface(b, ux, uz);
+        // how much empty air there is between the prop and where you stop
+        const now = stop(b, ux, uz) - truth - R;
+        const was = stop(old, ux, uz) - truth - R;
+        nowWorst = Math.max(nowWorst, now); oldWorst = Math.max(oldWorst, was);
+        nowSum += Math.max(0, now); oldSum += Math.max(0, was); n++;
+      }
+    }
+    return {
+      props: turned.length,
+      worst: +nowWorst.toFixed(2), mean: +(nowSum / n).toFixed(3),
+      worstAsAabb: +oldWorst.toFixed(2), meanAsAabb: +(oldSum / n).toFixed(3),
+    };
+  });
+
+  expect(r.props > 40, `only ${r.props} turned props to measure`);
+  // Some standoff is honest: a cylinder meets a corner at the corner, so a
+  // diagonal approach stops a little wider than a face-on one. Half a metre
+  // of it is not. Measured on seed 1: 0.43 m worst and 0.089 m mean against
+  // 2.98 m and 0.40 m when the same props register their enclosing AABB,
+  // which is what restoring that registration makes this check report.
+  expect(r.worst < 0.6, `a turned prop stops you ${r.worst} m from its surface`);
+  expect(r.mean < 0.15, `turned props stop you ${r.mean} m out on average`);
+  return r;
+});
+
+check('the ground you stand on is the ground you can see', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const W = g.world;
+    const BODY = g.player.radius;
+
+    // Edges with nothing at all beyond them, or this measures the distance to
+    // the next prop rather than the overhang past this one.
+    const edges = W.boxes.filter((b) => {
+      if (b.top < 0.8 || b.top > 4 || b.sin !== 0) return false;
+      return !W.boxes.some((o) => o !== b && o.top > 0.3
+        && o.maxX > b.maxX && o.minX < b.maxX + 2.5
+        && o.maxZ > b.cz - 1 && o.minZ < b.cz + 1);
+    });
+    const overhang = (radius) => {
+      let worst = 0;
+      for (const b of edges) {
+        for (let d = 0; d < 1.5; d += 0.005) {
+          if (W.groundHeight(b.maxX + d, b.cz, radius, 99) < b.top) {
+            worst = Math.max(worst, d); break;
+          }
+        }
+      }
+      return +worst.toFixed(2);
+    };
+
+    // Gaps wide enough to be a stride rather than a construction seam. Every
+    // one of these should be something you fall through or jump.
+    const bridged = (radius) => {
+      let n = 0;
+      const bs = W.boxes.filter((b) => b.top > 0.6 && b.top < 6);
+      for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) {
+        const a = bs[i], b = bs[j];
+        const ox = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+        const oz = Math.min(a.maxZ, b.maxZ) - Math.max(a.minZ, b.minZ);
+        let gap = null;
+        if (ox > 0.8 && oz < 0) gap = -oz; else if (oz > 0.8 && ox < 0) gap = -ox;
+        if (gap === null || gap > 3) continue;
+        if (gap > 0.25 && gap <= radius * 2) n++;
+      }
+      return n;
+    };
+
+    // and the same thing felt rather than computed: walk off a crate
+    const crate = W.boxes.find((b) => {
+      if (b.sin !== 0 || b.top < 0.9 || b.top > 1.6 || b.hx < 0.9) return false;
+      return !W.boxes.some((o) => o !== b && o.top > 0.3
+        && o.maxX > b.maxX && o.minX < b.maxX + 3 && o.maxZ > b.cz - 1 && o.minZ < b.cz + 1);
+    });
+    let walked = null;
+    if (crate) {
+      g.startRun();
+      g.startWave = () => {};
+      g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+      g.input.locked = true;
+      g.player.reset(crate.cx, crate.cz);
+      g.player.feetY = crate.top;
+      g.player.yaw = -Math.PI / 2;                       // face +X
+      g.input.keys.clear(); g.input.keys.add('KeyW');
+      for (let f = 0; f < 300; f++) {
+        g.time += 1 / 60; g.step(1 / 60);
+        if (!g.player.onGround && walked === null) {
+          walked = +(g.player.position.x - crate.maxX).toFixed(2);
+        }
+        if (g.player.feetY < 0.2) break;
+      }
+      g.input.keys.clear();
+      walked = { past: walked, reachedStreet: g.player.feetY < 0.2 };
+    }
+
+    return {
+      edges: edges.length,
+      overhang: overhang(0.12), overhangAsBody: overhang(BODY),
+      bridged: bridged(0.12), bridgedAsBody: bridged(BODY),
+      walked,
+    };
+  });
+
+  expect(r.edges > 20, `only ${r.edges} clear edges to measure`);
+  // Measured on seed 1: 0.12 m of overhang and no bridged gap, against 0.42 m
+  // and 17 gaps when footing asks with the body radius — which is what
+  // passing `this.radius` here again makes this check report.
+  expect(r.overhang <= 0.2,
+    `you stand ${r.overhang} m past a roof edge on nothing`);
+  expect(r.bridged === 0,
+    `${r.bridged} gaps of more than a quarter metre are walkable as solid ground`);
+  expect(r.walked && r.walked.past !== null && r.walked.past < 0.25,
+    `walking off a crate kept you up ${r.walked && r.walked.past} m past the edge`);
+  expect(r.walked.reachedStreet, 'walking off a crate did not put you on the street');
+  return r;
+});
+
 check('long falls hurt, short drops do not', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
