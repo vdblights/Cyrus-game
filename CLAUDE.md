@@ -287,7 +287,7 @@ config — and is merged, as is PR #5 above it; `main` has both. That also
 settled the open question about the workflow, which had never run outside this
 container: it has passed on every pull request and every push to `main` since,
 about five minutes a run. PR #6 merged after them, carrying the corrected
-scripted-run bot and its notes. All four merged from
+scripted-run bot and its notes. Every one of them merged from
 `claude/abandoned-city-fps-game-j2xn80`, so that branch keeps being restarted
 from `main` rather than stacked on finished history.
 
@@ -295,13 +295,14 @@ PR #7 merged the graphics pass described below — the bake, the PBR-and-sky
 lighting, the post chain — together with the `generateUUID` and tone-mapping
 invariants, the deadlock write-up, and the default test seed moving to 1.
 
-**PR #8 is open and unmerged**, carrying the texture pass and the weapon pass
-after it: the `TILE` contract and snapped wall UVs, ten facade textures, the
-four rust variants, baked tint and occlusion, `softLayer`, `reserve` in
-`rng.js`, the two-triangle collision ground, the chamfered and textured view
-models, and the three checks that guard all of it. `main` has everything else
-in this file. The only open *work* is the wave deadlock, which
-is first on the list below.
+PR #8 merged the texture pass and the weapon pass after it: the `TILE`
+contract and snapped wall UVs, ten facade textures, the four rust variants,
+baked tint and occlusion, `softLayer`, `reserve` in `rng.js`, the
+two-triangle collision ground, the chamfered and textured view models, and
+the three checks that guard all of it.
+
+So `main` has everything in this file and no pull request is open. The only
+open *work* is the wave deadlock, which is first on the list below.
 
 After PR #5 the scripted-run check began failing on seed 1, and the first
 reading of that was wrong: it looked like PR #5 had slowed wave pacing,
