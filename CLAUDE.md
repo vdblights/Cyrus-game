@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 17 headless checks (needs npm install first)
+npm test                       # 19 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -128,6 +128,16 @@ climb, the same discipline `__place` applies to a firing line. A check that
 only ever tries one approach per obstacle is asserting something the game
 never promised.
 
+A fourth, and the most expensive to date, because it first read as a game
+regression: a bot that flees what it is measuring grades itself, not the
+game. The scripted run's bot backed away whenever it had no line of sight,
+and the player walks faster than every archetype, so it could never be caught
+and the wave never arrived. A teleport bug had been hiding that for as long
+as it existed. When a check that drives the player starts failing, measure
+what the bot spent its frames doing before concluding anything about the
+game — and once a setup is changed, confirm the check still passes on the
+code from *both* sides of whatever it was accusing.
+
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
@@ -151,16 +161,21 @@ you bounce off. Reach is 1.8 m above the feet, so holding `Space` through a
 jump reaches about 2.6 m; a building face is never a ledge because the test
 rejects anything with no deck to stand on past the edge.
 
-Two bugs came back from play and are fixed on top of that, both found by
-measuring rather than reading (`tests/probe.js`, then a check in the suite —
-each new check was confirmed to fail against the old code before being kept).
-Hostiles appeared to teleport: the stuck watchdog was firing on healthy
-hostiles roughly every nine seconds of ordinary play, twice a minute in full
-view of the player, and chaining because it re-measured from the position it
-had just moved them off. And the gun appeared to jam: once a weapon's reserve
-hit zero the trigger only clicked, with no reload prompt, no swap and no
-explanation — a scripted run spent 167 of 240 seconds like that, reaching wave
-2 instead of wave 4. Both invariants are written up above.
+Two bugs came back from play and are fixed on top of that (PR #5, merged),
+both found by measuring rather than reading (`tests/probe.js`, then a check in
+the suite — each new check was confirmed to fail against the old code before
+being kept). Hostiles appeared to teleport: the stuck watchdog was firing on
+healthy hostiles roughly every nine seconds of ordinary play, twice a minute
+in full view of the player, and chaining because it re-measured from the
+position it had just moved them off. And the gun appeared to jam: once a
+weapon's reserve hit zero the trigger only clicked, with no reload prompt, no
+swap and no explanation — a scripted run spent 167 of 240 seconds like that,
+reaching wave 2 instead of wave 4. Both invariants are written up above.
+
+The same PR fixed the ledge check, which failed on seed 20260101 by always
+approaching the dead centre of a box's face; on that seed the centre of one
+crate has a 2.6 m wall standing in the deck you would land on, so refusing to
+climb was right. `World.mantleTarget` is unchanged.
 
 CI runs the suite and the one-file build on every push to `main` and every PR
 (`.github/workflows/ci.yml`), and attaches the built `ashfall.html` to the run.
@@ -169,12 +184,45 @@ minutes rather than the download. If the browser install ever starts failing,
 the harness falls back to `PLAYWRIGHT_BROWSERS_PATH` and `ASHFALL_CHROME`.
 
 PR #4 carried all three of those — the CI workflow, mantling and the Vercel
-config — and **is merged**; `main` has them. That also settled the open
-question about the workflow, which had never run outside this container: both
-runs passed, once on the pull request and once on the push to `main` after the
-merge, about five minutes each. The two fixes above sit on a branch restarted
-from that merge, so they are a fresh change rather than more commits on
-finished history.
+config — and is merged, as is PR #5 above it; `main` has both. That also
+settled the open question about the workflow, which had never run outside this
+container: it has passed on every pull request and every push to `main` since,
+about five minutes a run. **PR #6 is open and unmerged**, carrying the
+corrected scripted-run bot and these notes — everything below this paragraph
+describes the branch, not `main`. Both merged PRs came from
+`claude/abandoned-city-fps-game-j2xn80`, so that branch keeps being restarted
+from `main` rather than stacked on finished history.
+
+After PR #5 the scripted-run check began failing on seed 1, and the first
+reading of that was wrong: it looked like PR #5 had slowed wave pacing,
+because the false relocations it removed had been quietly doing a second job
+— a relocated hostile lands 22-45 m from the player, nearer than the 26-62 m a
+fresh spawn walks in from, roughly every nine seconds. Measuring properly
+showed the opposite. With a bot that simply advances, seed 1 reaches wave 4
+with 38 kills after PR #5 against wave 3 with 26 before it, and the median
+time from spawn to engagement went from 10.8 s to 9.0 s. Pacing improved.
+
+What had actually broken was the check's bot. On no line of sight for five
+seconds it held `KeyS` and walked backwards — at 5.2 m/s, away from
+archetypes that top out at 4.6, so the retreat never ended and it outran the
+wave it was measuring: 56% of a four-minute run spent backing off, 72%
+strafing blind, 10% firing. The old teleport bug had been papering over that
+by re-inserting hostiles at 22-45 m. The bot now backs off only from a threat
+inside 12 m and keeps closing while it flanks, which is what its own comment
+always claimed it did. Seeds 1 and 20260813 pass on the code from *both*
+sides of PR #5 with the corrected bot, which is the check that it measures
+the game rather than the change.
+
+One seed-dependent failure is open and predates all of this: on seed
+20251111, `stairs carry the player onto a perch` reports only 3 of 5 perches
+walkable, with two never reached at all. The numbers are identical on the
+code from before the watchdog work, so nothing in this session caused it —
+either the city puts perches up there with no stair route, or the check picks
+perches that were never meant to have one, and which of those it is has not
+been established. `node tests/run.js --seed=20251111` is the reproducer.
+Worth knowing: the same seed on the older code also failed the scripted run
+with a 99.4 s stall, which the current code passes. Every other seed tried
+— 1, 7, 4242, 31337, 99991, 20260101 and the pinned 20260813 — is 19/19.
 
 Deployment is static and must stay that way. `vercel.json` overrides the build
 and install commands to no-ops and serves the repo root; `.vercelignore` keeps
