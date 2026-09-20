@@ -230,11 +230,11 @@ scripted-run bot and its notes. All four merged from
 `claude/abandoned-city-fps-game-j2xn80`, so that branch keeps being restarted
 from `main` rather than stacked on finished history.
 
-**PR #7 is open and unmerged**: the graphics pass described below — the bake,
-the PBR-and-sky lighting, the post chain — together with the `generateUUID`
-and tone-mapping invariants, the deadlock write-up, and the default test seed
-moving to 1. `main` has none of that. Everything else in this file is on
-`main`.
+PR #7 merged the graphics pass described below — the bake, the PBR-and-sky
+lighting, the post chain — together with the `generateUUID` and tone-mapping
+invariants, the deadlock write-up, and the default test seed moving to 1. So
+`main` has everything in this file, and no pull request is open. The only open
+*work* is the wave deadlock, which is first on the list below.
 
 After PR #5 the scripted-run check began failing on seed 1, and the first
 reading of that was wrong: it looked like PR #5 had slowed wave pacing,
