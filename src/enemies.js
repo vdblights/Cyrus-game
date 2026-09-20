@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { audio } from './audio.js';
-import { randRange } from './world.js';
+import { randRange, SUPPORT_RADIUS } from './world.js';
 import { blobShadow } from './textures.js';
 
 const V1 = new THREE.Vector3();
@@ -561,9 +561,11 @@ export class Enemy {
     world.resolve(this.pos, this.radius, this.pos.y, 0.55);
     world.clampToBounds(this.pos, this.radius);
 
-    // follow the surface underfoot: stairs and platforms carry hostiles too,
-    // and stepping off a ledge drops them rather than leaving them floating
-    const support = world.groundHeight(this.pos.x, this.pos.z, this.radius, this.pos.y + 0.55);
+    // Follow the surface underfoot: stairs and platforms carry hostiles too,
+    // and stepping off a ledge drops them rather than leaving them floating.
+    // Asked with the same foot the player stands on, or a hostile holds a
+    // ledge you fall off and the two of you are walking different cities.
+    const support = world.groundHeight(this.pos.x, this.pos.z, SUPPORT_RADIUS, this.pos.y + 0.55);
     if (support > this.pos.y) this.pos.y = Math.min(support, this.pos.y + dt * 6);
     else if (support < this.pos.y) this.pos.y = Math.max(support, this.pos.y - dt * 14);
 

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SUPPORT_RADIUS } from './world.js';
 
 /** Keyboard + mouse state, including pointer-lock look deltas. */
 export class Input {
@@ -309,8 +310,13 @@ export class Player {
     this.world.clampToBounds(this.position, this.radius);
 
     // ---- footing ---------------------------------------------------------
+    // Footing asks how much floor is under the feet, not how wide the body
+    // is: supporting the player anywhere their whole cylinder clipped a
+    // surface left them standing 0.42 m out past every roof edge, bridged
+    // every gap narrower than two radii, and stepped them up onto a kerb
+    // before they had reached it.
     const ceiling = this.feetY + (this.onGround ? STEP_HEIGHT : 0.02);
-    const support = this.world.groundHeight(this.position.x, this.position.z, this.radius, ceiling);
+    const support = this.world.groundHeight(this.position.x, this.position.z, SUPPORT_RADIUS, ceiling);
     if (this.feetY <= support + 1e-4) {
       if (this.velocity.y < -FALL_SAFE && this.onFallDamage) {
         this.onFallDamage(Math.round((-this.velocity.y - FALL_SAFE) * 6));

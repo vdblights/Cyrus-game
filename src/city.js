@@ -959,12 +959,12 @@ export function buildCity(scene) {
       g.add(m);
       w.solids.push(m);
     }
+    w.addRotatedBox(x, z, cw / 2, cd / 2, rot, ch * 2);
+
+    // crate steps climbing the long side up to the top of the stack
     const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
     const halfW = (cw / 2) * cos + (cd / 2) * sin;
     const halfD = (cw / 2) * sin + (cd / 2) * cos;
-    w.addBox(x - halfW, z - halfD, x + halfW, z + halfD, ch * 2);
-
-    // crate steps climbing the long side up to the top of the stack
     const runLen = ch * 2 * 1.85;
     if (rot === 0) {
       stairs(g, w, x + halfW + 1 + runLen, z, Math.PI / 2 * 3, ch * 2, 2.4);
@@ -1305,10 +1305,7 @@ export function buildCity(scene) {
     car.rotation.z = burnt ? 0 : randRange(-0.03, 0.03);
     g.add(car);
 
-    const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
-    const halfW = (bw / 2) * cos + (bl / 2) * sin;
-    const halfD = (bw / 2) * sin + (bl / 2) * cos;
-    w.addBox(x - halfW, z - halfD, x + halfW, z + halfD, 1.5);
+    w.addRotatedBox(x, z, bw / 2, bl / 2, car.rotation.y, 1.5);
     w.solids.push(chassis, cabin);
   }
 
@@ -1323,8 +1320,10 @@ export function buildCity(scene) {
       m.userData.tint = tintAt(m.position.x, m.position.z, 7, 0.1);
       g.add(m);
       w.solids.push(m);
-      const px = m.position.x, pz = m.position.z;
-      w.addBox(px - 1.1, pz - 1.1, px + 1.1, pz + 1.1, 1.05);
+      // 2.2 x 0.7 m of slab, turned. It used to register a 2.2 m square
+      // whatever its angle — three times the footprint, so three quarters of
+      // a metre of nothing stopped you either side of every barrier.
+      w.addRotatedBox(m.position.x, m.position.z, 1.1, 0.35, m.rotation.y, 1.05);
     }
   }
 
@@ -1336,10 +1335,7 @@ export function buildCity(scene) {
     m.castShadow = m.receiveShadow = true;
     m.userData.tint = tintAt(x, z, 2, 0.16);
     g.add(m);
-    const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
-    const halfW = (cw / 2) * cos + (cd / 2) * sin;
-    const halfD = (cw / 2) * sin + (cd / 2) * cos;
-    w.addBox(x - halfW, z - halfD, x + halfW, z + halfD, ch);
+    w.addRotatedBox(x, z, cw / 2, cd / 2, rot, ch);
     w.solids.push(m);
   }
 
