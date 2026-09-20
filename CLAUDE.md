@@ -159,10 +159,13 @@ Chromium is cached on the resolved Playwright version, so a run is a couple of
 minutes rather than the download. If the browser install ever starts failing,
 the harness falls back to `PLAYWRIGHT_BROWSERS_PATH` and `ASHFALL_CHROME`.
 
-**PR #4 is open and unmerged**, carrying all three of those: the CI workflow,
-mantling, and the Vercel config. `main` has none of them. It is also the first
-run of that workflow anywhere, so a green check on #4 is the only evidence CI
-actually works on a machine that is not this container.
+PR #4 carried all three of those — the CI workflow, mantling and the Vercel
+config — and **is merged**; `main` has them. That also settled the open
+question about the workflow, which had never run outside this container: both
+runs passed, once on the pull request and once on the push to `main` after the
+merge, about five minutes each. The two fixes above sit on a branch restarted
+from that merge, so they are a fresh change rather than more commits on
+finished history.
 
 Deployment is static and must stay that way. `vercel.json` overrides the build
 and install commands to no-ops and serves the repo root; `.vercelignore` keeps
