@@ -642,9 +642,11 @@ class Game {
     const spot = (enemy.type.perch && this.findPerch()) || { ...this.findSpawnPoint(22, 45), y: 0 };
     const { x, z } = spot;
     enemy.pos.set(x, spot.y || 0, z);
-    enemy.lastDistCheck = Infinity;
     enemy.vel.set(0, 0, 0);
     enemy.group.position.copy(enemy.pos);
+    // the watchdog now has to judge the next window from where it landed, not
+    // from where it was pulled out of
+    enemy.markWatchdog(this.player);
   }
 
   /** A high, unoccupied vantage point far enough from the player to matter. */
@@ -994,8 +996,11 @@ class Game {
       const moving = Math.hypot(this.player.velocity.x, this.player.velocity.z) > 2.5;
       if (this.weapons.fire(this.time, this.camera, moving)) {
         if (!w.def.auto) input.fire = false;
-      } else if (w.mag === 0 && !this.weapons.reloading && w.reserve > 0) {
-        this.weapons.startReload(this.time);
+      } else if (w.mag === 0 && !this.weapons.reloading) {
+        // an empty mag reloads; an empty gun reaches for one that still works,
+        // rather than clicking dry while a loaded rifle sits in the loadout
+        if (w.reserve > 0) this.weapons.startReload(this.time);
+        else if (this.weapons.switchToArmed(this.time)) this.hud.toast('SWITCHING — DRY');
       }
     }
     // enemies

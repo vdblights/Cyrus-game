@@ -84,7 +84,20 @@ export class HUD {
     this.el.mag.textContent = w.mag;
     this.el.reserve.textContent = w.reserve;
     this.el.ammo.classList.toggle('empty', w.mag === 0);
-    this.el.reloadHint.classList.toggle('hidden', !(w.mag === 0 && w.reserve > 0 && !ws.reloading));
+    // An empty mag with reserve behind it prompts a reload. One with nothing
+    // behind it used to prompt nothing at all — the readout sat at 0/0 and the
+    // gun just clicked, which reads as a jam rather than as being out.
+    let hint = '';
+    if (w.mag === 0 && !ws.reloading) {
+      if (w.reserve > 0) hint = 'PRESS [R] TO RELOAD';
+      else if (ws.anyArmed) hint = 'OUT OF AMMO — SWITCH WEAPON';
+      else hint = 'NO AMMO — [F] TO MELEE';
+    }
+    if (hint !== this._hint) {      // this runs every frame; do not churn the DOM
+      this._hint = hint;
+      this.el.reloadHint.textContent = hint;
+      this.el.reloadHint.classList.toggle('hidden', !hint);
+    }
 
     this.slotEls.forEach((el, i) => {
       el.classList.toggle('active', i === ws.index);
