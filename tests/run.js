@@ -305,10 +305,41 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
 
     // Walk up to a box's -Z face from the street and hold jump. Camera forward
     // is (-sin yaw, -cos yaw), so yaw = PI faces +Z.
+    const R = 0.42;
+
+    /**
+     * Pick a spot along a box's -Z face to climb from, or null if the face
+     * offers none.
+     *
+     * The centre is not always one. A crate can be half-buried in a taller
+     * structure, and then the deck you would land on at the centre has a
+     * 2.6 m wall standing in it — refusing that climb is correct, so
+     * demanding it is a broken setup rather than a broken game. Validate the
+     * landing the climb would actually use, the way __place validates a
+     * firing line, and slide along the face until one is clean.
+     */
+    const approach = (box) => {
+      const mid = (box.minX + box.maxX) / 2;
+      const reach = Math.max(0, (box.maxX - box.minX) / 2 - R);
+      const pz = box.minZ - 0.62;
+      const lz = pz + (R + 0.1) + R + 0.15;      // nearest landing the climb would take
+      for (const off of [0, -0.5, 0.5, -0.85, 0.85]) {
+        if (Math.abs(off) > reach) continue;
+        const px = mid + off;
+        if (g.world.groundHeight(px, pz, R, 99) > 0.2) continue;   // not on the street
+        if (g.world.occupied(px, pz, R, 0.6)) continue;            // stuck inside something
+        // room for a body on the deck, and a deck there to stand on
+        if (g.world.groundHeight(px, lz, R, Infinity) > box.top + 0.05) continue;
+        if (g.world.groundHeight(px, lz, R, box.top + 0.05) < box.top - 0.25) continue;
+        return { px, pz };
+      }
+      return null;
+    };
+
     const attempt = (box) => {
-      const px = (box.minX + box.maxX) / 2, pz = box.minZ - 0.62;
-      if (g.world.groundHeight(px, pz, 0.42, 99) > 0.2) return null;   // not on the street
-      if (g.world.occupied(px, pz, 0.42, 0.6)) return null;            // stuck inside something
+      const spot = approach(box);
+      if (!spot) return null;
+      const { px, pz } = spot;
       g.player.reset(px, pz);
       g.player.yaw = Math.PI;
       g.input.keys.clear(); g.input.keys.add('Space');
