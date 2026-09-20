@@ -212,6 +212,18 @@ what the bot spent its frames doing before concluding anything about the
 game — and once a setup is changed, confirm the check still passes on the
 code from *both* sides of whatever it was accusing.
 
+A fifth, for anything that changes how something *looks*: the suite cannot
+assert on pixels, so a look change is not verified until it has been
+rendered and looked at. Two framings are worth keeping. In-game, drive the
+real view and screenshot it — that is the only thing that shows how dark the
+scene actually makes a surface. To judge a model on its own, hide the world
+(`g.scene.visible = false`), park the view model in front of the view camera
+and stub `weapons.update` so sway does not put it back. Both caught real
+faults in the weapon pass within one render each: a gun turned to a
+silhouette by a colour multiplying its map, and facets missing because their
+winding was inside out. Neither would have shown up in any assertion that
+was plausible to write first.
+
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
@@ -283,11 +295,12 @@ PR #7 merged the graphics pass described below — the bake, the PBR-and-sky
 lighting, the post chain — together with the `generateUUID` and tone-mapping
 invariants, the deadlock write-up, and the default test seed moving to 1.
 
-**The texture pass after it is committed to the branch and not yet proposed**:
-the `TILE` contract and snapped wall UVs, ten facade textures, the four rust
-variants, baked tint and occlusion, `softLayer`, `reserve` in `rng.js`, the
-two-triangle collision ground, and the two checks that guard them. `main` has
-everything else in this file. The only open *work* is the wave deadlock, which
+**PR #8 is open and unmerged**, carrying the texture pass and the weapon pass
+after it: the `TILE` contract and snapped wall UVs, ten facade textures, the
+four rust variants, baked tint and occlusion, `softLayer`, `reserve` in
+`rng.js`, the two-triangle collision ground, the chamfered and textured view
+models, and the three checks that guard all of it. `main` has everything else
+in this file. The only open *work* is the wave deadlock, which
 is first on the list below.
 
 After PR #5 the scripted-run check began failing on seed 1, and the first
@@ -459,6 +472,12 @@ it read as notches bitten out of the parts. It is computed per facet now, and
 `the gun in your hands is solid and textured at its declared scale` counts
 inverted facets across all four models. That check was confirmed to fail with
 the hand-written winding restored.
+
+The gun still reads dark in play, and that is the dusk scene rather than the
+materials — `viewScene` has its own ambient, key and rim in `main.js`, plus
+`environmentIntensity`. If it ever needs to read brighter in hand, those are
+the lever. Raising the texture base values instead is the wrong end of it,
+and was already tried once: it made the polymer look like clay.
 
 Deployment is static and must stay that way. `vercel.json` overrides the build
 and install commands to no-ops and serves the repo root; `.vercelignore` keeps
