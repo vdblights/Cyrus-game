@@ -35,6 +35,10 @@ export const TILE = {
   rust: 2.5,
   metal: 2,
   glass: 4,
+  // The gun is the one surface always within arm's reach, so its tiles are
+  // small: 0.3 m across a 512 tile is 1,700 px/m, against 64 for the road.
+  gunPoly: 0.3,
+  gunMetal: 0.36,
 };
 
 /** Windows per facade tile. `city.js` snaps wall UVs to these. */
@@ -707,6 +711,117 @@ export function paintedMetal() {
     }
     grit(ctx, s, 700, '210,214,218', '18,18,20', 1.1);
     noise(ctx, s, 14);
+    return c;
+  });
+}
+
+/**
+ * Polymer: a frame, a handguard, a stock.
+ *
+ * Injection-moulded furniture is not smooth — it is stippled so it grips a
+ * wet hand, and that stipple is the whole reason a plastic gun part reads as
+ * plastic rather than as a grey box. At 0.3 m a tile, a 1.5 mm pebble is
+ * about two pixels across, which is the smallest thing worth painting here.
+ */
+export function gunPolymer() {
+  return make('gunpoly', () => {
+    const s = 512, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#3f434a';
+    ctx.fillRect(0, 0, s, s);
+
+    // broad tone variation, so the surface is not one flat value
+    mottle(ctx, s, 10, 'rgba(18,19,22,0.30)', 30, 110);
+    mottle(ctx, s, 7, 'rgba(78,82,90,0.16)', 24, 80);
+
+    // the stipple itself: a jittered grid of pebbles, each one lit from the
+    // top-left, which is what gives the normal map something to lift
+    const step = 5;
+    for (let y = 0; y < s; y += step) {
+      for (let x = 0; x < s; x += step) {
+        const px = x + rr(-1.2, 1.2), py = y + rr(-1.2, 1.2);
+        const r = rr(1.1, 2.0);
+        ctx.fillStyle = `rgba(86,91,99,${rr(0.30, 0.55)})`;
+        ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = `rgba(14,15,17,${rr(0.20, 0.40)})`;
+        ctx.beginPath(); ctx.arc(px + r * 0.5, py + r * 0.5, r * 0.62, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // mould seams, where the two halves of the tool met
+    for (let i = 0; i < 3; i++) {
+      const y = rr(0, s);
+      ctx.strokeStyle = `rgba(150,156,164,${rr(0.10, 0.20)})`;
+      ctx.lineWidth = rr(0.6, 1.2);
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(s, y); ctx.stroke();
+      ctx.strokeStyle = 'rgba(10,11,13,0.22)';
+      ctx.beginPath(); ctx.moveTo(0, y + 1.4); ctx.lineTo(s, y + 1.4); ctx.stroke();
+    }
+
+    // scuffs: polymer goes shiny where it is handled, not bright
+    for (let i = 0; i < 120; i++) {
+      ctx.strokeStyle = `rgba(122,128,137,${rr(0.05, 0.16)})`;
+      ctx.lineWidth = rr(0.5, 2.2);
+      const x = rr(0, s), y = rr(0, s), a = rr(0, Math.PI * 2), len = rr(8, 46);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+      ctx.stroke();
+    }
+    noise(ctx, s, 9);
+    return c;
+  });
+}
+
+/**
+ * Parkerised steel: a slide, a barrel, a receiver.
+ *
+ * Phosphate finish is dark and almost matte, and what makes it read as steel
+ * is the machining underneath it — fine parallel tool marks — plus the places
+ * the finish has worn back to bright metal. The wear is what the roughness
+ * map keys off: `surfaceFrom` turns those bright pixels into the only part of
+ * the gun that catches the sky properly.
+ */
+export function gunMetal() {
+  return make('gunmetal', () => {
+    const s = 512, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#5e656e';
+    ctx.fillRect(0, 0, s, s);
+
+    mottle(ctx, s, 12, 'rgba(20,22,26,0.34)', 26, 96);
+    mottle(ctx, s, 6, 'rgba(96,104,114,0.14)', 20, 70);
+
+    // machining marks, all running one way like a ground flat
+    for (let i = 0; i < 900; i++) {
+      const y = rr(0, s);
+      ctx.strokeStyle = `rgba(${chance(0.5) ? '132,140,150' : '22,24,28'},${rr(0.04, 0.13)})`;
+      ctx.lineWidth = rr(0.35, 1.0);
+      const x = rr(0, s), len = rr(30, 190);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + len, y + rr(-1.5, 1.5));
+      ctx.stroke();
+    }
+
+    // pitting, and the odd deeper gouge
+    grit(ctx, s, 900, '158,166,176', '16,17,20', 1.3);
+    for (let i = 0; i < 26; i++) {
+      const x = rr(0, s), y = rr(0, s);
+      ctx.fillStyle = `rgba(14,15,18,${rr(0.20, 0.45)})`;
+      ctx.beginPath(); ctx.arc(x, y, rr(1, 3.4), 0, Math.PI * 2); ctx.fill();
+    }
+
+    // holster wear: broad patches rubbed back to white steel
+    mottle(ctx, s, 9, 'rgba(176,184,194,0.22)', 10, 40);
+    for (let i = 0; i < 60; i++) {
+      ctx.strokeStyle = `rgba(196,204,214,${rr(0.10, 0.30)})`;
+      ctx.lineWidth = rr(0.4, 1.3);
+      const x = rr(0, s), y = rr(0, s), a = rr(-0.25, 0.25), len = rr(10, 60);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+      ctx.stroke();
+    }
+    noise(ctx, s, 11);
     return c;
   });
 }

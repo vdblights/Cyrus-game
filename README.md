@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 21 checks, headless
+npm test           # 22 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -59,7 +59,8 @@ reach, grenade flight and blast falloff, cook-offs, stair climbing, mantling
 onto ledges (and not onto walls), fall damage, marksman perching and laser
 tracking, warlord spawns, the objective schedule and its payouts, objective
 decay and expiry, waypoint projection, the texel density of every baked
-surface, the ambient darkening baked under the city, aiming without pointer
+surface, the ambient darkening baked under the city, the view model being
+solid and unwrapped at its own scale, aiming without pointer
 lock, settings and record persistence, and a four-minute scripted run that
 must reach wave 3 with hostiles still able to engage.
 
@@ -348,7 +349,10 @@ A few notes on the implementation:
   cylinders pushed out along the shallowest axis. Line of sight uses a slab
   test against the same boxes, so shots can pass over low cover.
 - **The view model renders in its own scene** over the world with a cleared
-  depth buffer, so the weapon never clips into geometry.
+  depth buffer, so the weapon never clips into geometry. Every part of it is a
+  chamfered box carrying stippled polymer or parkerised steel at its own tile
+  scale — an untextured cube lit by one sun is two faces and two values, which
+  is what "boxy" means, and the gun is the one surface always within reach.
 - **The city is drawn as a handful of meshes.** It is generated as some
   fifteen hundred boxes, then merged by material once it is finished — 567
   draw calls become 39, and the shadow pass falls with them. The meshes it

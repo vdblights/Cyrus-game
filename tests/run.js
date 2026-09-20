@@ -913,6 +913,68 @@ check('every surface is textured at the world scale it declares', async (page) =
   return { batches: r.length, worst: r.reduce((a, b) => (Math.abs(b.median - 1) > Math.abs(a.median - 1) ? b : a)) };
 });
 
+check('the gun in your hands is solid and textured at its declared scale', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    let tris = 0, inverted = 0, meshes = 0, textured = 0;
+    const density = [];
+
+    for (const w of g.weapons.weapons) {
+      w.model.traverse((o) => {
+        if (!o.geometry || !o.geometry.attributes.position) return;
+        meshes++;
+        const m = o.material;
+        if (m.map) textured++;
+
+        const p = o.geometry.attributes.position;
+        const n = o.geometry.attributes.normal;
+        const uv = o.geometry.attributes.uv;
+        const idx = o.geometry.index;
+        const count = idx ? idx.count : p.count;
+        const at = (k) => (idx ? idx.getX(k) : k);
+
+        for (let k = 0; k + 2 < count; k += 3) {
+          const a = at(k), b = at(k + 1), c = at(k + 2);
+          const ux = p.getX(b) - p.getX(a), uy = p.getY(b) - p.getY(a), uz = p.getZ(b) - p.getZ(a);
+          const wx = p.getX(c) - p.getX(a), wy = p.getY(c) - p.getY(a), wz = p.getZ(c) - p.getZ(a);
+          const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+          const len = Math.hypot(cx, cy, cz);
+          if (len < 1e-12) continue;          // degenerate, e.g. a cylinder cap fan
+          tris++;
+          // the winding has to agree with the normal the shader lights by,
+          // or the facet is inside out and simply vanishes
+          if ((cx * n.getX(a) + cy * n.getY(a) + cz * n.getZ(a)) / len < -1e-6) inverted++;
+
+          // texels per metre, off the real triangle rather than the intent
+          if (!uv || !m.map) continue;
+          const area = len / 2;
+          const duA = uv.getX(b) - uv.getX(a), dvA = uv.getY(b) - uv.getY(a);
+          const duB = uv.getX(c) - uv.getX(a), dvB = uv.getY(c) - uv.getY(a);
+          const uvArea = Math.abs(duA * dvB - dvA * duB) / 2;
+          if (area > 1e-8 && uvArea > 1e-12) density.push(Math.sqrt(uvArea / area));
+        }
+      });
+    }
+
+    density.sort((a, b) => a - b);
+    return {
+      meshes, textured, tris, inverted,
+      // one tile over TILE metres means this ratio should sit at 1/TILE
+      medianPerMetre: density.length ? density[density.length >> 1] : 0,
+      tiles: { poly: 1 / 0.3, metal: 1 / 0.36 },
+    };
+  });
+
+  expect(r.meshes > 30, `only ${r.meshes} meshes across four weapons`);
+  expect(r.inverted === 0, `${r.inverted} of ${r.tris} facets are wound inside out`);
+  expect(r.textured / r.meshes > 0.85, `only ${r.textured}/${r.meshes} meshes carry a texture`);
+  // every textured part unwraps at one of the two declared gun tiles
+  const near = (v, t) => Math.abs(v - t) / t < 0.35;
+  expect(near(r.medianPerMetre, r.tiles.poly) || near(r.medianPerMetre, r.tiles.metal),
+    `the view model unwraps at ${r.medianPerMetre.toFixed(2)} tiles/m, not ${r.tiles.metal.toFixed(2)}–${r.tiles.poly.toFixed(2)}`);
+  return { meshes: r.meshes, tris: r.tris, inverted: r.inverted, perMetre: +r.medianPerMetre.toFixed(2) };
+});
+
 check('the bake darkens the ground the city stands on', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 21 headless checks (needs npm install first)
+npm test                       # 22 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -110,7 +110,7 @@ These each cost real debugging time. Changing them needs a reason.
   shadow maps give you the sun, not the light a wall keeps out of the gutter.
 - **A texture declares the world size it covers, and the geometry obeys.**
   `TILE` in `textures.js` is the contract — 8 m of asphalt, 4 m of concrete,
-  10 m of facade — and `boxGeo` unwraps every face planar at that scale from
+  10 m of facade, 0.3 m of gun polymer — and `boxGeo` unwraps every face planar at that scale from
   its own position and normal, which is why it survives subdivision. Get it
   wrong and nothing errors, it just looks bad in a way that is hard to name:
   the ground used to stretch one 512px tile over 54 m, nine pixels to the
@@ -126,6 +126,15 @@ These each cost real debugging time. Changing them needs a reason.
   low-frequency shapes into a 96px canvas and lets the upscale smooth them,
   which is the same picture for about a thousandth of the cost. Nothing in
   `textures.js` should set `ctx.filter` again.
+- **The view model is chamfered, and its winding is computed, not written.**
+  `chamferGeo` in `weapons.js` builds every gun part as a box with its edges
+  broken: 20 extra triangles that put a moving highlight along each edge,
+  which is most of what "boxy" means when one sun lights a cube. Winding is
+  derived per facet by testing the cross product against the intended normal,
+  because hand-writing it gets every facet with an odd number of negative
+  axes backwards — and an inverted facet does not error, it vanishes, so it
+  reads as a notch bitten out of the part. A check counts inverted facets
+  across all four models and fails on one.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -428,6 +437,28 @@ numbers below. On seed 1, one perch in six now has an unwalkable stair run,
 which the check tolerates at its 0.7 threshold. That is the seed-dependent
 failure already recorded further down, not a regression: the diff touches no
 `addBox`, `addSolid` or `solids.push` call and no `randRange` in any builder.
+
+The weapon pass after it is the same two ideas applied to the one surface
+always within arm's reach. The view models were untextured flat colour on
+`BoxGeometry`, which is why they read as boxy: a cube lit by one sun is two
+faces and two values with no line between them, and nothing at 0.2 m from the
+camera survives having no surface at all. They now carry a stippled polymer
+and a parkerised steel, both at their own `TILE` (0.3 m and 0.36 m, against
+8 m for the road), with normal and roughness derived off each texture's own
+luminance the way every city material already does — so the rubbed-back wear
+painted into the steel is the part that catches the sky, and the phosphate
+does not. Every part is a chamfered box rather than a box.
+
+Two things went wrong on the way and are worth not repeating. Setting a
+material colour *and* a map multiplies them, and the first attempt kept the
+old dark colours under the new dark textures, which made the gun a
+silhouette; the textures carry the value now and the colours only tint.
+And the chamfer's winding was written by hand, which got every facet with an
+odd number of negative axes backwards — invisible rather than erroneous, so
+it read as notches bitten out of the parts. It is computed per facet now, and
+`the gun in your hands is solid and textured at its declared scale` counts
+inverted facets across all four models. That check was confirmed to fail with
+the hand-written winding restored.
 
 Deployment is static and must stay that way. `vercel.json` overrides the build
 and install commands to no-ops and serves the repo root; `.vercelignore` keeps

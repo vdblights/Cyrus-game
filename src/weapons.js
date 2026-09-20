@@ -1,23 +1,181 @@
 import * as THREE from 'three';
+import * as TEX from './textures.js';
+import { TILE } from './textures.js';
 import { audio } from './audio.js';
 
-// Standard, so the gun in your hands reflects the same sky the street does
-// (`viewScene.environment`). Polymer stays matte, machined parts stay bright.
-const POLY = new THREE.MeshStandardMaterial({ color: 0x35393f, roughness: 0.78, metalness: 0.12, envMapIntensity: 0.6 });
-const METAL = new THREE.MeshStandardMaterial({ color: 0x5b6169, roughness: 0.34, metalness: 0.92, envMapIntensity: 1 });
-const DARK = new THREE.MeshStandardMaterial({ color: 0x212428, roughness: 0.52, metalness: 0.7, envMapIntensity: 0.8 });
-const ACCENT = new THREE.MeshStandardMaterial({ color: 0x6b727a, roughness: 0.42, metalness: 0.85, envMapIntensity: 0.9 });
-const GLOW = new THREE.MeshBasicMaterial({ color: 0xff3b2f });
+/**
+ * Materials for the gun in your hands.
+ *
+ * Standard, so it reflects the same sky the street does
+ * (`viewScene.environment`), and textured, because a weapon is the one
+ * surface always within arm's reach — flat colour on a 0.2 m slide reads as a
+ * toy. Polymer stays matte and stippled; machined parts stay bright, with the
+ * roughness map keyed off the wear painted into their own texture, so the
+ * rubbed edges catch the sky and the phosphate does not.
+ *
+ * Built once, on demand, rather than at import: `WeaponSystem` is constructed
+ * inside `reserve` (see `rng.js`), so minting them there costs the seeded
+ * stream nothing.
+ */
+let MATS = null;
 
-function box(w, h, d, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+function mats() {
+  if (MATS) return MATS;
+  const poly = TEX.gunPolymer();
+  const metal = TEX.gunMetal();
+  const polyBits = {
+    map: poly,
+    normalMap: TEX.normalFrom(poly, 1.5, 'gunpoly', 1),
+    normalScale: new THREE.Vector2(0.85, 0.85),
+    roughnessMap: TEX.surfaceFrom(poly, { dark: 1, lite: 0.62 }, 'gunpoly'),
+  };
+  const metalBits = {
+    map: metal,
+    normalMap: TEX.normalFrom(metal, 1.2, 'gunmetal', 1),
+    normalScale: new THREE.Vector2(0.6, 0.6),
+    // bright wear goes smooth and stays metal; the dark finish goes flat
+    roughnessMap: TEX.surfaceFrom(metal, { dark: 0.92, lite: 0.18, metalDark: 0.55, metalLite: 1 }, 'gunmetal'),
+  };
+
+  // `map` multiplies `color`, and the textures already carry the base value,
+  // so these tint rather than darken. Anything below white here is a part
+  // finished differently, not a part in shadow.
+  MATS = {
+    POLY: new THREE.MeshStandardMaterial({
+      ...polyBits, color: 0xffffff, roughness: 1, metalness: 0.08, envMapIntensity: 0.55,
+    }),
+    METAL: new THREE.MeshStandardMaterial({
+      ...metalBits, color: 0xffffff, roughness: 1, metalness: 1, envMapIntensity: 1,
+    }),
+    DARK: new THREE.MeshStandardMaterial({
+      ...metalBits, color: 0x8d939b, roughness: 1, metalness: 1, envMapIntensity: 0.8,
+    }),
+    ACCENT: new THREE.MeshStandardMaterial({
+      ...metalBits, color: 0xc8cfd6, roughness: 1, metalness: 1, envMapIntensity: 1,
+    }),
+    GLOW: new THREE.MeshBasicMaterial({ color: 0xff3b2f }),
+  };
+  return MATS;
+}
+
+// The builders read these by name, so each one resolves through `mats()` at
+// the moment a model is built rather than at import.
+const POLY = 'POLY', METAL = 'METAL', DARK = 'DARK', ACCENT = 'ACCENT', GLOW = 'GLOW';
+
+/**
+ * A box with its edges taken off.
+ *
+ * Nothing manufactured has a perfectly sharp 90° edge, and a cube lit by one
+ * sun is the flattest thing a renderer can draw: two faces, two values, no
+ * line between them. A chamfer costs 20 extra triangles and puts a bright
+ * sliver along every edge that moves as you move, which is most of what
+ * "boxy" actually means. Built non-indexed so each facet keeps a flat normal.
+ *
+ * UVs are unwrapped planar from world size at `tile`, the same contract
+ * `boxGeo` follows in `city.js`, so the stipple is the same size on a grip as
+ * on a stock instead of stretching to fit each part.
+ */
+function chamferGeo(w, h, d, bevel, tile) {
+  const hx = w / 2, hy = h / 2, hz = d / 2;
+  const b = Math.min(bevel, hx * 0.8, hy * 0.8, hz * 0.8);
+  const pos = [], nor = [], uv = [];
+
+  // Planar unwrap off the dominant axis of the facet's normal.
+  const push = (p, n) => {
+    pos.push(p[0], p[1], p[2]);
+    nor.push(n[0], n[1], n[2]);
+    const ax = Math.abs(n[0]), ay = Math.abs(n[1]), az = Math.abs(n[2]);
+    if (ay >= ax && ay >= az) uv.push(p[0] / tile, p[2] / tile);
+    else if (ax >= az) uv.push(p[2] / tile, p[1] / tile);
+    else uv.push(p[0] / tile, p[1] / tile);
+  };
+  const tri = (a, c, e, n) => {
+    // Wind so the facet actually faces `n`. Deriving the order by hand for
+    // 26 facets gets half of them inside out — the ones with an odd number of
+    // negative axes — and an inverted facet is invisible, so it reads as a
+    // notch bitten out of the part rather than as an error.
+    const ux = c[0] - a[0], uy = c[1] - a[1], uz = c[2] - a[2];
+    const wx = e[0] - a[0], wy = e[1] - a[1], wz = e[2] - a[2];
+    const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+    push(a, n);
+    if (cx * n[0] + cy * n[1] + cz * n[2] < 0) { push(e, n); push(c, n); }
+    else { push(c, n); push(e, n); }
+  };
+  const quad = (a, c, e, f, n) => { tri(a, c, e, n); tri(a, e, f, n); };
+  const unit = (x, y, z) => {
+    const l = Math.hypot(x, y, z);
+    return [x / l, y / l, z / l];
+  };
+
+  // Three vertices per corner, one pulled out to each adjacent face.
+  const S = [-1, 1];
+  const vx = {}, vy = {}, vz = {};
+  for (const sx of S) for (const sy of S) for (const sz of S) {
+    const k = `${sx}${sy}${sz}`;
+    vx[k] = [sx * hx, sy * (hy - b), sz * (hz - b)];
+    vy[k] = [sx * (hx - b), sy * hy, sz * (hz - b)];
+    vz[k] = [sx * (hx - b), sy * (hy - b), sz * hz];
+  }
+  const K = (sx, sy, sz) => `${sx}${sy}${sz}`;
+
+  // six faces, inset by the bevel
+  for (const s of S) {
+    quad(vx[K(s, -1, -1)], vx[K(s, -1, 1)], vx[K(s, 1, 1)], vx[K(s, 1, -1)], [s, 0, 0]);
+    quad(vy[K(-1, s, -1)], vy[K(1, s, -1)], vy[K(1, s, 1)], vy[K(-1, s, 1)], [0, s, 0]);
+    quad(vz[K(-1, -1, s)], vz[K(-1, 1, s)], vz[K(1, 1, s)], vz[K(1, -1, s)], [0, 0, s]);
+  }
+
+  // twelve edge strips, each bridging the two faces it separates
+  for (const a of S) for (const c of S) {
+    quad(vx[K(a, c, -1)], vy[K(a, c, -1)], vy[K(a, c, 1)], vx[K(a, c, 1)], unit(a, c, 0));   // along Z
+    quad(vy[K(-1, a, c)], vz[K(-1, a, c)], vz[K(1, a, c)], vy[K(1, a, c)], unit(0, a, c));   // along X
+    quad(vz[K(a, -1, c)], vx[K(a, -1, c)], vx[K(a, 1, c)], vz[K(a, 1, c)], unit(a, 0, c));   // along Y
+  }
+
+  // eight corner triangles
+  for (const sx of S) for (const sy of S) for (const sz of S) {
+    const k = K(sx, sy, sz);
+    tri(vx[k], vy[k], vz[k], unit(sx, sy, sz));
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return g;
+}
+
+/**
+ * @param {string} mat key into `mats()`
+ * @param {number} [bevel] edge break; defaults to a quarter of the thinnest
+ *        dimension, which is roughly how a real part is broken
+ */
+function box(w, h, d, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, bevel = 0) {
+  const M = mats()[mat];
+  const tile = mat === POLY ? TILE.gunPoly : TILE.gunMetal;
+  const geo = mat === GLOW
+    ? new THREE.BoxGeometry(w, h, d)    // the dot is a lit speck, not a part
+    : chamferGeo(w, h, d, bevel || Math.min(w, h, d) * 0.25, tile);
+  const m = new THREE.Mesh(geo, M);
   m.position.set(x, y, z);
   m.rotation.set(rx, ry, rz);
   return m;
 }
 
+/**
+ * Barrels, shrouds and tubes. Sixteen sides rather than ten: at the distance
+ * a view model sits from the camera, ten reads as a faceted pencil. UVs are
+ * rescaled off the real circumference so the machining marks stay the size
+ * they are everywhere else.
+ */
 function tube(r1, r2, len, mat, x = 0, y = 0, z = 0, rx = Math.PI / 2) {
-  const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, len, 10), mat);
+  const g = new THREE.CylinderGeometry(r1, r2, len, 16, 1, false);
+  const tile = mat === POLY ? TILE.gunPoly : TILE.gunMetal;
+  const uv = g.attributes.uv;
+  const around = (Math.PI * (r1 + r2)) / tile, along = len / tile;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * around, uv.getY(i) * along);
+  uv.needsUpdate = true;
+  const m = new THREE.Mesh(g, mats()[mat]);
   m.position.set(x, y, z);
   m.rotation.x = rx;
   return m;
@@ -38,9 +196,10 @@ function optic(g, z) {
   g.add(box(t, ap, d, POLY, -ap / 2 - t / 2, SIGHT_Y, z));             // left
   g.add(box(t, ap, d, POLY, ap / 2 + t / 2, SIGHT_Y, z));              // right
 
-  const lens = box(ap, ap, 0.003, new THREE.MeshBasicMaterial({
+  const lens = new THREE.Mesh(new THREE.BoxGeometry(ap, ap, 0.003), new THREE.MeshBasicMaterial({
     color: 0x3d7f8f, transparent: true, opacity: 0.18, depthWrite: false,
-  }), 0, SIGHT_Y, z - d / 2 + 0.01);
+  }));
+  lens.position.set(0, SIGHT_Y, z - d / 2 + 0.01);
   g.add(lens);
   g.add(box(0.006, 0.006, 0.004, GLOW, 0, SIGHT_Y, z - d / 2 + 0.004)); // dot
 }
@@ -51,7 +210,7 @@ function buildPistol() {
   const g = new THREE.Group();
   g.add(box(0.045, 0.075, 0.24, METAL, 0, 0.02, -0.06));        // slide
   g.add(box(0.042, 0.05, 0.20, POLY, 0, -0.04, -0.04));         // frame
-  g.add(box(0.05, 0.115, 0.075, POLY, 0, -0.115, 0.045, 0.22)); // grip
+  g.add(box(0.05, 0.115, 0.075, POLY, 0, -0.115, 0.045, 0.22, 0, 0, 0.016)); // grip
   g.add(box(0.024, 0.03, 0.03, DARK, 0, -0.055, 0.005));        // trigger guard front
   g.add(tube(0.012, 0.012, 0.05, DARK, 0, 0.02, -0.19));        // muzzle
   g.add(box(0.007, 0.016, 0.008, DARK, 0, 0.070, -0.16));       // front post
@@ -66,8 +225,8 @@ function buildSMG() {
   g.add(box(0.055, 0.10, 0.34, POLY, 0, 0.01, -0.08));          // receiver
   g.add(tube(0.016, 0.016, 0.10, METAL, 0, 0.03, -0.28));       // barrel shroud
   g.add(box(0.04, 0.14, 0.055, DARK, 0, -0.10, 0.0, -0.30));    // magazine
-  g.add(box(0.05, 0.10, 0.06, POLY, 0, -0.10, 0.10, 0.18));     // pistol grip
-  g.add(box(0.035, 0.075, 0.05, POLY, 0, -0.075, -0.19, -0.15));// vertical foregrip
+  g.add(box(0.05, 0.10, 0.06, POLY, 0, -0.10, 0.10, 0.18, 0, 0, 0.015)); // pistol grip
+  g.add(box(0.035, 0.075, 0.05, POLY, 0, -0.075, -0.19, -0.15, 0, 0, 0.012)); // vertical foregrip
   g.add(box(0.04, 0.05, 0.13, ACCENT, 0, 0.0, 0.19));           // folding stock
   g.add(box(0.055, 0.02, 0.05, DARK, 0, 0.062, 0.06));
   optic(g, 0.02);
@@ -78,13 +237,13 @@ function buildSMG() {
 function buildRifle() {
   const g = new THREE.Group();
   g.add(box(0.055, 0.105, 0.32, POLY, 0, 0.015, -0.02));        // upper/lower receiver
-  g.add(box(0.06, 0.07, 0.26, DARK, 0, 0.02, -0.28));           // handguard
+  g.add(box(0.06, 0.07, 0.26, DARK, 0, 0.02, -0.28, 0, 0, 0, 0.010)); // handguard
   for (let i = 0; i < 4; i++) g.add(box(0.062, 0.008, 0.012, ACCENT, 0, 0.055, -0.20 - i * 0.05));
   g.add(tube(0.013, 0.013, 0.20, METAL, 0, 0.025, -0.46));      // barrel
   g.add(tube(0.021, 0.024, 0.06, DARK, 0, 0.025, -0.57));       // flash hider
   g.add(box(0.042, 0.16, 0.06, DARK, 0, -0.11, 0.02, -0.12));   // STANAG mag
-  g.add(box(0.05, 0.10, 0.06, POLY, 0, -0.10, 0.12, 0.22));     // grip
-  g.add(box(0.05, 0.085, 0.20, POLY, 0, 0.0, 0.24));            // buffer stock
+  g.add(box(0.05, 0.10, 0.06, POLY, 0, -0.10, 0.12, 0.22, 0, 0, 0.015)); // grip
+  g.add(box(0.05, 0.085, 0.20, POLY, 0, 0.0, 0.24, 0, 0, 0, 0.014));   // buffer stock
   g.add(box(0.03, 0.045, 0.09, ACCENT, 0, -0.015, 0.19));       // buffer tube
   g.add(box(0.035, 0.06, 0.02, POLY, 0, -0.06, -0.16, -0.5));   // angled grip
   optic(g, 0.06);
@@ -97,9 +256,9 @@ function buildShotgun() {
   g.add(box(0.06, 0.10, 0.30, POLY, 0, 0.01, -0.02));           // receiver
   g.add(tube(0.021, 0.021, 0.46, METAL, 0, 0.035, -0.40));      // barrel
   g.add(tube(0.019, 0.019, 0.36, DARK, 0, -0.015, -0.35));      // magazine tube
-  g.add(box(0.055, 0.06, 0.16, POLY, 0, -0.005, -0.26));        // pump / forend
-  g.add(box(0.052, 0.10, 0.06, POLY, 0, -0.095, 0.11, 0.20));   // grip
-  g.add(box(0.055, 0.11, 0.22, POLY, 0, -0.03, 0.24, -0.12));   // stock
+  g.add(box(0.055, 0.06, 0.16, POLY, 0, -0.005, -0.26, 0, 0, 0, 0.012)); // pump / forend
+  g.add(box(0.052, 0.10, 0.06, POLY, 0, -0.095, 0.11, 0.20, 0, 0, 0.015)); // grip
+  g.add(box(0.055, 0.11, 0.22, POLY, 0, -0.03, 0.24, -0.12, 0, 0, 0.016)); // stock
   g.add(box(0.010, 0.022, 0.012, DARK, 0, 0.072, -0.56));       // bead sight
   g.add(box(0.012, 0.018, 0.014, DARK, -0.018, 0.072, 0.10));   // ghost ring, left
   g.add(box(0.012, 0.018, 0.014, DARK, 0.018, 0.072, 0.10));    // ghost ring, right
