@@ -24,8 +24,9 @@ builds, never to play.
 - **A feature branch ends in a pull request.** When the work on
   `claude/abandoned-city-fps-game-j2xn80` is finished and pushed, open the PR
   against `main` — do not leave the branch sitting pushed and wait to be
-  asked. Every one of PRs #1-#9 came off that branch, which is restarted from
-  `main` after each merge rather than stacked on finished history.
+  asked. Every PR in this repo's history came off that branch, which is
+  restarted from `main` after each merge rather than stacked on finished
+  history.
 - **This file is the only memory that survives.** Sessions run in a container
   that is reclaimed when they end, so anything worth keeping — a preference, a
   measurement, a trap someone already fell into — belongs in here or in
@@ -325,13 +326,13 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 
 ## State
 
-**Right now:** PRs #1-#9 are merged into `main`. **PR #10 is open** with the
-pathfinding work described below — `src/nav.js`, the committed avoidance, the
-perch fix — 27/27 on seeds 1, 7 and 99991, one-file build clean.
-That was item 1 of the old next-work list, so the list at the bottom now
-starts somewhere else. Nothing in this file is described as open work; the
-list is what to do next, not what was left half done. Restart the branch from
-`main` after this merges rather than stacking on it.
+**Right now:** PRs #1-#10 are all merged. `main` has everything this file
+describes, nothing is open, and the branch is restarted from `main`. The suite
+is 27/27 on seeds 1, 7 and 99991 with a clean one-file build.
+
+Nothing below is open work. The section is a record of what was built and what
+it cost to learn — read the invariants and the testing traps first, since
+those are the parts that bite. The list at the end is what to do next.
 
 `main` has everything through the graphics pass (PR #1, merged). Objectives
 landed after it (PR #3): caches, beacons and evac windows, cued by the wave
@@ -384,9 +385,9 @@ baked tint and occlusion, `softLayer`, `reserve` in `rng.js`, the
 two-triangle collision ground, the chamfered and textured view models, and
 the three checks that guard all of it.
 
-PR #9 is open and carries this branch's current work — three things that came
-out of play rather than out of a plan: the wave deadlock (written up below, and now
-closed), the pull-up feeling jumpy, and the city still reading as boxes.
+PR #9 merged three things that came out of play rather than out of a plan:
+the wave deadlock (written up below), the pull-up feeling jumpy, and the city
+still reading as boxes.
 
 The pull-up was two discontinuities and a fixed duration. It set the eye
 height straight to `EYE_CROUCH` on its first frame — a 0.63 m drop of the
@@ -492,8 +493,8 @@ it reboots onto seed 7 to do so, because whether a city has a corner that
 traps a hostile is a property of the layout and the pinned seed does not have
 one. If a future layout move takes the bug away from seed 7 as well, that
 check stops testing anything — it will still pass, which is the failure mode
-to watch for. The honest fix underneath is pathfinding, which the branch
-now has — see below; the watchdog stays as the backstop it was written as.
+to watch for. The honest fix underneath is pathfinding, which landed in
+PR #10 — see below; the watchdog stays as the backstop it was written as.
 
 The graphics pass on top of all that is three changes that only make sense
 together, each one paying for the next:
@@ -609,6 +610,9 @@ materials — `viewScene` has its own ambient, key and rim in `main.js`, plus
 `environmentIntensity`. If it ever needs to read brighter in hand, those are
 the lever. Raising the texture base values instead is the wrong end of it,
 and was already tried once: it made the polymer look like clay.
+
+PR #10 merged the pathfinding below: `src/nav.js`, the committed avoidance and
+the perch fix.
 
 Hostiles can now find their way round a building, which was item 1 of the old
 list and the honest fix under the deadlock backstop. Three parts.
