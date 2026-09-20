@@ -339,6 +339,23 @@ export function skyTexture() {
   });
 }
 
+/** A texture's pixels as a size x size luminance field, 0..1. */
+function luminanceOf(sourceTexture) {
+  const src = sourceTexture.image;
+  const size = src.width;
+  const read = document.createElement('canvas');
+  read.width = read.height = size;
+  const rctx = read.getContext('2d');
+  rctx.drawImage(src, 0, 0);
+  const px = rctx.getImageData(0, 0, size, size).data;
+
+  const lum = new Float32Array(size * size);
+  for (let i = 0; i < size * size; i++) {
+    lum[i] = (px[i * 4] * 0.299 + px[i * 4 + 1] * 0.587 + px[i * 4 + 2] * 0.114) / 255;
+  }
+  return { lum, size };
+}
+
 /**
  * Derive a normal map from a texture's own luminance (Sobel on brightness,
  * treating dark as recessed). Painted windows and mortar lines then catch
@@ -346,18 +363,7 @@ export function skyTexture() {
  */
 export function normalFrom(sourceTexture, strength = 1.6, key = '') {
   return make('normal' + key + strength, () => {
-    const src = sourceTexture.image;
-    const size = src.width;
-    const read = document.createElement('canvas');
-    read.width = read.height = size;
-    const rctx = read.getContext('2d');
-    rctx.drawImage(src, 0, 0);
-    const px = rctx.getImageData(0, 0, size, size).data;
-
-    const lum = new Float32Array(size * size);
-    for (let i = 0; i < size * size; i++) {
-      lum[i] = (px[i * 4] * 0.299 + px[i * 4 + 1] * 0.587 + px[i * 4 + 2] * 0.114) / 255;
-    }
+    const { lum, size } = luminanceOf(sourceTexture);
     const at = (x, y) => lum[((y + size) % size) * size + ((x + size) % size)];
 
     const out = document.createElement('canvas');
@@ -379,6 +385,37 @@ export function normalFrom(sourceTexture, strength = 1.6, key = '') {
         img.data[i + 2] = (nz * 0.5 + 0.5) * 255;
         img.data[i + 3] = 255;
       }
+    }
+    octx.putImageData(img, 0, 0);
+    return out;
+  }, [sourceTexture.repeat.x, sourceTexture.repeat.y], THREE.NoColorSpace);
+}
+
+/**
+ * Pack a roughness/metalness map out of the same luminance.
+ *
+ * Three reads roughness from the green channel and metalness from the blue,
+ * so one canvas drives both. Dark pixels are the grime, soot and cracks, and
+ * come out rough; bright ones are glass, bare metal and polished stone, and
+ * come out smooth enough to catch the sky. Without this every surface in the
+ * city answers the light with exactly the same sheen.
+ *
+ * @param {number} dark  roughness where the source is black
+ * @param {number} lite  roughness where the source is white
+ */
+export function surfaceFrom(sourceTexture, { dark = 1, lite = 0.55, metalDark = 0, metalLite = 0 } = {}, key = '') {
+  return make('surface' + key + dark + '_' + lite + '_' + metalDark + '_' + metalLite, () => {
+    const { lum, size } = luminanceOf(sourceTexture);
+    const out = document.createElement('canvas');
+    out.width = out.height = size;
+    const octx = out.getContext('2d');
+    const img = octx.createImageData(size, size);
+    for (let i = 0; i < size * size; i++) {
+      const l = lum[i];
+      img.data[i * 4] = 0;
+      img.data[i * 4 + 1] = Math.max(0, Math.min(255, (dark + (lite - dark) * l) * 255));
+      img.data[i * 4 + 2] = Math.max(0, Math.min(255, (metalDark + (metalLite - metalDark) * l) * 255));
+      img.data[i * 4 + 3] = 255;
     }
     octx.putImageData(img, 0, 0);
     return out;
