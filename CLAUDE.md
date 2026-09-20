@@ -211,6 +211,17 @@ always claimed it did. Seeds 1 and 20260813 pass on the code from *both*
 sides of PR #5 with the corrected bot, which is the check that it measures
 the game rather than the change.
 
+One seed-dependent failure is open and predates all of this: on seed
+20251111, `stairs carry the player onto a perch` reports only 3 of 5 perches
+walkable, with two never reached at all. The numbers are identical on the
+code from before the watchdog work, so nothing in this session caused it —
+either the city puts perches up there with no stair route, or the check picks
+perches that were never meant to have one, and which of those it is has not
+been established. `node tests/run.js --seed=20251111` is the reproducer.
+Worth knowing: the same seed on the older code also failed the scripted run
+with a 99.4 s stall, which the current code passes. Every other seed tried
+— 1, 7, 4242, 31337, 99991, 20260101 and the pinned 20260813 — is 19/19.
+
 Deployment is static and must stay that way. `vercel.json` overrides the build
 and install commands to no-ops and serves the repo root; `.vercelignore` keeps
 `tests/`, `dist/` and `.github/` out of the upload. Autodetect breaks two ways:
