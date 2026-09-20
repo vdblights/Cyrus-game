@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 19 headless checks (needs npm install first)
+npm test                       # 22 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -51,18 +51,29 @@ These each cost real debugging time. Changing them needs a reason.
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
 - **`Math.random` is seeded and the stream order matters.** Do not spend it on
-  per-frame cosmetics — an earlier fire flicker did, and identical runs
-  diverged. Deterministic noise instead (see `flickerFires`).
+  cosmetics, per-frame or per-surface — an earlier fire flicker did, and
+  identical runs diverged. Deterministic noise instead (`flickerFires`), or a
+  hash of the position (`tintAt`, `wallUV`).
 - **So does three's, and it spends four numbers per object.** Every material,
   texture, geometry and `Object3D` gets a UUID at construction, and
-  `generateUUID` draws four `Math.random()` calls to build it. Creating one
-  material more or fewer before the city is laid out shifts the whole stream,
-  so a given seed lays out the same city only within one version of the code:
-  the graphics pass that merged the car materials and added roughness maps
-  moved every seed's city. Runs stay repeatable, `--seed=N` still replays an
-  exact city, and nothing about generation changed — but a seed written down
-  in an old note does not point at the city it used to. Worth fixing properly
-  one day by giving generation its own generator instead of the global one.
+  `generateUUID` draws four `Math.random()` calls to build it. One material
+  more or fewer before the city is laid out used to shift every later draw, so
+  a seed only laid out the same city within one version of the code, and every
+  graphics change was a layout change by accident.
+  `rng.js` now exports `reserve(fn)`, which runs `fn` and rewinds the stream
+  to where it started; the shared materials in `buildCity`, and the sky,
+  environment, dust, pickups, effects and view model in `main.js`, are all
+  built inside it. **Shared look — a material, a texture, a view model —
+  belongs in a `reserve`.** It works: adding three more rust materials and the
+  nine textures behind them, late in the texture pass, left seed 1 with the
+  same 332 boxes, 405 solids and 12 perches it had before them. What each builder mints
+  *per object* still spends the stream and has to, because those objects are
+  the city; a purely decorative mesh added inside a builder will still move
+  every seed, and there is no way around that short of giving generation its
+  own generator. None of this undoes the moves already made: the texture pass
+  shifted every seed one last time, because the setup that no longer spends
+  the stream used to. A seed in a note older than that pass does not point at
+  the city it did.
 - **Hit detection raycasts before the renderer runs**, so `Enemy.update` calls
   `group.updateMatrixWorld(true)` itself. Anything else raycast against needs
   its transform current too — the aiming laser had to refresh it before using
@@ -85,7 +96,45 @@ These each cost real debugging time. Changing them needs a reason.
   bullet can hit — the solid set is deliberately not everything you can see
   (a parapet is decoration; the wall under it is not). Anything added to the
   city after the bake has to be registered in both or it is invisible to one
-  of them.
+  of them. The ground is the sharpest case: the one you see is subdivided to
+  about 2.5 m so it can carry baked shading, and the one you shoot is the same
+  plane at two triangles, because three has no BVH and a raycast walks every
+  triangle inside the bounding sphere — the ground's covers the sector.
+- **The bake is also where shading is baked.** `shadeGeometry` runs over each
+  mesh once it is in world space, writing a `color` attribute that
+  `mergeIntoOne` carries: a per-building tint, plus ambient darkening — floors
+  read a blurred occupancy grid built from `world.boxes`, walls fade toward
+  their own footing. Every city material therefore has `vertexColors: true`,
+  and any geometry merged into one of them needs the attribute or it comes out
+  white. It is the cheapest thing in `city.js` and close to the most valuable:
+  shadow maps give you the sun, not the light a wall keeps out of the gutter.
+- **A texture declares the world size it covers, and the geometry obeys.**
+  `TILE` in `textures.js` is the contract — 8 m of asphalt, 4 m of concrete,
+  10 m of facade, 0.3 m of gun polymer — and `boxGeo` unwraps every face planar at that scale from
+  its own position and normal, which is why it survives subdivision. Get it
+  wrong and nothing errors, it just looks bad in a way that is hard to name:
+  the ground used to stretch one 512px tile over 54 m, nine pixels to the
+  metre, and a facade crammed four floors into four metres so buildings read
+  as noise. A check measures texels per metre off the merged city now and
+  fails if any material drifts from what it declares. Wall UVs are snapped on
+  top of that to the window bay and the storey (`wallUV`), so a corner never
+  cuts a window in half and floor lines meet the ground and the roof square.
+- **A canvas `filter` blur costs a full-canvas convolution per draw call.**
+  Not per shape — per call, over the whole clip. Ninety soft rust blooms on a
+  1024px tile is ninety convolutions of a megapixel; it took five seconds a
+  facade and made boot 77 s under software rendering. `softLayer` paints
+  low-frequency shapes into a 96px canvas and lets the upscale smooth them,
+  which is the same picture for about a thousandth of the cost. Nothing in
+  `textures.js` should set `ctx.filter` again.
+- **The view model is chamfered, and its winding is computed, not written.**
+  `chamferGeo` in `weapons.js` builds every gun part as a box with its edges
+  broken: 20 extra triangles that put a moving highlight along each edge,
+  which is most of what "boxy" means when one sun lights a cube. Winding is
+  derived per facet by testing the cross product against the intended normal,
+  because hand-writing it gets every facet with an odd number of negative
+  axes backwards — and an inverted facet does not error, it vanishes, so it
+  reads as a notch bitten out of the part. A check counts inverted facets
+  across all four models and fails on one.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -163,6 +212,18 @@ what the bot spent its frames doing before concluding anything about the
 game — and once a setup is changed, confirm the check still passes on the
 code from *both* sides of whatever it was accusing.
 
+A fifth, for anything that changes how something *looks*: the suite cannot
+assert on pixels, so a look change is not verified until it has been
+rendered and looked at. Two framings are worth keeping. In-game, drive the
+real view and screenshot it — that is the only thing that shows how dark the
+scene actually makes a surface. To judge a model on its own, hide the world
+(`g.scene.visible = false`), park the view model in front of the view camera
+and stub `weapons.update` so sway does not put it back. Both caught real
+faults in the weapon pass within one render each: a gun turned to a
+silhouette by a colour multiplying its map, and facets missing because their
+winding was inside out. Neither would have shown up in any assertion that
+was plausible to write first.
+
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
@@ -230,11 +291,17 @@ scripted-run bot and its notes. All four merged from
 `claude/abandoned-city-fps-game-j2xn80`, so that branch keeps being restarted
 from `main` rather than stacked on finished history.
 
-**PR #7 is open and unmerged**: the graphics pass described below — the bake,
-the PBR-and-sky lighting, the post chain — together with the `generateUUID`
-and tone-mapping invariants, the deadlock write-up, and the default test seed
-moving to 1. `main` has none of that. Everything else in this file is on
-`main`.
+PR #7 merged the graphics pass described below — the bake, the PBR-and-sky
+lighting, the post chain — together with the `generateUUID` and tone-mapping
+invariants, the deadlock write-up, and the default test seed moving to 1.
+
+**PR #8 is open and unmerged**, carrying the texture pass and the weapon pass
+after it: the `TILE` contract and snapped wall UVs, ten facade textures, the
+four rust variants, baked tint and occlusion, `softLayer`, `reserve` in
+`rng.js`, the two-triangle collision ground, the chamfered and textured view
+models, and the three checks that guard all of it. `main` has everything else
+in this file. The only open *work* is the wave deadlock, which
+is first on the list below.
 
 After PR #5 the scripted-run check began failing on seed 1, and the first
 reading of that was wrong: it looked like PR #5 had slowed wave pacing,
@@ -325,6 +392,93 @@ the seed-specific notes below describe cities that no longer exist at those
 seeds — including the open stair failure, which is why it is now recorded as
 unreproduced rather than open.
 
+The texture pass on top of all that started as item 3 on the list below and
+went further, because measuring the repetition turned up something worse than
+repetition underneath it.
+
+1. **Every tile declares the world size it covers** (`TILE` in `textures.js`),
+   and `boxGeo` unwraps each face planar at that scale. This was the real
+   problem, and it was never resolution: the ground stretched one 512px
+   asphalt tile over 54 m — nine pixels to the metre, which is why the street
+   read as brown mud, and why the lane markings painted into that tile came
+   out as a stripe every 54 m with no relation to where the streets are. The
+   facade tile was wrong the other way: four floors and four window bays
+   crammed into four metres, so a window was a metre wide and a building read
+   as noise from any distance. A facade tile is 10 m now — four bays, three
+   floors, so a window is about 1.5 m and a storey 3.3 m — and wall UVs are
+   snapped to the bay and the storey (`wallUV`) so a corner never cuts a
+   window and the floor lines meet the ground and the roof square. The lane
+   markings are gone rather than rescaled; they belong on the streets as
+   geometry, which is item 3 below now.
+2. **Ten facade textures where there were five**, at 1024² with their normal
+   and roughness derived at half that. Five styles — precast panel, brick,
+   curtain wall, render, stone — two variants each, with sills, lintels,
+   spandrel bands, bullet pocks and the odd shell crater with reinforcing bar
+   still standing in it. Four rust variants replaced the one that made every
+   container the same green box. Each texture is painted on a generator seeded
+   from its own cache key, so a variant is reliably unlike its sibling and
+   identical between cities, and painting costs the seeded stream nothing.
+   `FACADE_VARIANTS` is the knob to turn down if texture memory ever matters:
+   about 80 MB across the five styles at two.
+3. **Vertex colours carry a per-building tint and baked ambient occlusion**,
+   written by `shadeGeometry` during the merge — see the invariant. Both were
+   nearly free, because the merge already existed.
+4. **Painted metal and dirty glass**, which had no texture at all. The metal
+   map is near-white and carries only scratches, rust and grime, so the
+   material's colour still says what the thing was painted: one texture covers
+   a grey streetlight and a maroon wreck.
+5. **`softLayer`**, which is why any of this fits in the boot budget — see the
+   invariant. Boot went from 9.2 s to 5.7 s *despite* ten times the texture
+   work, because the old sky had been paying the same tax unnoticed.
+
+Measured on seed 1 under software rendering: boot 9.2 s → 5.7 s to a
+constructed game, merged draw batches 18 → 26, textures 38 → 65, suite 21/21.
+Two checks came with it and both were confirmed to fail when what they guard
+is removed: restoring the old ground scale makes `every surface is textured at
+the world scale it declares` report the asphalt at 0.15x, and stubbing the
+occlusion field makes `the bake darkens the ground the city stands on` report
+0.991 against 0.991.
+
+The ground is now two objects rather than one, which is the sharpest case of
+an existing invariant: the rendered one is subdivided to ~2.5 m so it can
+carry the baked shading, and the one in `world.solids` is the same plane at
+two triangles, because three has no BVH and the ground's bounding sphere
+covers the sector.
+
+The cities moved one last time with all this, and so did the incidental
+numbers below. On seed 1, one perch in six now has an unwalkable stair run,
+which the check tolerates at its 0.7 threshold. That is the seed-dependent
+failure already recorded further down, not a regression: the diff touches no
+`addBox`, `addSolid` or `solids.push` call and no `randRange` in any builder.
+
+The weapon pass after it is the same two ideas applied to the one surface
+always within arm's reach. The view models were untextured flat colour on
+`BoxGeometry`, which is why they read as boxy: a cube lit by one sun is two
+faces and two values with no line between them, and nothing at 0.2 m from the
+camera survives having no surface at all. They now carry a stippled polymer
+and a parkerised steel, both at their own `TILE` (0.3 m and 0.36 m, against
+8 m for the road), with normal and roughness derived off each texture's own
+luminance the way every city material already does — so the rubbed-back wear
+painted into the steel is the part that catches the sky, and the phosphate
+does not. Every part is a chamfered box rather than a box.
+
+Two things went wrong on the way and are worth not repeating. Setting a
+material colour *and* a map multiplies them, and the first attempt kept the
+old dark colours under the new dark textures, which made the gun a
+silhouette; the textures carry the value now and the colours only tint.
+And the chamfer's winding was written by hand, which got every facet with an
+odd number of negative axes backwards — invisible rather than erroneous, so
+it read as notches bitten out of the parts. It is computed per facet now, and
+`the gun in your hands is solid and textured at its declared scale` counts
+inverted facets across all four models. That check was confirmed to fail with
+the hand-written winding restored.
+
+The gun still reads dark in play, and that is the dusk scene rather than the
+materials — `viewScene` has its own ambient, key and rim in `main.js`, plus
+`environmentIntensity`. If it ever needs to read brighter in hand, those are
+the lever. Raising the texture base values instead is the wrong end of it,
+and was already tried once: it made the polymer look like clay.
+
 Deployment is static and must stay that way. `vercel.json` overrides the build
 and install commands to no-ops and serves the repo root; `.vercelignore` keeps
 `tests/`, `dist/` and `.github/` out of the upload. Autodetect breaks two ways:
@@ -345,16 +499,13 @@ Suggested next work, in the order I would do it:
 2. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-3. **Break the texture repetition.** This is the biggest remaining *visual*
-   gap, and it is not a resolution problem — at 512² over a 4 m tile the
-   texel density is fine. It is that there are five facade textures, every
-   building of a style gets the identical one, and `TEX.facade(style, seed)`
-   takes a seed that is only ever called with `0`. Three things, cheapest
-   first: use that seed for two or three variants per style; bake a
-   per-building tint into vertex colours at merge time (free now that the
-   geometry is merged — the attribute rides along in `mergeIntoOne`); bake
-   vertex AO the same way, darkening ground contacts and inside corners,
-   which is what a city of right angles is really missing.
+3. **Road markings as geometry.** The one thing the texture pass deliberately
+   did not do. Lane paint cannot live in a tiled asphalt texture — painted
+   once, it comes out as a grid of stripes across the whole sector instead of
+   a line down a street, which is what it was doing before — so the old tile's
+   centre line was dropped rather than fixed. Doing it properly means thin
+   quads laid along the streets at generation time, which the grid already
+   knows the position of. Crossings and stop bars fall out of the same work.
 4. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
 5. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but

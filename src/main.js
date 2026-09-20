@@ -11,7 +11,7 @@ import { Post } from './post.js';
 import { audio } from './audio.js';
 import * as TEX from './textures.js';
 import { randRange } from './world.js';
-import { initRandom, getSeed } from './rng.js';
+import { initRandom, getSeed, reserve } from './rng.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
@@ -52,19 +52,25 @@ class Game {
 
     this.post = new Post(this.renderer);
 
-    this.setupSky();
-    this.setupEnvironment();
+    // Everything from here to the city is look, not layout. `reserve` rewinds
+    // the seeded stream afterwards so the UUIDs three mints per material and
+    // texture cannot shift what gets built — see `rng.js`.
+    reserve(() => {
+      this.setupSky();
+      this.setupEnvironment();
+    });
     this.setupLights();
 
     const city = buildCity(this.scene);
     this.world = city.world;
+    this.city = city.group;          // the merged, baked meshes checks read
     this.fireBarrels = city.fireBarrels;
     this.perches = city.perches;
     this.batches = city.batches;
 
-    this.effects = new Effects(this.scene);
+    this.effects = reserve(() => new Effects(this.scene));
     this.player = new Player(this.camera, this.world);
-    this.weapons = new WeaponSystem(this.viewScene, this);
+    this.weapons = reserve(() => new WeaponSystem(this.viewScene, this));
     this.input = new Input(this.canvas);
     this.hud = new HUD();
 
@@ -78,8 +84,10 @@ class Game {
     this.enemies = [];
     this.pool = {};
     this.pickups = [];
-    this.setupPickupPrototypes();
-    this.setupDust();
+    reserve(() => {
+      this.setupPickupPrototypes();
+      this.setupDust();
+    });
 
     this.state = 'menu';
     this.time = 0;

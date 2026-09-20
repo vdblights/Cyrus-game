@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 16 checks, headless
+npm test           # 22 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -50,16 +50,19 @@ second.
 | Flag | Effect |
 | --- | --- |
 | `--seed=N` | Replay an exact city (default is pinned, so runs are repeatable) |
+| `--only=text` | Run only the checks whose name contains `text` |
 | `--headed` | Watch it play |
 | `--shots` | Also write screenshots to `tests/shots/` |
 
 It covers boot and city generation, hit registration and headshots, melee
 reach, grenade flight and blast falloff, cook-offs, stair climbing, mantling
-onto ledges (and not onto walls), fall damage, marksman perching and laser tracking, warlord spawns, the objective
-schedule and its payouts, objective decay and expiry, waypoint projection,
-aiming without pointer lock, settings and record persistence, and a
-four-minute scripted run that must reach wave 3 with hostiles still able to
-engage.
+onto ledges (and not onto walls), fall damage, marksman perching and laser
+tracking, warlord spawns, the objective schedule and its payouts, objective
+decay and expiry, waypoint projection, the texel density of every baked
+surface, the ambient darkening baked under the city, the view model being
+solid and unwrapped at its own scale, aiming without pointer
+lock, settings and record persistence, and a four-minute scripted run that
+must reach wave 3 with hostiles still able to engage.
 
 Three things make it trustworthy rather than merely green: the random stream
 is seeded, every check reloads the page so none of them inherit another's
@@ -217,14 +220,34 @@ own direction rather than painted into the sky, so it can never drift away
 from the shadows it casts. Fog is tinted to the sky's horizon, which drains
 colour out of distance.
 
+Every texture declares how many metres of world one copy of it covers, and
+the geometry is unwrapped to match, so nothing in the city is stretched or
+crammed. A facade tile is 10 m: four window bays and three floors, which puts
+a window at about a metre and a half and a floor at three and a third. Wall
+UVs are snapped to those, so a window is never cut in half at a corner and
+the floor lines meet the ground and the roof square.
+
 Surfaces carry a normal map derived from their own texture — the painted
 window reveals, mortar lines and pitted concrete become relief that catches
 the key light instead of reading as a decal. They carry a roughness map from
 the same luminance, so soot and grime answer the light flatly while glass and
 bare metal stay sharp enough to reflect. Facades are built with broken,
-boarded and intact windows, grime bleeding from every sill, and scorch licking
-up from the blown ones. Tall blocks step back near the top, which is most of
-what gives a skyline its shape.
+boarded and intact windows, sills and lintels, grime bleeding from every sill,
+scorch licking up from the blown ones, bullet pocks and the odd shell crater
+with reinforcing bar still standing in it. Each of the five wall materials —
+precast panel, brick, curtain wall, render and stone — is painted in several
+variants, scrap steel comes in four paints failing to the same oxide, and
+every building is given a colour drift and a tile offset of its own, so two
+neighbours never read as the same prefab. Tall blocks step back
+near the top, which is most of what gives a skyline its shape.
+
+Where surfaces meet, the light does not reach, and a shadow map will not tell
+you that. Every solid in the city deposits into a coarse occlusion grid, and
+the ground reads it back as vertex colour when the city is merged — so the
+gutter beside a wall, the inside of a corner and the strip under a wreck all
+darken, and walls fade toward their own footing. It is baked once, costs
+nothing per frame, and is most of what stops a city of right angles looking
+like a city of boxes.
 
 The sky is not just a backdrop: the same dusk gradient painted for the dome is
 convolved into an environment map and hung on the scene, so every surface
@@ -309,6 +332,16 @@ A few notes on the implementation:
 - **Normal maps are generated, not authored.** A Sobel pass over each
   texture's own luminance becomes its normal map, so painted detail lights
   like geometry without shipping a second set of images.
+- **Big soft shapes are painted small and scaled up.** A canvas `filter` blur
+  costs a full-canvas convolution per draw call, which made stains and rust
+  blooms the most expensive thing at boot. Low-frequency detail is painted
+  into a 96px layer instead and the upscale does the smoothing — the same
+  picture, and boot got faster rather than slower as textures got richer.
+- **Changing how it looks cannot change what gets built.** Three draws four
+  random numbers per material, texture and geometry to build a UUID, off the
+  same seeded stream the city is laid out from, so adding a texture used to
+  hand every seed a different city. Boot-time graphics now run inside a call
+  that rewinds the stream afterwards.
 - **The city is generated per session.** A 6×6 grid of lots is filled with
   towers, gutted low ruins and rubble lots, then dressed with wrecked cars,
   shipping containers, barricades, streetlights and burning barrels.
@@ -316,7 +349,10 @@ A few notes on the implementation:
   cylinders pushed out along the shallowest axis. Line of sight uses a slab
   test against the same boxes, so shots can pass over low cover.
 - **The view model renders in its own scene** over the world with a cleared
-  depth buffer, so the weapon never clips into geometry.
+  depth buffer, so the weapon never clips into geometry. Every part of it is a
+  chamfered box carrying stippled polymer or parkerised steel at its own tile
+  scale — an untextured cube lit by one sun is two faces and two values, which
+  is what "boxy" means, and the gun is the one surface always within reach.
 - **The city is drawn as a handful of meshes.** It is generated as some
   fifteen hundred boxes, then merged by material once it is finished — 567
   draw calls become 39, and the shadow pass falls with them. The meshes it
