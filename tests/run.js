@@ -381,6 +381,112 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
   return { ledges: r.ledges.length, walls: r.walls.length };
 });
 
+check('a pull-up carries the view, it does not jump it', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.startWave = () => {};
+
+    const R = 0.42;
+    const climbs = [];
+    for (const b of g.world.boxes) {
+      if (climbs.length >= 6 || b.top < 0.8 || b.top > 1.75) continue;
+      const px = (b.minX + b.maxX) / 2, pz = b.minZ - 0.62;
+      const lz = pz + (R + 0.1) + R + 0.15;
+      if (g.world.groundHeight(px, pz, R, 99) > 0.2) continue;
+      if (g.world.occupied(px, pz, R, 0.6)) continue;
+      if (g.world.groundHeight(px, lz, R, Infinity) > b.top + 0.05) continue;
+      if (g.world.groundHeight(px, lz, R, b.top + 0.05) < b.top - 0.25) continue;
+
+      g.player.reset(px, pz);
+      g.player.yaw = Math.PI;
+      g.input.keys.clear();
+
+      // Sample the camera every frame through the climb and across the frame
+      // it hands control back. Two numbers come out of it, because they mean
+      // different things: `shift` is the biggest change in the view's speed
+      // from one frame to the next *inside* the climb, and `handover` is the
+      // step on the first frame after it. A quick climb has a large step and
+      // a tiny shift; a snap has a large shift whatever its speed, and a snap
+      // is what reads as a jump.
+      //
+      // Space is released the moment the climb starts. Holding it through the
+      // landing makes the player jump again on the first frame they are back
+      // on the ground, which is the game working — and 0.11 m of camera in one
+      // frame that has nothing to do with the pull-up.
+      let prev = null, prevStep = null, wasClimbing = false;
+      let worst = 0, shift = 0, handover = 0, entry = 0;
+      let frames = 0, started = false, after = 0;
+      for (let f = 0; f < 240; f++) {
+        // Space goes down a few frames in, not on the first: the climb starts
+        // on the very frame it does, and the frame before that is what the
+        // first frame of the climb has to be measured against.
+        if (f === 4) g.input.keys.add('Space');
+        g.time += 1 / 60; g.step(1 / 60);
+        const climbing = !!g.player.mantle;
+        if (climbing) g.input.keys.clear();
+        const c = g.camera.position;
+        if (prev) {
+          const step = Math.hypot(c.x - prev[0], c.y - prev[1], c.z - prev[2]);
+          if (climbing) {
+            if (step > worst) worst = step;
+            // the first climbing frame is its own measurement: this is the
+            // one the old pull-up moved 0.63 m in
+            if (!wasClimbing) entry = step;
+            else if (prevStep !== null) shift = Math.max(shift, Math.abs(step - prevStep));
+          } else if (wasClimbing) {
+            handover = step;
+          }
+          prevStep = step;
+        }
+        prev = [c.x, c.y, c.z];
+        wasClimbing = climbing;
+        if (climbing) { started = true; frames++; }
+        else if (started && ++after > 20) break;
+      }
+      g.input.keys.clear();
+      if (started) {
+        climbs.push({
+          rise: +b.top.toFixed(2),
+          seconds: +(frames / 60).toFixed(2),
+          worstStep: +worst.toFixed(3),
+          worstShift: +shift.toFixed(4),
+          entry: +entry.toFixed(4),
+          handover: +handover.toFixed(4),
+        });
+      }
+    }
+    return climbs;
+  });
+
+  expect(r.length >= 3, `only ${r.length} ledges climbed to measure`);
+  // The old pull-up set the eye height to a crouch on its first frame,
+  // dropping the view 0.63 m between two frames from a standstill. That is a
+  // discontinuity, not a speed, which is why the assertion is on `shift`: the
+  // climb is allowed to be quick, it is not allowed to teleport.
+  // Measured on seed 1, old code against new: entry 0.617 → 0.0245, in-climb
+  // shift 0.5805 → 0.0109, worst single frame 0.617 → 0.095.
+  const start = r.reduce((a, b) => (b.entry > a.entry ? b : a));
+  expect(start.entry < 0.05,
+    `the view dropped ${start.entry} m on the first frame of a climb: ${JSON.stringify(start)}`);
+  const jump = r.reduce((a, b) => (b.worstShift > a.worstShift ? b : a));
+  expect(jump.worstShift < 0.02,
+    `the view lurched ${jump.worstShift} m between two frames: ${JSON.stringify(jump)}`);
+  // The climb hands back at a walk rather than a standstill, so the handover
+  // frame is deliberately not zero — it measures 0.021 m, where the old one
+  // stopped dead at exactly 0. This is not catching the old bug, it is
+  // keeping the fix for it from becoming one.
+  const exit = r.reduce((a, b) => (b.handover > a.handover ? b : a));
+  expect(exit.handover < 0.06,
+    `the view lurched ${exit.handover} m on the frame the climb ended: ${JSON.stringify(exit)}`);
+  // and it takes longer to haul yourself higher, rather than being flung
+  expect(r.every((c) => c.seconds > 0.25 && c.seconds < 1.2),
+    `pull-up durations out of range: ${JSON.stringify(r.map((c) => c.seconds))}`);
+  return { climbs: r.length, entry: start.entry, shift: jump.worstShift, exit: exit.handover };
+});
+
 check('long falls hurt, short drops do not', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -745,97 +851,7 @@ check('a warlord going down opens an evac window', async (page) => {
 });
 
 check('a scripted run reaches wave 3 without stalling', async (page) => {
-  const r = await page.evaluate(() => {
-    const g = window.__game;
-    g.startRun();
-    g.input.locked = true;
-    for (const w of g.weapons.weapons) w.unlocked = true;
-
-    const dt = 1 / 60;
-    let unstick = 0, cookRelease = 0, blind = 0;
-    const waveAt = [];
-    let lastProgress = 0, longestStall = 0;
-    let contactAt = 0, noContact = 0;
-
-    for (let f = 0; f < 60 * 240; f++) {
-      g.time += dt;
-      g.input.keys.clear();
-
-      let nearest = null, nd = 1e9;
-      for (const e of g.enemies) {
-        if (!e.alive) continue;
-        const d = Math.hypot(e.pos.x - g.player.position.x, e.pos.z - g.player.position.z);
-        if (d < nd) { nd = d; nearest = e; }
-      }
-      if (nearest) {
-        const dx = nearest.pos.x - g.player.position.x, dz = nearest.pos.z - g.player.position.z;
-        g.player.yaw = Math.atan2(-dx, -dz);
-        g.player.pitch = Math.atan2((nearest.pos.y + 1.3) - g.player.position.y, Math.hypot(dx, dz));
-        const canSee = g.world.lineOfSight(
-          g.player.position.x, g.player.position.y, g.player.position.z,
-          nearest.pos.x, nearest.pos.y + 1.3, nearest.pos.z);
-        g.input.fire = nd < 45 && canSee;
-        blind = canSee ? 0 : blind + 1;
-        // a person pinned behind cover flanks or backs off; walking into the
-        // wall forever is a limitation of the bot, not of the game
-        if (blind > 90) {
-          g.input.keys.add(f % 200 < 100 ? 'KeyA' : 'KeyD');
-          // Flanking means moving sideways *and* closing, and backing off is
-          // the answer to something inside your guard — not to an empty
-          // street. Strafing in place never reaches anyone, and retreating
-          // from a hostile it cannot even see walks at 5.2 m/s from an
-          // archetype that tops out at 4.6, so that retreat never ends: the
-          // bot outran the wave it was measuring, holding back for 56% of a
-          // four-minute run. Either way the check graded the bot, not the game.
-          if (blind > 300 && nd < 12) g.input.keys.add('KeyS');
-          else g.input.keys.add('KeyW');
-        } else if (nd > 10 || !canSee) {
-          g.input.keys.add('KeyW');
-        }
-        if (Math.hypot(g.player.velocity.x, g.player.velocity.z) < 0.5) unstick = 40;
-        if (unstick > 0) { unstick--; g.input.keys.add(f % 240 < 120 ? 'KeyA' : 'KeyD'); }
-        if (nd < 3) g.weapons.startMelee(g.time);
-        if (g.cookStart < 0 && g.nades > 0 && nd > 8 && nd < 22) { g.cookStart = g.time; cookRelease = f + 40; }
-      } else {
-        g.input.keys.add('KeyW');
-        g.input.fire = false;
-      }
-      if (cookRelease && f >= cookRelease) { g.throwGrenade(); cookRelease = 0; }
-      if (g.weapons.current.mag === 0) g.weapons.startReload(g.time);
-
-      g.player.health = 100; g.player.dead = false;   // immortal: we test the loop, not the bot
-      g.step(dt);
-      g.input.endFrame();
-
-      if (!Number.isFinite(g.score)) return { scoreBroke: true, at: f / 60 };
-
-      if (g.kills > lastProgress) { lastProgress = g.kills; longestStall = Math.max(longestStall, f); }
-      if (waveAt.length < g.wave) waveAt.push(+(f / 60).toFixed(1));
-
-      // the property that matters: while hostiles are alive, some of them
-      // keep reaching the player. A bot that cannot shoot is not a stall.
-      if (g.aliveCount === 0) contactAt = f;
-      else {
-        for (const e of g.enemies) {
-          if (!e.alive) continue;
-          const close = Math.hypot(e.pos.x - g.player.position.x, e.pos.z - g.player.position.z) < 14;
-          // holding overwatch with a clear shot counts as engaging
-          const shooting = e.alerted && g.world.lineOfSight(
-            e.pos.x, e.pos.y + 1.5, e.pos.z,
-            g.player.position.x, g.player.position.y, g.player.position.z);
-          if (close || shooting) { contactAt = f; break; }
-        }
-      }
-      noContact = Math.max(noContact, (f - contactAt) / 60);
-    }
-
-    const stallSeconds = (60 * 240 - longestStall) / 60;
-    return {
-      wave: g.wave, kills: g.kills, score: g.score, waveAt,
-      stallSeconds: +stallSeconds.toFixed(1), noContact: +noContact.toFixed(1),
-      objectives: g.objectivesSecured + g.objectivesLost,
-    };
-  });
+  const r = await page.evaluate(() => window.__botRun(240));
   expect(!r.scoreBroke, `score stopped being a number at t=${r.at}s`);
   expect(r.wave >= 3, `only reached wave ${r.wave} in four minutes`);
   expect(r.kills > 20, `only ${r.kills} kills`);
@@ -847,6 +863,27 @@ check('a scripted run reaches wave 3 without stalling', async (page) => {
   // the bot never walks to a site, so these all expire — the point is that
   // the wave manager kept handing them out across four minutes of real play
   expect(r.objectives >= 2, `only ${r.objectives} objectives came up over ${r.wave} waves`);
+  return r;
+});
+
+check('a wave never deadlocks on a hostile that cannot path to you', async (page) => {
+  // A hostile steers straight at the player and has no pathfinding, so with a
+  // building in the way it slides along the wall face. Every per-window
+  // measure the stuck watchdog had excused that — it covers ground, and the
+  // player it is failing to reach is moving too — so `noProgress` never
+  // accumulated and the wave never cleared. Whether a city has a corner that
+  // does this is a property of the layout, so this check brings its own:
+  // seed 7 stalled at wave 1 for 196 of 240 seconds, with the watchdog firing
+  // once in the whole run. The suite's own seed does not trip it.
+  await reloadGame({ seed: 7 });
+  const r = await page.evaluate(() => window.__botRun(150));
+  expect(!r.scoreBroke, `score stopped being a number at t=${r.at}s`);
+  expect(r.noContact < 60,
+    `hostiles failed to reach the player for ${r.noContact}s — the wave deadlocked`);
+  // wave 1 never cleared before the fix; the exact wave reached afterwards is
+  // pacing, not the property under test, so this only asks that it got past
+  // the one it used to die on
+  expect(r.wave >= 2, `still on wave ${r.wave} after 150s on the deadlock seed`);
   return r;
 });
 

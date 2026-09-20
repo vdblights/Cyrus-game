@@ -10,6 +10,16 @@ const V4 = new THREE.Vector3();
 const V5 = new THREE.Vector3();
 
 /**
+ * How long the stuck watchdog watches before it believes a hostile is going
+ * nowhere, and how far it has to end up from where it started to count as
+ * having gone somewhere. A city block is 34 m of frontage, so anything that
+ * rounds one covers far more than this; a hostile sliding along the face of
+ * one covers far less.
+ */
+const HORIZON = 10;
+const DRIFT = 5;
+
+/**
  * Hostile archetypes. `preferred` is the range the AI tries to hold; melee
  * types simply close to contact.
  */
@@ -211,6 +221,7 @@ export class Enemy {
     this.watchZ = this.pos.z;
     this.watchPx = Infinity;
     this.watchPz = Infinity;
+    this.trail = [];
     this.pos.y = 0;
     if (this.parts.beam) this.parts.beam.visible = false;
     this.applyElite(false);
@@ -243,13 +254,25 @@ export class Enemy {
   }
 
   /**
-   * Snapshot what the stuck watchdog measures progress against: where this
-   * hostile stood, where its target stood, and how far apart the two were.
-   * Taken after every window, and after any move that is not the hostile's
-   * own walking — measuring a window against a position it no longer
-   * occupies is what turned one relocation into a chain of them.
+   * Forget everything the stuck watchdog knows about this hostile's history.
+   *
+   * Called after any move that is not the hostile's own walking — a spawn, a
+   * relocation. Measuring the next window, or the next horizon, against a
+   * position it no longer occupies is what turned one relocation into a chain
+   * of them.
    */
   markWatchdog(player = this.game.player) {
+    this._snapshotWindow(player);
+    this.trail.length = 0;
+  }
+
+  /**
+   * Snapshot what one watchdog window measures progress against: where this
+   * hostile stood, where its target stood, and how far apart the two were.
+   * Taken after every window — unlike the horizon in `trail`, which spans
+   * several of them and so survives one.
+   */
+  _snapshotWindow(player) {
     this.watchX = this.pos.x;
     this.watchZ = this.pos.z;
     this.watchPx = player.position.x;
@@ -403,21 +426,42 @@ export class Enemy {
     const checkEvery = onPerch ? 12 : 4;
     if (this.stuckTimer > checkEvery) {
       const elapsed = this.stuckTimer;
-      // Progress needs two measurements, because either one alone lies.
-      // Closing distance alone condemns a hostile chasing a player who simply
-      // walks faster than it — which is all of them — and that hostile is
-      // doing nothing wrong. Own movement alone lets one orbit a wall forever
-      // and look busy. So: wedged means it went nowhere at all; lost means it
-      // covered ground without gaining any on a target that was not running.
+      // Progress needs three measurements, because every one of them alone
+      // lies. Closing distance alone condemns a hostile chasing a player who
+      // simply walks faster than it — which is all of them — and that hostile
+      // is doing nothing wrong. Own movement alone lets one orbit a wall
+      // forever and look busy. And both of those are read over a single
+      // window, which is too short to tell a slide along a wall from a lap
+      // around a city block. So: wedged means it went nowhere at all this
+      // window; lost means it covered ground without gaining any on a target
+      // that was not running; adrift means that over several windows it ended
+      // up where it started, however much walking it did in between.
       const travelled = Math.hypot(this.pos.x - this.watchX, this.pos.z - this.watchZ);
       const targetMoved = Math.hypot(player.position.x - this.watchPx, player.position.z - this.watchPz);
       const closed = this.lastDistCheck - dist;
       const wedged = travelled < 1;
       const lost = closed < 1.5 && targetMoved < travelled * 0.6;
+
+      // The long horizon. A hostile with a building between it and the player
+      // steers straight at them, slides along the wall face, reverses, and
+      // slides back: metres of travel a window, no distance closed, and a net
+      // displacement near zero. Nothing measured inside one window separates
+      // that from a genuine detour, because a detour looks identical for its
+      // first few seconds — only where it *ends up* tells them apart. Walking
+      // around one city block is 34 m of frontage, so anything that covers
+      // ground for ten seconds and lands within five metres of where it
+      // started is not going anywhere.
+      this.trail.push({ t: time, x: this.pos.x, z: this.pos.z });
+      while (this.trail.length > 1 && time - this.trail[0].t > HORIZON + checkEvery) this.trail.shift();
+      const anchor = this.trail[0];
+      const spanned = time - anchor.t;
+      const drift = Math.hypot(this.pos.x - anchor.x, this.pos.z - anchor.z);
+      const adrift = spanned >= HORIZON * 0.75 && drift < DRIFT;
+
       // One holding its preferred range on purpose is exempt, so nobody gets
       // yanked mid-firefight, and neither is anyone already on top of you.
       const holdingRange = sees && (onPerch || dist <= this.type.preferred * 1.4);
-      const stalled = (wedged || lost) && dist > 4 && !holdingRange;
+      const stalled = (wedged || lost || adrift) && dist > 4 && !holdingRange;
       this.noProgress = stalled ? this.noProgress + elapsed : 0;
 
       // Several failed windows, not one. Walking around a city block costs
@@ -429,8 +473,9 @@ export class Enemy {
             this.pos.x, this.pos.y + 1.3 * this.type.scale, this.pos.z))) {
         this.game.relocateEnemy(this);
         this.noProgress = 0;
+      } else {
+        this._snapshotWindow(player);
       }
-      this.markWatchdog(player);
     }
 
     const speed = this.type.speed * (this.alerted ? 1 : 0.45);

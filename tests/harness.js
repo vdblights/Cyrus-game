@@ -127,6 +127,107 @@ export async function installHelpers(page) {
       }));
     };
 
+    /**
+     * Play the game badly but honestly for `seconds`, and report what
+     * happened.
+     *
+     * This bot has its own history, which is why it lives here rather than
+     * inside one check: an earlier version backed away from anything it could
+     * not see, and since the player walks faster than every archetype the
+     * retreat never ended — it outran the wave it was measuring and graded
+     * itself instead of the game. It now backs off only from a threat inside
+     * 12 m and keeps closing while it flanks. Changing that is changing every
+     * check that reads it, so measure what it spends its frames doing before
+     * concluding anything about the game from a failure here.
+     */
+    window.__botRun = (seconds = 240) => {
+      const g = window.__game;
+      g.startRun();
+      g.input.locked = true;
+      for (const w of g.weapons.weapons) w.unlocked = true;
+
+      const dt = 1 / 60;
+      const frames = Math.round(seconds * 60);
+      let unstick = 0, cookRelease = 0, blind = 0;
+      const waveAt = [];
+      let lastProgress = 0, longestStall = 0;
+      let contactAt = 0, noContact = 0;
+
+      for (let f = 0; f < frames; f++) {
+        g.time += dt;
+        g.input.keys.clear();
+
+        let nearest = null, nd = 1e9;
+        for (const e of g.enemies) {
+          if (!e.alive) continue;
+          const d = Math.hypot(e.pos.x - g.player.position.x, e.pos.z - g.player.position.z);
+          if (d < nd) { nd = d; nearest = e; }
+        }
+        if (nearest) {
+          const dx = nearest.pos.x - g.player.position.x, dz = nearest.pos.z - g.player.position.z;
+          g.player.yaw = Math.atan2(-dx, -dz);
+          g.player.pitch = Math.atan2((nearest.pos.y + 1.3) - g.player.position.y, Math.hypot(dx, dz));
+          const canSee = g.world.lineOfSight(
+            g.player.position.x, g.player.position.y, g.player.position.z,
+            nearest.pos.x, nearest.pos.y + 1.3, nearest.pos.z);
+          g.input.fire = nd < 45 && canSee;
+          blind = canSee ? 0 : blind + 1;
+          // a person pinned behind cover flanks or backs off; walking into the
+          // wall forever is a limitation of the bot, not of the game
+          if (blind > 90) {
+            g.input.keys.add(f % 200 < 100 ? 'KeyA' : 'KeyD');
+            // flanking means moving sideways *and* closing; backing off is the
+            // answer to something inside your guard, not to an empty street
+            if (blind > 300 && nd < 12) g.input.keys.add('KeyS');
+            else g.input.keys.add('KeyW');
+          } else if (nd > 10 || !canSee) {
+            g.input.keys.add('KeyW');
+          }
+          if (Math.hypot(g.player.velocity.x, g.player.velocity.z) < 0.5) unstick = 40;
+          if (unstick > 0) { unstick--; g.input.keys.add(f % 240 < 120 ? 'KeyA' : 'KeyD'); }
+          if (nd < 3) g.weapons.startMelee(g.time);
+          if (g.cookStart < 0 && g.nades > 0 && nd > 8 && nd < 22) { g.cookStart = g.time; cookRelease = f + 40; }
+        } else {
+          g.input.keys.add('KeyW');
+          g.input.fire = false;
+        }
+        if (cookRelease && f >= cookRelease) { g.throwGrenade(); cookRelease = 0; }
+        if (g.weapons.current.mag === 0) g.weapons.startReload(g.time);
+
+        g.player.health = 100; g.player.dead = false;   // immortal: we test the loop, not the bot
+        g.step(dt);
+        g.input.endFrame();
+
+        if (!Number.isFinite(g.score)) return { scoreBroke: true, at: f / 60 };
+
+        if (g.kills > lastProgress) { lastProgress = g.kills; longestStall = Math.max(longestStall, f); }
+        if (waveAt.length < g.wave) waveAt.push(+(f / 60).toFixed(1));
+
+        // the property that matters: while hostiles are alive, some of them
+        // keep reaching the player. A bot that cannot shoot is not a stall.
+        if (g.aliveCount === 0) contactAt = f;
+        else {
+          for (const e of g.enemies) {
+            if (!e.alive) continue;
+            const close = Math.hypot(e.pos.x - g.player.position.x, e.pos.z - g.player.position.z) < 14;
+            // holding overwatch with a clear shot counts as engaging
+            const shooting = e.alerted && g.world.lineOfSight(
+              e.pos.x, e.pos.y + 1.5, e.pos.z,
+              g.player.position.x, g.player.position.y, g.player.position.z);
+            if (close || shooting) { contactAt = f; break; }
+          }
+        }
+        noContact = Math.max(noContact, (f - contactAt) / 60);
+      }
+
+      return {
+        wave: g.wave, kills: g.kills, score: g.score, waveAt,
+        stallSeconds: +((frames - longestStall) / 60).toFixed(1),
+        noContact: +noContact.toFixed(1),
+        objectives: g.objectivesSecured + g.objectivesLost,
+      };
+    };
+
     /** Height of the ground along a line — reads a stair run as a ramp. */
     window.__profile = (x, z, axis = 'z', from = -16, to = 16) => {
       const g = window.__game;
@@ -165,9 +266,12 @@ export async function openGame(opts = {}) {
 
   return {
     page, browser, errors, url,
-    reload: async ({ freeze: f = freeze } = {}) => {
-      await page.goto(url, { waitUntil: 'load' });
-      await waitForBoot(page, { freeze: f, seed });
+    // The city comes from the URL, so a check that needs a particular layout
+    // — one that trips a bug the pinned seed happens not to — reboots on its
+    // own seed rather than asserting against whatever the suite is pinned to.
+    reload: async ({ freeze: f = freeze, seed: s = seed } = {}) => {
+      await page.goto(`http://localhost:${port}/index.html?seed=${s}`, { waitUntil: 'load' });
+      await waitForBoot(page, { freeze: f, seed: s });
     },
     close: async () => { await browser.close(); server.close(); },
   };
