@@ -19,6 +19,19 @@ node tests/probe.js "g.perches.length"   # ask the running game anything
 `npm install` + `npx playwright install chromium` are only needed for tests and
 builds, never to play.
 
+## Working agreement
+
+- **A feature branch ends in a pull request.** When the work on
+  `claude/abandoned-city-fps-game-j2xn80` is finished and pushed, open the PR
+  against `main` — do not leave the branch sitting pushed and wait to be
+  asked. Every one of PRs #1-#9 came off that branch, which is restarted from
+  `main` after each merge rather than stacked on finished history.
+- **This file is the only memory that survives.** Sessions run in a container
+  that is reclaimed when they end, so anything worth keeping — a preference, a
+  measurement, a trap someone already fell into — belongs in here or in
+  `README.md`, committed. Nothing written to a home directory outlives the
+  session.
+
 ## Architecture
 
 | File | Owns |
@@ -293,6 +306,13 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 
 ## State
 
+**Right now:** PRs #1-#8 are merged into `main`. PR #9 is open from
+`claude/abandoned-city-fps-game-j2xn80` with the deadlock fix, the pull-up
+rework and the decoration pass — 24/24 checks pass on seed 1 and the one-file
+build is clean. Nothing in this file is described as open work any more; the
+list at the bottom is what to do next, not what was left half done. Once #9
+merges, restart the branch from `main` rather than stacking on it.
+
 `main` has everything through the graphics pass (PR #1, merged). Objectives
 landed after it (PR #3): caches, beacons and evac windows, cued by the wave
 manager, with a light column, a screen waypoint and a radar bearing to find
@@ -344,8 +364,8 @@ baked tint and occlusion, `softLayer`, `reserve` in `rng.js`, the
 two-triangle collision ground, the chamfered and textured view models, and
 the three checks that guard all of it.
 
-PR #9 is this branch's current work, and it is three things that came out of
-play rather than out of a plan: the wave deadlock (written up below, and now
+PR #9 is open and carries this branch's current work — three things that came
+out of play rather than out of a plan: the wave deadlock (written up below, and now
 closed), the pull-up feeling jumpy, and the city still reading as boxes.
 
 The pull-up was two discontinuities and a fixed duration. It set the eye
