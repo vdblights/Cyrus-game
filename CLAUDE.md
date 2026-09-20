@@ -27,6 +27,11 @@ builds, never to play.
   asked. Every PR in this repo's history came off that branch, which is
   restarted from `main` after each merge rather than stacked on finished
   history.
+- **Do not record pull request status in this file.** Which PR is open, and
+  what is merged, belongs to `git log origin/main..HEAD` and the repo's PR
+  list. A status line here is wrong the moment anyone merges, and it was the
+  only thing needing correction in four sessions running. Write down what was
+  *learned* and what it *measured*; leave the bookkeeping to git.
 - **This file is the only memory that survives.** Sessions run in a container
   that is reclaimed when they end, so anything worth keeping — a preference, a
   measurement, a trap someone already fell into — belongs in here or in
@@ -364,13 +369,20 @@ which exaggerates shadow cost. Relative ordering holds; absolutes do not.
 
 ## State
 
-**Right now:** PRs #1-#10 are merged and PR #11 — the collision pass below —
-is open off `claude/abandoned-city-fps-game-j2xn80`. The suite is 29/29 on
-seeds 1, 7 and 99991 with a clean one-file build.
+**Where things stand.** This section describes what is on `main`, and there is
+deliberately no line here naming the open pull request. That line was the one
+thing in this file that needed correcting in four sessions running, because it
+is wrong the moment anyone merges, and a memory that is reliably wrong in one
+place teaches you to distrust it everywhere. `git log origin/main..HEAD` and
+the repo's pull request list answer it exactly and cannot go stale.
 
-PR #11 came from play: mantling and standing on things felt wrong, reported
-as running into objects too early and then running between objects that are
-plainly separate once on top of them. Both halves were real, both were
+What holds regardless: `npm test` is the contract, every check in it was
+confirmed to fail against what it guards before being kept, and the list at
+the end of this section is what to do next rather than what was left undone.
+
+PR #11 merged the collision pass. It came from play: mantling and standing on
+things felt wrong, reported as running into objects too early and then running
+between objects that are plainly separate once on top of them. Both halves were real, both were
 collision rather than the mantle state machine, and the two compound — an
 oversized collider closes the gap between two props at the same time as it
 stops you early at each of them.
@@ -397,10 +409,9 @@ The layout is untouched by all of it: seed 1 still lays out 332 boxes, 405
 solids and 12 perches. Nothing here adds an `Object3D` or spends the seeded
 stream, and `addRotatedBox` pushes exactly one box where `addBox` pushed one.
 
-Nothing below is open work apart from what the block above names. The section
-is a record of what was built and what it cost to learn — read the invariants
-and the testing traps first, since those are the parts that bite. The list at
-the end is what to do next.
+The rest of this section is a record of what was built and what it cost to
+learn, newest first. Read the invariants and the testing traps above it first
+— those are the parts that bite.
 
 `main` has everything through the graphics pass (PR #1, merged). Objectives
 landed after it (PR #3): caches, beacons and evac windows, cued by the wave
