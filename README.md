@@ -219,10 +219,24 @@ colour out of distance.
 
 Surfaces carry a normal map derived from their own texture — the painted
 window reveals, mortar lines and pitted concrete become relief that catches
-the key light instead of reading as a decal. Facades are built with broken,
+the key light instead of reading as a decal. They carry a roughness map from
+the same luminance, so soot and grime answer the light flatly while glass and
+bare metal stay sharp enough to reflect. Facades are built with broken,
 boarded and intact windows, grime bleeding from every sill, and scorch licking
 up from the blown ones. Tall blocks step back near the top, which is most of
 what gives a skyline its shape.
+
+The sky is not just a backdrop: the same dusk gradient painted for the dome is
+convolved into an environment map and hung on the scene, so every surface
+reflects the actual sky above it — orange low in the west, blue overhead —
+rather than answering one flat ambient tint. The gun in your hands catches it
+too, from its own scene.
+
+The frame is then finished rather than shown raw. It is drawn into a floating
+point buffer, everything brighter than white is blurred into a bloom (the sun,
+the barrel fires, a muzzle flash), and one final pass tone-maps, grades the
+shade cold against warm highlights, vignettes, and lays a fine grain over the
+top.
 
 Hostiles carry a contact shadow under them, because the sun's shadow map only
 covers the ground near the player and anything beyond it would otherwise
@@ -233,11 +247,14 @@ float.
 Shadow mapping costs more than everything else in the scene put together, so
 it is the first thing the quality tiers drop:
 
-| Tier | Shadows | Normal maps | Pixel ratio | Dust |
-| --- | --- | --- | --- | --- |
-| High | 2048, soft | yes | up to 1.75 | yes |
-| Medium | 1024, hard | yes | up to 1.4 | yes |
-| Low | off | no | 1.0 | no |
+| Tier | Shadows | Normal maps | Post | Pixel ratio | Dust |
+| --- | --- | --- | --- | --- | --- |
+| High | 2048, soft | yes | bloom + grade, 4x MSAA | up to 1.75 | yes |
+| Medium | 1024, hard | yes | bloom + grade, 2x MSAA | up to 1.4 | yes |
+| Low | off | no | off, straight to the canvas | 1.0 | no |
+
+A machine that cannot afford shadows cannot afford a bloom either, so Low
+drops the whole post chain and hands tone mapping back to the renderer.
 
 The default is **Auto**: it watches the first few seconds of a run and steps
 down a tier if the frame rate is under 40, telling you when it does. Picking a
@@ -278,6 +295,7 @@ src/objectives.js   objective sites, channels, markers and waypoints
 src/grenades.js     thrown frags: fuse, bounce physics, detonation
 src/effects.js      pooled tracers, impacts, blood, casings, explosions
 src/textures.js     canvas-painted textures (asphalt, facades, rust, sky)
+src/post.js         bloom, tone mapping, grade, vignette and grain
 src/audio.js        synthesised gunfire and feedback via Web Audio
 src/hud.js          HUD readouts, killfeed, radar, damage indicators
 vendor/             Three.js r169 build
@@ -299,6 +317,11 @@ A few notes on the implementation:
   test against the same boxes, so shots can pass over low cover.
 - **The view model renders in its own scene** over the world with a cleared
   depth buffer, so the weapon never clips into geometry.
+- **The city is drawn as a handful of meshes.** It is generated as some
+  fifteen hundred boxes, then merged by material once it is finished — 567
+  draw calls become 39, and the shadow pass falls with them. The meshes it
+  was merged from stay alive off the scene graph, because those, not the
+  merged copy, are what bullets are traced against.
 - **Combat effects are pooled** — tracers, sprites, bullet holes and casings
   are recycled, so firefights allocate nothing.
 - **Hostiles have a stuck watchdog.** If one stops closing on the player and

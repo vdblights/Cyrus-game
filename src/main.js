@@ -7,6 +7,7 @@ import { Effects } from './effects.js';
 import { Enemy, ENEMY_TYPES } from './enemies.js';
 import { ObjectiveSystem, objectiveForWave } from './objectives.js';
 import { HUD } from './hud.js';
+import { Post } from './post.js';
 import { audio } from './audio.js';
 import * as TEX from './textures.js';
 import { randRange } from './world.js';
@@ -14,6 +15,7 @@ import { initRandom, getSeed } from './rng.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
+const SIZE = new THREE.Vector2();
 const RAY = new THREE.Raycaster();
 
 class Game {
@@ -48,13 +50,17 @@ class Game {
     vRim.position.set(0.9, -0.3, -1);
     this.viewScene.add(vRim);
 
+    this.post = new Post(this.renderer);
+
     this.setupSky();
+    this.setupEnvironment();
     this.setupLights();
 
     const city = buildCity(this.scene);
     this.world = city.world;
     this.fireBarrels = city.fireBarrels;
     this.perches = city.perches;
+    this.batches = city.batches;
 
     this.effects = new Effects(this.scene);
     this.player = new Player(this.camera, this.world);
@@ -149,9 +155,42 @@ class Game {
     this.sunSprite = sunGroup;
   }
 
+  /**
+   * Light the city with the sky it stands under.
+   *
+   * The dusk gradient already painted for the dome is run through a PMREM so
+   * it can be used as an image-based light: every PBR surface then reflects
+   * the actual sky above it — orange low on the west faces, blue overhead —
+   * instead of answering a hemisphere light with one flat tint. It is the
+   * cheapest real gain available, since the texture is already in memory.
+   *
+   * The dome keeps its own copy: `mapping` has to change for the convolution,
+   * and the cached texture is shared.
+   */
+  setupEnvironment() {
+    const equirect = TEX.skyTexture().clone();
+    equirect.mapping = THREE.EquirectangularReflectionMapping;
+    equirect.needsUpdate = true;
+
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    pmrem.compileEquirectangularShader();
+    this.envMap = pmrem.fromEquirectangular(equirect).texture;
+    pmrem.dispose();
+    equirect.dispose();
+
+    this.scene.environment = this.envMap;
+    this.scene.environmentIntensity = 1;
+    // the view model is lit in its own scene, but a gun that does not catch
+    // the same sky as the street reads as a sticker over it
+    this.viewScene.environment = this.envMap;
+    this.viewScene.environmentIntensity = 0.75;
+  }
+
   setupLights() {
-    // low ambient, strong key: faces should separate by which way they point
-    this.scene.add(new THREE.HemisphereLight(0x9db4d6, 0x6e6152, 1.25));
+    // low ambient, strong key: faces should separate by which way they point.
+    // The sky itself now carries most of the ambient (see setupEnvironment),
+    // so this is a fraction of what it was or the shadows wash out.
+    this.scene.add(new THREE.HemisphereLight(0x9db4d6, 0x6e6152, 0.55));
 
     const sun = new THREE.DirectionalLight(0xffc890, 3.0);
     sun.position.set(-60, 40, -30);
@@ -167,8 +206,9 @@ class Game {
     this.scene.add(sun.target);
     this.sun = sun;
 
-    // cool bounce from the opposite side so shadowed faces stay readable
-    const fill = new THREE.DirectionalLight(0x5f82b8, 0.85);
+    // cool bounce from the opposite side so shadowed faces stay readable —
+    // lighter than it was, because the sky light now comes from that side too
+    const fill = new THREE.DirectionalLight(0x5f82b8, 0.65);
     fill.position.set(40, 25, 50);
     this.scene.add(fill);
 
@@ -238,10 +278,14 @@ class Game {
   applyQuality(tier = this.settings.quality) {
     const level = tier === 'auto' ? (this.autoTier || 'high') : tier;
     const cfg = {
-      high: { shadows: true, soft: true, shadowSize: 2048, span: 50, normals: true, pixel: 1.75, dust: true },
-      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, normals: true, pixel: 1.4, dust: true },
-      low: { shadows: false, soft: false, shadowSize: 512, span: 40, normals: false, pixel: 1, dust: false },
+      high: { shadows: true, soft: true, shadowSize: 2048, span: 50, normals: true, pixel: 1.75, dust: true, post: true, bloom: true, samples: 4 },
+      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, normals: true, pixel: 1.4, dust: true, post: true, bloom: true, samples: 2 },
+      low: { shadows: false, soft: false, shadowSize: 512, span: 40, normals: false, pixel: 1, dust: false, post: false, bloom: false, samples: 0 },
     }[level];
+
+    // the low tier draws straight to the canvas, as it always did: a machine
+    // that cannot afford shadows cannot afford a bloom either
+    this.post.configure({ enabled: cfg.post, bloom: cfg.bloom, samples: cfg.samples });
 
     this.renderer.shadowMap.enabled = cfg.shadows;
     this.renderer.shadowMap.type = cfg.soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
@@ -407,6 +451,10 @@ class Game {
     this.camera.updateProjectionMatrix();
     this.viewCamera.aspect = w / h;
     this.viewCamera.updateProjectionMatrix();
+    // post targets are sized in drawing-buffer pixels, which the pixel ratio
+    // moves as well as the window does
+    this.renderer.getDrawingBufferSize(SIZE);
+    this.post.setSize(SIZE.x, SIZE.y);
   }
 
   // ------------------------------------------------------------ run control
@@ -1068,6 +1116,11 @@ class Game {
   }
 
   render() {
+    if (this.post.enabled) {
+      this.post.render(this.scene, this.camera, this.viewScene, this.viewCamera, this.time);
+      return;
+    }
+    this.renderer.setRenderTarget(null);
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
     this.renderer.clearDepth();

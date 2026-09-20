@@ -29,6 +29,101 @@ function boxGeo(w, h, d, texelSize = 4) {
   return g;
 }
 
+/**
+ * Concatenate geometries that are already in world space into one buffer.
+ *
+ * `BufferGeometryUtils` lives in three's examples, which this repo does not
+ * vendor, so this covers the one case the city needs: position/normal/uv,
+ * indexed output, indexed or non-indexed input.
+ */
+function mergeIntoOne(geos) {
+  let verts = 0, indices = 0;
+  for (const g of geos) {
+    verts += g.attributes.position.count;
+    indices += g.index ? g.index.count : g.attributes.position.count;
+  }
+  const pos = new Float32Array(verts * 3);
+  const nor = new Float32Array(verts * 3);
+  const uv = new Float32Array(verts * 2);
+  const idx = verts > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+
+  let vOff = 0, iOff = 0;
+  for (const g of geos) {
+    const p = g.attributes.position, n = g.attributes.normal, t = g.attributes.uv;
+    pos.set(p.array, vOff * 3);
+    if (n) nor.set(n.array, vOff * 3);
+    if (t) uv.set(t.array, vOff * 2);
+    if (g.index) {
+      const src = g.index.array;
+      for (let i = 0; i < src.length; i++) idx[iOff + i] = src[i] + vOff;
+      iOff += src.length;
+    } else {
+      for (let i = 0; i < p.count; i++) idx[iOff + i] = vOff + i;
+      iOff += p.count;
+    }
+    vOff += p.count;
+  }
+
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  out.computeBoundingSphere();
+  return out;
+}
+
+/**
+ * Collapse the finished city into one mesh per material.
+ *
+ * The city is ~1500 boxes that never move, and drawing them one at a time
+ * cost 567 calls for under 10k triangles — about 18 triangles a call, which
+ * is all driver and no pixels. The shadow pass paid the same bill again.
+ *
+ * Rendering and raycasting want different shapes, so they get different
+ * ones. The merged meshes go into the scene; the meshes they were built
+ * from leave it but stay alive in `world.solids`, off the scene graph with
+ * their transforms frozen, because that is what bullets are traced against.
+ * Tracing one merged city mesh instead would mean testing every triangle in
+ * the sector for every pellet, and would quietly change what a shot can hit:
+ * the solid set is deliberately not everything you can see.
+ */
+function bakeStatic(group) {
+  group.updateMatrixWorld(true);
+
+  const meshes = [];
+  group.traverse((o) => { if (o.isMesh && o.visible) meshes.push(o); });
+
+  const buckets = new Map();
+  for (const m of meshes) {
+    let b = buckets.get(m.material.uuid);
+    if (!b) buckets.set(m.material.uuid, b = { material: m.material, geos: [], cast: false, receive: false });
+    b.geos.push(m.geometry.clone().applyMatrix4(m.matrixWorld));
+    b.cast = b.cast || m.castShadow;
+    b.receive = b.receive || m.receiveShadow;
+  }
+
+  // nothing updates a detached mesh's matrix, so freeze it at what it was
+  for (const m of meshes) {
+    m.matrixAutoUpdate = false;
+    m.removeFromParent();
+  }
+  // the groups the wrecked cars were assembled in are empty now
+  for (const child of [...group.children]) {
+    if (child.isGroup && child.children.length === 0) group.remove(child);
+  }
+
+  for (const b of buckets.values()) {
+    const mesh = new THREE.Mesh(mergeIntoOne(b.geos), b.material);
+    mesh.castShadow = b.cast;
+    mesh.receiveShadow = b.receive;
+    mesh.matrixAutoUpdate = false;
+    group.add(mesh);
+    for (const g of b.geos) g.dispose();
+  }
+  return buckets.size;
+}
+
 export function buildCity(scene) {
   const world = new World();
   world.bounds = (GRID * BLOCK) / 2 - 2;
@@ -36,48 +131,71 @@ export function buildCity(scene) {
   const group = new THREE.Group();
   scene.add(group);
 
-  // Phong rather than Lambert: these surfaces need a normal map to break up
-  // the flatness, and a specular term so orientation reads at a glance.
+  // Standard rather than Phong: every one of these surfaces stands under the
+  // image-based sky light hung on `scene.environment`, and only a PBR
+  // material reads it. Roughness comes off each texture's own luminance, so
+  // soot and grime answer the sky flatly while glass and bare metal catch it.
   const facades = [0, 1, 2, 3, 4].map((n) => {
     const map = TEX.facade(n, 0);
-    return new THREE.MeshPhongMaterial({
+    return new THREE.MeshStandardMaterial({
       map, normalMap: TEX.normalFrom(map, 1.1, 'facade' + n),
       normalScale: new THREE.Vector2(0.55, 0.55),
-      specular: 0x2a2622, shininess: 6,
+      roughnessMap: TEX.surfaceFrom(map, { dark: 1, lite: 0.34 }, 'facade' + n),
+      roughness: 1, metalness: 0.05, envMapIntensity: 0.7,
     });
   });
 
   const concreteTex = TEX.concrete('#6a6c72');   // cooler stock; the warm key tints it
-  const concreteMat = new THREE.MeshPhongMaterial({
+  const concreteMat = new THREE.MeshStandardMaterial({
     map: concreteTex, normalMap: TEX.normalFrom(concreteTex, 1.1, 'conc'),
-    normalScale: new THREE.Vector2(0.7, 0.7), specular: 0x24211e, shininess: 5,
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    roughnessMap: TEX.surfaceFrom(concreteTex, { dark: 1, lite: 0.72 }, 'conc'),
+    roughness: 1, metalness: 0.02, envMapIntensity: 0.6,
   });
 
   const darkTex = TEX.concrete('#53565c');
-  const darkConcrete = new THREE.MeshPhongMaterial({
+  const darkConcrete = new THREE.MeshStandardMaterial({
     map: darkTex, normalMap: TEX.normalFrom(darkTex, 1.1, 'dark'),
-    normalScale: new THREE.Vector2(0.7, 0.7), specular: 0x201d1b, shininess: 5,
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    roughnessMap: TEX.surfaceFrom(darkTex, { dark: 1, lite: 0.72 }, 'dark'),
+    roughness: 1, metalness: 0.02, envMapIntensity: 0.6,
   });
 
   const rustTex = TEX.rustMetal();
-  const rustMat = new THREE.MeshPhongMaterial({
+  // rust is oxide over what is still metal underneath, so the bright pixels
+  // hold some of that back: one packed map feeds both channels
+  const rustSurface = TEX.surfaceFrom(rustTex, { dark: 1, lite: 0.5, metalDark: 0.1, metalLite: 0.75 }, 'rust');
+  const rustMat = new THREE.MeshStandardMaterial({
     map: rustTex, normalMap: TEX.normalFrom(rustTex, 1.8, 'rust'),
-    normalScale: new THREE.Vector2(1, 1), specular: 0x3a3028, shininess: 18,
+    normalScale: new THREE.Vector2(1, 1),
+    roughnessMap: rustSurface, metalnessMap: rustSurface,
+    roughness: 1, metalness: 1, envMapIntensity: 0.8,
   });
 
-  const metalMat = new THREE.MeshPhongMaterial({ color: 0x4a4e54, specular: 0x8a9099, shininess: 55 });
+  const metalMat = new THREE.MeshStandardMaterial({
+    color: 0x4a4e54, roughness: 0.42, metalness: 0.9, envMapIntensity: 1,
+  });
   // dark glass catches the sky hard, which is what sells it as glass
-  const glassMat = new THREE.MeshPhongMaterial({
-    color: 0x1b242c, specular: 0xa8c0d8, shininess: 120, reflectivity: 1,
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x131b22, roughness: 0.09, metalness: 0.88, envMapIntensity: 1.35,
   });
 
   // ---------------------------------------------------------------- ground
   const groundSize = GRID * BLOCK + 120;
   const asphaltTex = TEX.asphalt();
-  const asphaltMat = new THREE.MeshPhongMaterial({
+  const asphaltMat = new THREE.MeshStandardMaterial({
     map: asphaltTex, normalMap: TEX.normalFrom(asphaltTex, 0.9, 'asph'),
-    normalScale: new THREE.Vector2(0.55, 0.55), specular: 0x181a1e, shininess: 12,
+    normalScale: new THREE.Vector2(0.55, 0.55),
+    roughnessMap: TEX.surfaceFrom(asphaltTex, { dark: 0.98, lite: 0.55 }, 'asph'),
+    roughness: 1, metalness: 0.05, envMapIntensity: 0.5,
   });
+
+  // Wrecked cars used to mint a material per car — 140-odd one-off materials
+  // that no batching can ever merge. One palette, shared.
+  const carBodyMats = [0x4a4f55, 0x6b3a32, 0x3b4a3c, 0x5a5a52, 0x2f3338].map((color) =>
+    new THREE.MeshStandardMaterial({ color, roughness: 0.68, metalness: 0.55, envMapIntensity: 0.8 }));
+  const burntMat = new THREE.MeshStandardMaterial({ color: 0x1d1c1b, roughness: 0.92, metalness: 0.3 });
+  const tireMat = new THREE.MeshStandardMaterial({ color: 0x17181a, roughness: 0.96, metalness: 0 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundSize, groundSize), asphaltMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
@@ -211,7 +329,9 @@ export function buildCity(scene) {
     }
   }
 
-  return { world, group, fireBarrels, perches };
+  const batches = bakeStatic(group);
+
+  return { world, group, fireBarrels, perches, batches };
 
   /** True when no registered box taller than `maxTop` overlaps the rectangle. */
   function areaClear(w, minX, minZ, maxX, maxZ, maxTop = 0.4) {
@@ -486,7 +606,9 @@ export function buildCity(scene) {
 
   function wreckedCar(g, w, x, z, rot, metal, rust, glass) {
     const car = new THREE.Group();
-    const bodyMat = Math.random() < 0.5 ? rust : new THREE.MeshLambertMaterial({ color: pick([0x4a4f55, 0x6b3a32, 0x3b4a3c, 0x5a5a52, 0x2f3338]) });
+    // the branch still draws exactly one number either way, so the seeded
+    // stream — and every city it lays out — is unchanged by the palette
+    const bodyMat = Math.random() < 0.5 ? rust : pick(carBodyMats);
     const bw = 1.9, bl = 4.4;
 
     const chassis = new THREE.Mesh(boxGeo(bw, 0.75, bl, 2), bodyMat);
@@ -506,15 +628,14 @@ export function buildCity(scene) {
     // burnt-out cars lose their wheels and sit on the rims
     const burnt = Math.random() < 0.4;
     if (!burnt) {
-      const tire = new THREE.MeshLambertMaterial({ color: 0x17181a });
       for (const [wx, wz] of [[-bw / 2, bl / 3], [bw / 2, bl / 3], [-bw / 2, -bl / 3], [bw / 2, -bl / 3]]) {
-        const t = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.28, 10), tire);
+        const t = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.28, 10), tireMat);
         t.rotation.z = Math.PI / 2;
         t.position.set(wx, 0.42, wz);
         car.add(t);
       }
     } else {
-      chassis.material = new THREE.MeshLambertMaterial({ color: 0x1d1c1b });
+      chassis.material = burntMat;
       cabin.visible = false;
       chassis.position.y = 0.5;
     }

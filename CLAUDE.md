@@ -33,6 +33,7 @@ builds, never to play.
 | `src/grenades.js` | Fuse, flight, bounce, detonation |
 | `src/effects.js` | Pooled tracers, impacts, blood, casings, explosions |
 | `src/textures.js` | Every texture, painted to canvas at boot |
+| `src/post.js` | Bloom, tone mapping, grade, vignette, grain |
 | `src/audio.js` | Every sound, synthesised via Web Audio |
 | `src/hud.js` | DOM readouts, killfeed, radar, capture banner |
 | `src/rng.js` | Seeded `Math.random` for the page's lifetime |
@@ -52,6 +53,16 @@ These each cost real debugging time. Changing them needs a reason.
 - **`Math.random` is seeded and the stream order matters.** Do not spend it on
   per-frame cosmetics — an earlier fire flicker did, and identical runs
   diverged. Deterministic noise instead (see `flickerFires`).
+- **So does three's, and it spends four numbers per object.** Every material,
+  texture, geometry and `Object3D` gets a UUID at construction, and
+  `generateUUID` draws four `Math.random()` calls to build it. Creating one
+  material more or fewer before the city is laid out shifts the whole stream,
+  so a given seed lays out the same city only within one version of the code:
+  the graphics pass that merged the car materials and added roughness maps
+  moved every seed's city. Runs stay repeatable, `--seed=N` still replays an
+  exact city, and nothing about generation changed — but a seed written down
+  in an old note does not point at the city it used to. Worth fixing properly
+  one day by giving generation its own generator instead of the global one.
 - **Hit detection raycasts before the renderer runs**, so `Enemy.update` calls
   `group.updateMatrixWorld(true)` itself. Anything else raycast against needs
   its transform current too — the aiming laser had to refresh it before using
@@ -65,6 +76,20 @@ These each cost real debugging time. Changing them needs a reason.
   clamped.
 - **The view model renders in its own scene** over a cleared depth buffer, so
   the weapon never clips into geometry. It has its own camera and lights.
+- **The city you see and the city you shoot are different objects.** Once
+  generation finishes, `bakeStatic` merges every static mesh by material and
+  puts those in the scene; the meshes they were built from leave the scene
+  but stay in `world.solids`, off the graph with their matrices frozen, and
+  those are what `hitscan` traces against. Tracing the merged copy instead
+  would test every triangle in the sector per pellet, and would change what a
+  bullet can hit — the solid set is deliberately not everything you can see
+  (a parapet is decoration; the wall under it is not). Anything added to the
+  city after the bake has to be registered in both or it is invisible to one
+  of them.
+- **Tone mapping belongs to exactly one stage.** With post on, the scene pass
+  stays linear and `post.js` applies the ACES curve; with post off the
+  renderer does it. Both at once looks chalky and washed. `Post.configure`
+  owns that switch — do not set `renderer.toneMapping` anywhere else.
 - **Perch-holders never leave a perch.** Marksmen do not drift while unalerted,
   do not strafe on a perch, and get a longer stuck-watchdog leash. All three
   routes had to be closed before they stopped falling off roofs.
@@ -142,9 +167,22 @@ code from *both* sides of whatever it was accusing.
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
 tiers (`applyQuality`) drop it first; `auto` measures wall-clock FPS over the
-first seconds of a run and steps down once under 40. World pass is ~1000 draw
-calls, one mesh per box; merging static geometry per material is the biggest
-available win and is not done yet.
+first seconds of a run and steps down once under 40.
+
+Draw calls used to be the other half of the bill. Measured mid-run on seed
+20260813, the world pass was 567 calls for 9,978 triangles — about 18
+triangles a call — and the shadow pass added 519 more, so a frame that drew
+17k triangles cost 1,086 calls. `bakeStatic` (see the invariant above) merges
+the city by material and takes that to 39 calls for 34k triangles: more
+triangles, because a merged mesh spanning the city cannot be frustum-culled,
+and at this scale triangles are free while calls are not.
+
+What that buys is headroom, and the graphics pass spent it: PBR materials, a
+sky environment map and a bloom-plus-grade post chain all landed on top of
+the saving. If more is needed later, the next things to reach for are baked
+vertex AO and per-building tint (both nearly free now that the geometry is
+merged — the attribute rides along), and splitting the merge per city block
+so culling comes back.
 
 All frame-rate figures in this repo's history come from software rendering,
 which exaggerates shadow cost. Relative ordering holds; absolutes do not.
@@ -213,16 +251,74 @@ always claimed it did. Seeds 1 and 20260813 pass on the code from *both*
 sides of PR #5 with the corrected bot, which is the check that it measures
 the game rather than the change.
 
-One seed-dependent failure is open and predates all of this: on seed
-20251111, `stairs carry the player onto a perch` reports only 3 of 5 perches
-walkable, with two never reached at all. The numbers are identical on the
-code from before the watchdog work, so nothing in this session caused it —
-either the city puts perches up there with no stair route, or the check picks
-perches that were never meant to have one, and which of those it is has not
-been established. `node tests/run.js --seed=20251111` is the reproducer.
-Worth knowing: the same seed on the older code also failed the scripted run
-with a 99.4 s stall, which the current code passes. Every other seed tried
-— 1, 7, 4242, 31337, 99991, 20260101 and the pinned 20260813 — is 19/19.
+One seed-dependent failure was open before the graphics pass: on seed
+20251111, `stairs carry the player onto a perch` reported only 3 of 5 perches
+walkable. That seed no longer generates that city (see the `generateUUID`
+invariant), so it is unreproduced rather than fixed, and there is nothing
+left to reproduce it with. If it comes back it will come back somewhere else.
+
+**A wave can deadlock on a hostile that cannot path to you, and this is
+open.** A hostile steers straight at the player and has no pathfinding; with
+a building between them it slides along the wall face indefinitely. The stuck
+watchdog is supposed to be the backstop and does not fire, because a hostile
+sliding along a wall keeps *changing* its distance to the player — any window
+where it closes 1.5 m resets `noProgress`, so the several-window requirement
+is never met. The wave never clears and the run is over.
+
+Measured over six seeds, on the code from *both* sides of the graphics pass:
+
+| seed | before | after |
+| --- | --- | --- |
+| 1 | pass | pass |
+| 7 | pass | **fail** — wave 2, 156 s no contact |
+| 4242 | **fail** — wave 1, 224 s | pass |
+| 31337 | pass | pass |
+| 99991 | pass | **fail** — wave 3, 144 s |
+| 20260101 | pass | pass |
+
+So it is roughly one city in four either way, it predates this work, and the
+graphics pass only moved *which* cities have it, by moving every seed's city.
+The suite's pinned seed moved with them: 20260813 now generates a deadlock
+city, which is why the default seed in `tests/run.js` is 1. That is the same
+kind of pin it always was — a seed whose city happens not to trip the bug —
+but it is worth being clear that the suite is one allocation away from
+re-rolling into a red build, and that the real fix is the watchdog, not the
+pin. The reproducer while it lasts is `node tests/run.js --seed=20260813`.
+
+The fix, when someone takes it: judge progress over a longer horizon than one
+window. Net displacement from where a hostile was ten seconds ago separates
+sliding along a wall (small) from a genuine chase around a block (large),
+where per-window closing distance cannot. It has to keep all three existing
+guards, because a false relocation is a hostile vanishing in front of the
+player.
+
+The graphics pass on top of all that is three changes that only make sense
+together, each one paying for the next:
+
+1. **The city is merged by material** once generation finishes (`bakeStatic`),
+   which is where the frame budget came from — see Performance above.
+2. **Surfaces are PBR and the sky lights them.** The dusk gradient already
+   painted for the dome is run through a `PMREMGenerator` and hung on
+   `scene.environment`, so every surface reflects the sky actually above it.
+   That only works on Standard materials, so the city and the view model
+   moved off Phong and Lambert, with roughness (and, for rust, metalness)
+   packed out of each texture's own luminance by `TEX.surfaceFrom` — the same
+   trick `normalFrom` already played. The hemisphere light dropped from 1.25
+   to 0.55 and the cool fill from 0.85 to 0.65 to make room, or the shade
+   washes out.
+3. **A post chain** (`src/post.js`): float target, bloom, ACES, grade,
+   vignette, grain. Hand-written, because `EffectComposer` is in three's
+   examples and this repo vendors only the core. MSAA moved onto the render
+   target, since the canvas's own does nothing once the scene is drawn into
+   one. Low tier skips all of it and hands tone mapping back to the renderer.
+
+Three things about that are worth knowing before changing it. The tone-mapping
+switch and the two city representations are invariants, written up above. And
+the cities themselves moved: creating fewer materials and more textures
+shifted the seeded stream, for the reason in the `generateUUID` invariant. So
+the seed-specific notes below describe cities that no longer exist at those
+seeds — including the open stair failure, which is why it is now recorded as
+unreproduced rather than open.
 
 Deployment is static and must stay that way. `vercel.json` overrides the build
 and install commands to no-ops and serves the repo root; `.vercelignore` keeps
@@ -240,12 +336,24 @@ Suggested next work, in the order I would do it:
 1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-2. **Positional audio** — sounds are mono, so you cannot hear which side fire
+2. **Break the texture repetition.** This is the biggest remaining *visual*
+   gap, and it is not a resolution problem — at 512² over a 4 m tile the
+   texel density is fine. It is that there are five facade textures, every
+   building of a style gets the identical one, and `TEX.facade(style, seed)`
+   takes a seed that is only ever called with `0`. Three things, cheapest
+   first: use that seed for two or three variants per style; bake a
+   per-building tint into vertex colours at merge time (free now that the
+   geometry is merged — the attribute rides along in `mergeIntoOne`); bake
+   vertex AO the same way, darkening ground contacts and inside corners,
+   which is what a city of right angles is really missing.
+3. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
-3. **Merge static city geometry** — cuts draw calls by an order of magnitude.
 4. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
    only the player calls it, so a car roof is still a place they cannot follow
    you to.
+5. **Convert the hostiles to PBR.** The city and the view model are Standard
+   materials reading the sky environment; enemies are still Lambert and mint
+   four materials each, so they neither catch the sky nor batch.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403

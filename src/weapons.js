@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import { audio } from './audio.js';
 
-const POLY = new THREE.MeshLambertMaterial({ color: 0x35393f });
-const METAL = new THREE.MeshLambertMaterial({ color: 0x5b6169 });
-const DARK = new THREE.MeshLambertMaterial({ color: 0x212428 });
-const ACCENT = new THREE.MeshLambertMaterial({ color: 0x6b727a });
+// Standard, so the gun in your hands reflects the same sky the street does
+// (`viewScene.environment`). Polymer stays matte, machined parts stay bright.
+const POLY = new THREE.MeshStandardMaterial({ color: 0x35393f, roughness: 0.78, metalness: 0.12, envMapIntensity: 0.6 });
+const METAL = new THREE.MeshStandardMaterial({ color: 0x5b6169, roughness: 0.34, metalness: 0.92, envMapIntensity: 1 });
+const DARK = new THREE.MeshStandardMaterial({ color: 0x212428, roughness: 0.52, metalness: 0.7, envMapIntensity: 0.8 });
+const ACCENT = new THREE.MeshStandardMaterial({ color: 0x6b727a, roughness: 0.42, metalness: 0.85, envMapIntensity: 0.9 });
 const GLOW = new THREE.MeshBasicMaterial({ color: 0xff3b2f });
 
 function box(w, h, d, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {

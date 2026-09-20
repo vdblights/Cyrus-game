@@ -24,7 +24,7 @@ const flag = (name) => {
   return hit ? hit.split('=').slice(1).join('=') : null;
 };
 
-const SEED = Number(flag('seed')) || 20260813;
+const SEED = Number(flag('seed')) || 1;      // matches the suite's pin
 const FILE = flag('file');
 const HEADED = args.includes('--headed');
 
