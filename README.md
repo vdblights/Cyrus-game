@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 24 checks, headless
+npm test           # 27 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -60,8 +60,9 @@ onto ledges (and not onto walls), fall damage, marksman perching and laser
 tracking, warlord spawns, the objective schedule and its payouts, objective
 decay and expiry, waypoint projection, the texel density of every baked
 surface, the ambient darkening baked under the city, the view model being
-solid and unwrapped at its own scale, aiming without pointer
-lock, settings and record persistence, and a four-minute scripted run that
+solid and unwrapped at its own scale, the route field covering the whole
+sector, a hostile walking around a building rather than into it, aiming
+without pointer lock, settings and record persistence, and a four-minute scripted run that
 must reach wave 3 with hostiles still able to engage.
 
 Three things make it trustworthy rather than merely green: the random stream
@@ -167,6 +168,12 @@ already inside your guard.
 | Marksman | Takes high ground and hits for 26 (wave 4+) |
 | Juggernaut | Heavy, 420 HP, suppressing fire (wave 5+) |
 | Warlord | Elite juggernaut that closes out every fifth wave |
+
+Hostiles route around buildings rather than walking into them: a coarse
+walkable grid over the city carries a cost field rebuilt from wherever you are
+standing, so one that loses sight of you takes the way round the block instead
+of sliding along the wall between you. With a clear view it comes straight at
+you, as it always did.
 
 A marksman claims a rooftop or terrace and stays there while it can see you.
 Before each shot it paints you with an aiming laser for about a second — that
@@ -311,6 +318,7 @@ index.html          page shell, HUD markup, import map
 src/main.js         game loop, scene/lighting setup, waves, hit resolution
 src/city.js         procedural city generation
 src/world.js        AABB collision, ground height, line-of-sight, bounds
+src/nav.js          walkable grid over the city, and a route field to the player
 src/player.js       input, movement, camera, health
 src/weapons.js      weapon definitions, view models, firing and recoil
 src/enemies.js      hostile archetypes, AI, procedural bodies

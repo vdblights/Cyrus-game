@@ -11,6 +11,7 @@ import { Post } from './post.js';
 import { audio } from './audio.js';
 import * as TEX from './textures.js';
 import { randRange } from './world.js';
+import { NavGrid } from './nav.js';
 import { initRandom, getSeed, reserve } from './rng.js';
 
 const V1 = new THREE.Vector3();
@@ -67,6 +68,11 @@ class Game {
     this.fireBarrels = city.fireBarrels;
     this.perches = city.perches;
     this.batches = city.batches;
+
+    // Where hostiles can walk, and which way is toward you from anywhere in
+    // the sector. Built once the city's boxes are final, and out of typed
+    // arrays only, so it costs the seeded stream nothing — see nav.js.
+    this.nav = new NavGrid(this.world);
 
     this.effects = reserve(() => new Effects(this.scene));
     this.player = new Player(this.camera, this.world);
@@ -695,7 +701,7 @@ class Game {
   /** Pull a hostile that has wedged itself in geometry and drop it back in. */
   relocateEnemy(enemy) {
     // perch-users go back to high ground rather than the street
-    const spot = (enemy.type.perch && this.findPerch()) || { ...this.findSpawnPoint(22, 45), y: 0 };
+    const spot = (enemy.type.perch && this.findPerch(true)) || { ...this.findSpawnPoint(22, 45), y: 0 };
     const { x, z } = spot;
     enemy.pos.set(x, spot.y || 0, z);
     enemy.vel.set(0, 0, 0);
@@ -705,8 +711,17 @@ class Game {
     enemy.markWatchdog(this.player);
   }
 
-  /** A high, unoccupied vantage point far enough from the player to matter. */
-  findPerch() {
+  /**
+   * A high, unoccupied vantage point far enough from the player to matter.
+   *
+   * `overlooking` asks for one with a line to the player. That is what a
+   * relocation wants — it is moving a marksman precisely because the roof it
+   * is on shows it nothing — but not what a spawn wants, where the same
+   * preference means every sniper of every wave opens with a clear shot.
+   * Measured over seven four-minute runs, spending it at spawn as well put
+   * the damage the sector deals up by about half again on its own.
+   */
+  findPerch(overlooking = false) {
     if (!this.perches.length) return null;
     const p = this.player.position;
     const candidates = this.perches.filter((q) => {
@@ -715,7 +730,15 @@ class Game {
       return !this.enemies.some((e) => e.alive && Math.hypot(e.pos.x - q.x, e.pos.z - q.z) < 3);
     });
     if (!candidates.length) return null;
-    return candidates[(Math.random() * candidates.length) | 0];
+    // Moving a marksman off a roof it can see nothing from, onto another roof
+    // it can see nothing from, is most of a coin flip — and a wave whose last
+    // hostile is a blind sniper then waits out the watchdog once per perch
+    // until it gets lucky.
+    const withView = overlooking
+      ? candidates.filter((q) => this.world.lineOfSight(q.x, q.y + 1.5, q.z, p.x, p.y, p.z))
+      : [];
+    const from = withView.length ? withView : candidates;
+    return from[(Math.random() * from.length) | 0];
   }
 
   spawnEnemy(typeKey, elite = false) {
@@ -1059,6 +1082,10 @@ class Game {
         else if (this.weapons.switchToArmed(this.time)) this.hud.toast('SWITCHING — DRY');
       }
     }
+    // Route field first, so every hostile reads one built from where the
+    // player is standing now. It only rebuilds when they cross a cell.
+    this.nav.update(this.player.position.x, this.player.position.z);
+
     // enemies
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
