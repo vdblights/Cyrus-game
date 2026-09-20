@@ -850,6 +850,107 @@ check('a scripted run reaches wave 3 without stalling', async (page) => {
   return r;
 });
 
+check('every surface is textured at the world scale it declares', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const rows = [];
+
+    for (const mesh of g.city.children) {
+      const tile = mesh.material?.userData?.tile;
+      if (!tile) continue;                       // untextured, nothing to check
+      const pos = mesh.geometry.attributes.position;
+      const uv = mesh.geometry.attributes.uv;
+      const index = mesh.geometry.index;
+
+      // texels per metre, per triangle, weighted by how much of the city that
+      // triangle actually covers — a stretched tile on a big surface is what
+      // the eye sees, and a wrong one on a bolt is not
+      let inBand = 0, total = 0;
+      const densities = [];
+      for (let t = 0; t < index.count; t += 3) {
+        const [a, b, c] = [index.getX(t), index.getX(t + 1), index.getX(t + 2)];
+        const e1 = [pos.getX(b) - pos.getX(a), pos.getY(b) - pos.getY(a), pos.getZ(b) - pos.getZ(a)];
+        const e2 = [pos.getX(c) - pos.getX(a), pos.getY(c) - pos.getY(a), pos.getZ(c) - pos.getZ(a)];
+        const cross = [
+          e1[1] * e2[2] - e1[2] * e2[1],
+          e1[2] * e2[0] - e1[0] * e2[2],
+          e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        const area = Math.hypot(cross[0], cross[1], cross[2]) / 2;
+        if (area < 1e-4) continue;
+        const uvArea = Math.abs(
+          (uv.getX(b) - uv.getX(a)) * (uv.getY(c) - uv.getY(a))
+          - (uv.getX(c) - uv.getX(a)) * (uv.getY(b) - uv.getY(a))) / 2;
+        const density = Math.sqrt(uvArea / area) * tile;   // 1 when it is right
+        densities.push([density, area]);
+        total += area;
+        if (density > 0.7 && density < 1.4) inBand += area;
+      }
+      if (!total) continue;
+
+      densities.sort((p, q) => p[0] - q[0]);
+      let acc = 0, median = 1;
+      for (const [d, a] of densities) { acc += a; if (acc >= total / 2) { median = d; break; } }
+      rows.push({
+        name: mesh.material.userData.name, tile,
+        median: +median.toFixed(2), share: +(inBand / total).toFixed(2),
+        area: Math.round(total),
+      });
+    }
+    return rows;
+  });
+
+  expect(r.length >= 8, `only ${r.length} textured batches found`);
+  for (const row of r) {
+    expect(row.median > 0.75 && row.median < 1.35,
+      `${row.name} is textured at ${row.median}x the ${row.tile} m scale it declares`);
+    expect(row.share > 0.6,
+      `only ${Math.round(row.share * 100)}% of ${row.name}'s area is near its declared scale`);
+  }
+  const ground = r.find((row) => row.name === 'asphalt');
+  expect(ground && Math.abs(ground.median - 1) < 0.05,
+    `the ground is at ${ground?.median}x its declared scale`);
+  return { batches: r.length, worst: r.reduce((a, b) => (Math.abs(b.median - 1) > Math.abs(a.median - 1) ? b : a)) };
+});
+
+check('the bake darkens the ground the city stands on', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const ground = g.city.children.find((m) => m.material?.userData?.name === 'asphalt');
+    if (!ground) return { found: false };
+    const pos = ground.geometry.attributes.position;
+    const col = ground.geometry.attributes.color;
+
+    // split the ground's vertices by whether the city stands next to them
+    const near = [], open = [];
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i);
+      if (Math.abs(x) > g.world.bounds || Math.abs(z) > g.world.bounds) continue;
+      let closest = 99;
+      for (const b of g.world.boxes) {
+        if (b.top < 2) continue;
+        const dx = Math.max(b.minX - x, 0, x - b.maxX);
+        const dz = Math.max(b.minZ - z, 0, z - b.maxZ);
+        closest = Math.min(closest, Math.hypot(dx, dz));
+        if (closest < 0.5) break;
+      }
+      const lum = (col.getX(i) + col.getY(i) + col.getZ(i)) / 3;
+      if (closest < 1.5) near.push(lum);
+      else if (closest > 7) open.push(lum);   // clear of the ~5 m blur radius
+    }
+    const mean = (a) => a.reduce((s, v) => s + v, 0) / (a.length || 1);
+    return { found: true, near: +mean(near).toFixed(3), open: +mean(open).toFixed(3),
+      nearCount: near.length, openCount: open.length };
+  });
+
+  expect(r.found, 'no merged ground mesh carries a vertex colour');
+  expect(r.nearCount > 50 && r.openCount > 40, `too few samples: ${JSON.stringify(r)}`);
+  expect(r.near < r.open * 0.82,
+    `ground beside a wall (${r.near}) is not darker than open street (${r.open})`);
+  expect(r.open > 0.85, `open street is darkened to ${r.open} with nothing standing on it`);
+  return r;
+});
+
 check('look still works when pointer lock is denied', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -946,7 +1047,17 @@ reloadGame = game.reload;
 
 let failed = 0;
 
-for (const { name, fn } of checks) {
+// `--only=text` runs just the checks whose name contains it. The suite is
+// twenty-one checks and several minutes; when one of them is what you are
+// working on, waiting for the other twenty is how you stop running it.
+const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').split('=')[1];
+const selected = ONLY ? checks.filter((c) => c.name.includes(ONLY)) : checks;
+if (ONLY && !selected.length) {
+  console.log(`no check matches "${ONLY}"`);
+  process.exit(1);
+}
+
+for (const { name, fn } of selected) {
   // Every check gets a freshly booted game on the same seed. Sharing one
   // instance made results depend on what the previous check left behind.
   await game.reload();
@@ -971,5 +1082,5 @@ if (SHOTS) {
 
 await game.close();
 
-console.log(`\n${checks.length - failed}/${checks.length} checks passed`);
+console.log(`\n${selected.length - failed}/${selected.length} checks passed`);
 process.exit(failed ? 1 : 0);
