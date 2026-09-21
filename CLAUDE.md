@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 29 headless checks (needs npm install first)
+npm test                       # 30 headless checks (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -379,6 +379,21 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The best-score line on the menu ran through the bottom of the DEPLOY button,
+by 8 px, for anyone who had ever finished a run — so the only people who saw
+it were the ones with a record to read. A `button` is `inline-block`, so it
+sits in a line box and the strut's descender adds space under it that is not
+part of the button; `.records` had a `-14px` top margin hand-tuned to cancel
+that, and over-cancelled. The button is `display: block` with `margin: 6px
+auto` now, so its bottom edge is where it looks, and the records line asks for
+an ordinary `10px` above it. `the best-score line sits clear of the deploy
+button` measures the gap both ways in one check — 10 px clear against 8 px
+overlapping with the old pair of rules re-applied inline — and was confirmed
+to fail on the old stylesheet. Nothing else moved: pause and game over were
+rendered before and after and differ by 3 px of centring. **Anything the menu
+stacks vertically wants a block box and a positive margin**; a negative margin
+against a line box's leading is measuring the font, not the layout.
 
 PR #11 merged the collision pass. It came from play: mantling and standing on
 things felt wrong, reported as running into objects too early and then running
