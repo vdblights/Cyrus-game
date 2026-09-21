@@ -4,12 +4,14 @@ import { Player, Input } from './player.js';
 import { WeaponSystem, MELEE_RANGE, MELEE_DAMAGE } from './weapons.js';
 import { GrenadeSystem, FUSE, BLAST_RADIUS, BLAST_DAMAGE } from './grenades.js';
 import { Effects } from './effects.js';
-import { Enemy, ENEMY_TYPES } from './enemies.js';
+import { Enemy, ENEMY_TYPES, primeEnemyKits } from './enemies.js';
 import { ObjectiveSystem, objectiveForWave } from './objectives.js';
 import { HUD } from './hud.js';
 import { Post } from './post.js';
 import { audio } from './audio.js';
 import * as TEX from './textures.js';
+import { TILE } from './textures.js';
+import { chamferGeo, mergeIntoOne } from './shapes.js';
 import { randRange } from './world.js';
 import { NavGrid } from './nav.js';
 import { initRandom, getSeed, reserve } from './rng.js';
@@ -69,6 +71,10 @@ class Game {
     this.perches = city.perches;
     this.batches = city.batches;
     this.streets = city.streets;     // where the carriageways are, as built
+    // The shapes the props are cut from, kept so a check can measure them:
+    // a facet wound the wrong way round does not error, it vanishes, and the
+    // merged city is too late to tell which prop it vanished from.
+    this.propShapes = city.shapes;
 
     // Where hostiles can walk, and which way is toward you from anywhere in
     // the sector. Built once the city's boxes are final, and out of typed
@@ -89,11 +95,16 @@ class Game {
     this.cookStart = -1;
 
     this.enemies = [];
+    this.enemyTypes = ENEMY_TYPES;   // so a check can walk every archetype
     this.pool = {};
     this.pickups = [];
     reserve(() => {
       this.setupPickupPrototypes();
       this.setupDust();
+      // Every archetype's meshes and materials, built now rather than when
+      // the first of one spawns: it is a texture pass either way, and doing
+      // it here puts it in the loading screen instead of in a firefight.
+      primeEnemyKits();
     });
 
     this.state = 'menu';
@@ -252,18 +263,86 @@ class Game {
     this.scene.add(this.dust);
   }
 
+  /**
+   * What a hostile leaves behind, built once and cloned per drop.
+   *
+   * A pickup is the one object in the game the player deliberately walks up
+   * to and looks down at from a metre away, and these were a flat-coloured
+   * box, a flat-coloured box and an icosahedron. They are cases and a grenade
+   * now: stencilled, banded, latched, with the edges broken — and cloned
+   * rather than rebuilt, so a drop still costs one `Object3D` per part and
+   * nothing is repainted mid-fight.
+   *
+   * The emissive is deliberately kept: a drop has to be findable in a dusk
+   * street, and the texture darkened all three.
+   */
   setupPickupPrototypes() {
-    this.pickupGeo = {
-      ammo: new THREE.BoxGeometry(0.42, 0.26, 0.28),
-      health: new THREE.BoxGeometry(0.34, 0.3, 0.26),
-      frag: new THREE.IcosahedronGeometry(0.17, 1),
+    const crateTex = TEX.crate();
+    const crateBits = {
+      map: crateTex,
+      normalMap: TEX.normalFrom(crateTex, 1.3, 'crate', 1),
+      normalScale: new THREE.Vector2(0.7, 0.7),
+      roughnessMap: TEX.surfaceFrom(crateTex, { dark: 1, lite: 0.45 }, 'crate'),
+      roughness: 1, metalness: 0.1, envMapIntensity: 0.6,
     };
-    this.pickupMat = {
-      ammo: new THREE.MeshLambertMaterial({ color: 0x8a7a2e, emissive: 0x3a3208 }),
-      health: new THREE.MeshLambertMaterial({ color: 0xd8d8d0, emissive: 0x0f2a10 }),
-      frag: new THREE.MeshLambertMaterial({ color: 0x4a5a38, emissive: 0x141c0c }),
+    const steelTex = TEX.gunMetal();
+    const steelBits = {
+      map: steelTex,
+      normalMap: TEX.normalFrom(steelTex, 1.2, 'gunmetal', 1),
+      roughnessMap: TEX.surfaceFrom(steelTex, { dark: 0.9, lite: 0.2, metalDark: 0.5, metalLite: 1 }, 'gunmetal'),
+      roughness: 1, metalness: 1, envMapIntensity: 0.9,
+    };
+
+    const mats = {
+      ammo: new THREE.MeshStandardMaterial({ ...crateBits, color: 0x9a8a3a, emissive: 0x2a2406 }),
+      health: new THREE.MeshStandardMaterial({ ...crateBits, color: 0xdcdcd4, emissive: 0x0b1f0c }),
+      frag: new THREE.MeshStandardMaterial({ ...steelBits, color: 0x6b7a4a, emissive: 0x101806 }),
+      latch: new THREE.MeshStandardMaterial({ ...steelBits, color: 0xb8bec6 }),
     };
     this.crossMat = new THREE.MeshBasicMaterial({ color: 0x2ecc40 });
+
+    const C = TILE.crate, S = TILE.gunMetal;
+    const proto = {};
+
+    // an ammunition case: lid, lid lip, two latches, a rope handle either end
+    proto.ammo = new THREE.Group();
+    proto.ammo.add(new THREE.Mesh(mergeIntoOne([
+      chamferGeo(0.44, 0.20, 0.28, 0.025, C, [0, -0.03, 0]),
+      chamferGeo(0.46, 0.06, 0.30, 0.02, C, [0, 0.10, 0]),
+    ]), mats.ammo));
+    proto.ammo.add(new THREE.Mesh(mergeIntoOne([
+      chamferGeo(0.05, 0.08, 0.035, 0.01, S, [-0.13, 0.05, 0.155]),
+      chamferGeo(0.05, 0.08, 0.035, 0.01, S, [0.13, 0.05, 0.155]),
+      chamferGeo(0.03, 0.05, 0.16, 0.008, S, [-0.225, 0.08, 0]),
+      chamferGeo(0.03, 0.05, 0.16, 0.008, S, [0.225, 0.08, 0]),
+    ]), mats.latch));
+
+    // a medical case: the same case, with the cross standing proud of it
+    proto.health = new THREE.Group();
+    proto.health.add(new THREE.Mesh(mergeIntoOne([
+      chamferGeo(0.36, 0.30, 0.26, 0.03, C, [0, 0, 0]),
+      chamferGeo(0.38, 0.05, 0.28, 0.02, C, [0, 0.10, 0]),
+    ]), mats.health));
+    proto.health.add(new THREE.Mesh(mergeIntoOne([
+      chamferGeo(0.22, 0.07, 0.012, 0.004, C, [0, 0, 0.135]),
+      chamferGeo(0.07, 0.22, 0.012, 0.004, C, [0, 0, 0.135]),
+    ]), this.crossMat));
+    proto.health.add(new THREE.Mesh(
+      chamferGeo(0.10, 0.04, 0.10, 0.012, S, [0, 0.145, 0]), mats.latch));
+
+    // a fragmentation grenade: body, fuse assembly, spoon and pin ring
+    const ring = new THREE.TorusGeometry(0.035, 0.008, 4, 10);
+    ring.rotateY(Math.PI / 2).translate(0.055, 0.15, 0);
+    proto.frag = new THREE.Group();
+    proto.frag.add(new THREE.Mesh(mergeIntoOne([
+      chamferGeo(0.17, 0.22, 0.17, 0.045, S, [0, 0, 0]),
+      chamferGeo(0.09, 0.06, 0.09, 0.02, S, [0, 0.13, 0]),
+      chamferGeo(0.03, 0.15, 0.05, 0.01, S, [0, 0.08, -0.075]),
+    ]), mats.frag));
+    proto.frag.add(new THREE.Mesh(ring, mats.latch));
+
+    for (const p of Object.values(proto)) p.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    this.pickupProto = proto;
   }
 
   loadSettings() {
@@ -967,18 +1046,9 @@ class Game {
     else if (this.player.health < 45 && r < 0.66) kind = 'health';
     if (!kind) return;
 
-    const mesh = new THREE.Mesh(this.pickupGeo[kind], this.pickupMat[kind]);
-    if (kind === 'frag') mesh.scale.set(1, 1.2, 1);
+    // a clone shares the geometry and the materials; only the nodes are new
+    const mesh = this.pickupProto[kind].clone();
     mesh.position.set(pos.x, 0.45, pos.z);
-    mesh.castShadow = true;
-    if (kind === 'health') {
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.06, 0.01), this.crossMat);
-      bar.position.z = 0.14;
-      mesh.add(bar);
-      const bar2 = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.2, 0.01), this.crossMat);
-      bar2.position.z = 0.14;
-      mesh.add(bar2);
-    }
     this.scene.add(mesh);
     this.pickups.push({ kind, mesh, active: true, born: this.time });
   }

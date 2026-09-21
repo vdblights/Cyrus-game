@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as TEX from './textures.js';
 import { TILE } from './textures.js';
+import { chamferGeo } from './shapes.js';
 import { audio } from './audio.js';
 
 /**
@@ -63,89 +64,13 @@ function mats() {
 const POLY = 'POLY', METAL = 'METAL', DARK = 'DARK', ACCENT = 'ACCENT', GLOW = 'GLOW';
 
 /**
- * A box with its edges taken off.
+ * Gun parts, chamfered.
  *
- * Nothing manufactured has a perfectly sharp 90° edge, and a cube lit by one
- * sun is the flattest thing a renderer can draw: two faces, two values, no
- * line between them. A chamfer costs 20 extra triangles and puts a bright
- * sliver along every edge that moves as you move, which is most of what
- * "boxy" actually means. Built non-indexed so each facet keeps a flat normal.
+ * `chamferGeo` was written here and now lives in `shapes.js`, because the
+ * city wants the same thing: a cube under one sun is two faces, two values
+ * and no line between them, and a broken edge is most of the cure. The
+ * winding rule it follows was learned on these models — see the note there.
  *
- * UVs are unwrapped planar from world size at `tile`, the same contract
- * `boxGeo` follows in `city.js`, so the stipple is the same size on a grip as
- * on a stock instead of stretching to fit each part.
- */
-function chamferGeo(w, h, d, bevel, tile) {
-  const hx = w / 2, hy = h / 2, hz = d / 2;
-  const b = Math.min(bevel, hx * 0.8, hy * 0.8, hz * 0.8);
-  const pos = [], nor = [], uv = [];
-
-  // Planar unwrap off the dominant axis of the facet's normal.
-  const push = (p, n) => {
-    pos.push(p[0], p[1], p[2]);
-    nor.push(n[0], n[1], n[2]);
-    const ax = Math.abs(n[0]), ay = Math.abs(n[1]), az = Math.abs(n[2]);
-    if (ay >= ax && ay >= az) uv.push(p[0] / tile, p[2] / tile);
-    else if (ax >= az) uv.push(p[2] / tile, p[1] / tile);
-    else uv.push(p[0] / tile, p[1] / tile);
-  };
-  const tri = (a, c, e, n) => {
-    // Wind so the facet actually faces `n`. Deriving the order by hand for
-    // 26 facets gets half of them inside out — the ones with an odd number of
-    // negative axes — and an inverted facet is invisible, so it reads as a
-    // notch bitten out of the part rather than as an error.
-    const ux = c[0] - a[0], uy = c[1] - a[1], uz = c[2] - a[2];
-    const wx = e[0] - a[0], wy = e[1] - a[1], wz = e[2] - a[2];
-    const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
-    push(a, n);
-    if (cx * n[0] + cy * n[1] + cz * n[2] < 0) { push(e, n); push(c, n); }
-    else { push(c, n); push(e, n); }
-  };
-  const quad = (a, c, e, f, n) => { tri(a, c, e, n); tri(a, e, f, n); };
-  const unit = (x, y, z) => {
-    const l = Math.hypot(x, y, z);
-    return [x / l, y / l, z / l];
-  };
-
-  // Three vertices per corner, one pulled out to each adjacent face.
-  const S = [-1, 1];
-  const vx = {}, vy = {}, vz = {};
-  for (const sx of S) for (const sy of S) for (const sz of S) {
-    const k = `${sx}${sy}${sz}`;
-    vx[k] = [sx * hx, sy * (hy - b), sz * (hz - b)];
-    vy[k] = [sx * (hx - b), sy * hy, sz * (hz - b)];
-    vz[k] = [sx * (hx - b), sy * (hy - b), sz * hz];
-  }
-  const K = (sx, sy, sz) => `${sx}${sy}${sz}`;
-
-  // six faces, inset by the bevel
-  for (const s of S) {
-    quad(vx[K(s, -1, -1)], vx[K(s, -1, 1)], vx[K(s, 1, 1)], vx[K(s, 1, -1)], [s, 0, 0]);
-    quad(vy[K(-1, s, -1)], vy[K(1, s, -1)], vy[K(1, s, 1)], vy[K(-1, s, 1)], [0, s, 0]);
-    quad(vz[K(-1, -1, s)], vz[K(-1, 1, s)], vz[K(1, 1, s)], vz[K(1, -1, s)], [0, 0, s]);
-  }
-
-  // twelve edge strips, each bridging the two faces it separates
-  for (const a of S) for (const c of S) {
-    quad(vx[K(a, c, -1)], vy[K(a, c, -1)], vy[K(a, c, 1)], vx[K(a, c, 1)], unit(a, c, 0));   // along Z
-    quad(vy[K(-1, a, c)], vz[K(-1, a, c)], vz[K(1, a, c)], vy[K(1, a, c)], unit(0, a, c));   // along X
-    quad(vz[K(a, -1, c)], vx[K(a, -1, c)], vx[K(a, 1, c)], vz[K(a, 1, c)], unit(a, 0, c));   // along Y
-  }
-
-  // eight corner triangles
-  for (const sx of S) for (const sy of S) for (const sz of S) {
-    const k = K(sx, sy, sz);
-    tri(vx[k], vy[k], vz[k], unit(sx, sy, sz));
-  }
-
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  return g;
-}
-
-/**
  * @param {string} mat key into `mats()`
  * @param {number} [bevel] edge break; defaults to a quarter of the thinnest
  *        dimension, which is roughly how a real part is broken

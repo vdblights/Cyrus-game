@@ -60,4 +60,32 @@ export function reserve(fn) {
   }
 }
 
+/**
+ * Draw `n` numbers and throw them away.
+ *
+ * The companion to `reserve`, and the other half of the same problem. A prop
+ * that stops creating an object — or starts creating six more — moves every
+ * draw after it and hands the seed a different city, so the number of meshes
+ * a wreck happens to be built from *is* part of where the next wreck parks.
+ * That makes every change to how something looks a change to the layout, and
+ * it is why the city a seed lays out was only ever stable within one version
+ * of the code.
+ *
+ * Building the shape inside `reserve` and then paying a fixed bill here
+ * separates the two on purpose: the stream sees a constant whatever the prop
+ * is made of, so a wreck can be rebuilt out of fourteen shaped parts instead
+ * of seven boxes and stay parked in the same street. The constant is what the
+ * prop used to cost — an archaeological number, and deliberately so; the
+ * point is that it never has to be paid attention to again.
+ *
+ * `a seed still lays out the city it did` is the check that notices when one
+ * of these bills stops being paid.
+ */
+export function spend(n) {
+  for (let i = 0; i < n; i++) Math.random();
+}
+
+/** What one `Object3D`, material, texture or geometry costs, in draws. */
+export const UUID_COST = 4;
+
 export function getSeed() { return currentSeed; }

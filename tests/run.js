@@ -1456,6 +1456,235 @@ check('lane paint lies on the road and faces the sky', async (page) => {
   return r;
 });
 
+/**
+ * The fingerprint of a city: every collider, every perch, in order.
+ *
+ * Injected rather than inlined three times, because the whole value of it is
+ * that all three seeds are measured exactly the same way.
+ */
+const CITY_FINGERPRINT = () => {
+  const g = window.__game;
+  let h = 2166136261;
+  const eat = (v) => {
+    const n = Math.round(v * 1000) | 0;
+    for (let b = 0; b < 32; b += 8) { h ^= (n >>> b) & 0xff; h = Math.imul(h, 16777619); }
+  };
+  for (const b of g.world.boxes) {
+    eat(b.minX); eat(b.minZ); eat(b.maxX); eat(b.maxZ);
+    eat(b.top); eat(b.cx); eat(b.cz); eat(b.hx); eat(b.hz); eat(b.cos); eat(b.sin);
+  }
+  for (const p of g.perches) { eat(p.x); eat(p.y); eat(p.z); }
+  return {
+    boxes: g.world.boxes.length,
+    solids: g.world.solids.length,
+    perches: g.perches.length,
+    fp: (h >>> 0).toString(16),
+  };
+};
+
+check('a seed still lays out the city it did', async (page) => {
+  // The most expensive lesson in this repo, finally made into a check.
+  //
+  // Three spends four `Math.random()` calls on a UUID for every object it
+  // builds, and the city is laid out from that same seeded stream — so one
+  // mesh more or fewer inside any builder moves every prop placed after it,
+  // and a seed only ever described the same city within one version of the
+  // code. `reserve` covers what is shared and `spend` covers what a prop
+  // costs (see `rng.js`); this is what notices when one of them stops adding
+  // up, which is the only way either is worth relying on.
+  //
+  // The numbers were measured on the code that first paid the bills, and the
+  // whole point is that they are never expected to change. If a deliberate
+  // layout change is being made, they are re-measured *once*, with the reason
+  // written down — that is a different thing from a look change quietly
+  // moving them, which is what this exists to catch.
+  const want = {
+    1: { boxes: 332, solids: 405, perches: 12, fp: 'f0aa1240' },
+    7: { boxes: 296, solids: 354, perches: 10, fp: '9a29033d' },
+    20260101: { boxes: 332, solids: 410, perches: 12, fp: 'efb56339' },
+  };
+
+  const got = {};
+  for (const seed of Object.keys(want)) {
+    await reloadGame({ seed: Number(seed) });
+    got[seed] = await page.evaluate(CITY_FINGERPRINT);
+  }
+  await reloadGame();
+
+  for (const [seed, w] of Object.entries(want)) {
+    const r = got[seed];
+    expect(r.boxes === w.boxes && r.perches === w.perches && r.solids === w.solids,
+      `seed ${seed} lays out ${r.boxes}/${r.solids}/${r.perches} boxes/solids/perches, ` +
+      `not ${w.boxes}/${w.solids}/${w.perches}`);
+    expect(r.fp === w.fp,
+      `seed ${seed} has the same number of colliders in different places ` +
+      `(${r.fp}, not ${w.fp})`);
+  }
+  return got;
+});
+
+check('nothing is built inside out', async (page) => {
+  // A facet whose winding disagrees with its own normal does not error and
+  // does not go dark: it vanishes, so it reads as a notch bitten out of the
+  // part, somewhere you were not looking. It has been shipped twice — the
+  // chamfered view model, then the road markings — and both times from a
+  // corner order written by hand, which gets every facet with an odd number
+  // of negative axes backwards.
+  //
+  // `shapes.js` derives the order from the normal instead, and this measures
+  // the result on everything it builds: the merged city, the shapes the props
+  // are cut from, and the hostiles, which is the one set of meshes that never
+  // reaches the merge.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+
+    const inverted = (geo) => {
+      const p = geo.attributes.position, n = geo.attributes.normal;
+      if (!p || !n) return [0, 0];
+      const idx = geo.index;
+      const count = idx ? idx.count : p.count;
+      const at = (k) => (idx ? idx.getX(k) : k);
+      let bad = 0, tris = 0;
+      for (let k = 0; k + 2 < count; k += 3) {
+        const a = at(k), b = at(k + 1), c = at(k + 2);
+        const ux = p.getX(b) - p.getX(a), uy = p.getY(b) - p.getY(a), uz = p.getZ(b) - p.getZ(a);
+        const wx = p.getX(c) - p.getX(a), wy = p.getY(c) - p.getY(a), wz = p.getZ(c) - p.getZ(a);
+        const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+        const len = Math.hypot(cx, cy, cz);
+        if (len < 1e-12) continue;                    // degenerate, e.g. a cap fan
+        tris++;
+        if ((cx * n.getX(a) + cy * n.getY(a) + cz * n.getZ(a)) / len < -1e-6) bad++;
+      }
+      return [bad, tris];
+    };
+
+    const out = {};
+    const tally = (name, geo) => {
+      const [bad, tris] = inverted(geo);
+      const row = out[name] || (out[name] = { bad: 0, tris: 0 });
+      row.bad += bad; row.tris += tris;
+    };
+
+    for (const mesh of g.city.children) {
+      if (mesh.isMesh) tally('city', mesh.geometry);
+    }
+    const walkShapes = (node) => {
+      for (const v of Object.values(node)) {
+        if (v && v.isBufferGeometry) tally('props', v);
+        else if (v && typeof v === 'object') walkShapes(v);
+      }
+    };
+    walkShapes(g.propShapes);
+
+    // one of every archetype, since nothing else in the game builds these
+    g.startRun();
+    for (const key of Object.keys(g.enemyTypes)) {
+      const e = g.spawnEnemy(key);
+      e.group.traverse((o) => { if (o.isMesh) tally('hostiles', o.geometry); });
+    }
+    return out;
+  });
+
+  for (const [name, row] of Object.entries(r)) {
+    expect(row.tris > 100, `only ${row.tris} triangles measured in ${name}`);
+    expect(row.bad === 0, `${row.bad} of ${row.tris} facets in ${name} are wound inside out`);
+  }
+  return r;
+});
+
+check('every archetype is kitted, textured, and keeps its hit zones', async (page) => {
+  // A hostile is read at forty metres against a dusk skyline, where its
+  // colour is barely a colour — so the silhouette has to carry the archetype,
+  // and the kit that does that is merged into the meshes that are already hit
+  // zones rather than hung beside them. That is not only tidiness: a mesh
+  // with no `zone` is not in `hitMeshes` and cannot be shot, so kit hung on
+  // as extra meshes would be armour you shoot straight through.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {};
+    g.spawnQueue.length = 0;
+    g.pendingSpawns = 0;
+
+    const rows = {};
+    for (const key of Object.keys(g.enemyTypes)) {
+      const e = g.spawnEnemy(key);
+      const zones = new Set();
+      let meshes = 0, textured = 0, tris = 0;
+      let minX = 1e9, maxX = -1e9, maxY = -1e9;
+      e.group.updateMatrixWorld(true);
+      const V = g.player.position.constructor;
+      const v = new V();
+      const feet = e.group.position;
+      e.group.traverse((o) => {
+        if (!o.isMesh) return;
+        meshes++;
+        if (o.material.map) textured++;
+        if (o.userData.zone) zones.add(o.userData.zone);
+        const p = o.geometry.attributes.position;
+        tris += (o.geometry.index ? o.geometry.index.count : p.count) / 3;
+        if (o === e.parts.shadow) return;              // a flat sprite, not a body
+        // measured in world space and taken back to the feet, so a part's own
+        // placement and the archetype's scale are both in it
+        for (let i = 0; i < p.count; i++) {
+          v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld).sub(feet);
+          if (v.x < minX) minX = v.x;
+          if (v.x > maxX) maxX = v.x;
+          if (v.y > maxY) maxY = v.y;
+        }
+      });
+      // The kit alone, with the archetype's scale divided back out: a
+      // JUGGERNAUT is 1.35x the size of anything else, so a measurement that
+      // leaves the scale in passes whatever it is wearing — which is exactly
+      // the shape of assertion this file has been caught making before.
+      e.parts.rig.geometry.computeBoundingBox();
+      const rig = e.parts.rig.geometry.boundingBox;
+      const counts = ['torso', 'rig', 'headKit', 'gun'].map((part) => {
+        const mesh = part === 'headKit'
+          ? e.group.children.find((o) => o.isMesh && o.userData.zone === 'head' && o !== e.parts.head)
+          : part === 'gun' ? e.parts.weapon.children.find((o) => o.isMesh) : e.parts[part];
+        const p = mesh.geometry.attributes.position;
+        return (mesh.geometry.index ? mesh.geometry.index.count : p.count) / 3;
+      });
+      rows[key] = {
+        meshes, textured, tris: Math.round(tris),
+        zones: [...zones].sort().join('+'),
+        hits: e.hitMeshes.length,
+        width: +(maxX - minX).toFixed(2),
+        height: +maxY.toFixed(2),
+        shoulder: +Math.max(rig.max.x, -rig.min.x).toFixed(2),
+        kit: counts.join('/'),
+        parts: ['torso', 'head', 'armL', 'armR', 'legL', 'legR', 'weapon', 'muzzle', 'band', 'eye']
+          .filter((k) => !e.parts[k]).join(',') || 'all',
+      };
+    }
+    return rows;
+  });
+
+  for (const [key, row] of Object.entries(r)) {
+    expect(row.parts === 'all', `${key} is missing parts: ${row.parts}`);
+    expect(row.zones === 'body+head+limb', `${key} tags ${row.zones}, not body+head+limb`);
+    expect(row.hits >= 8, `${key} has only ${row.hits} meshes that can be shot`);
+    // band, eye and the contact shadow are deliberately flat; everything else
+    // on a hostile carries a map, or it is a flat-coloured box again
+    expect(row.textured >= 8,
+      `only ${row.textured} of ${key}'s ${row.meshes} meshes carry a texture`);
+  }
+  // The silhouettes have to actually differ, or none of the above bought
+  // anything. Two measures, because either alone can be satisfied by
+  // accident: no two archetypes are built from the same parts, and the one
+  // in plate is nearly twice as broad across the armour as the one in a
+  // webbing rig — before its 1.35 scale, which is deliberately divided out.
+  const kits = Object.values(r).map((row) => row.kit);
+  expect(new Set(kits).size === kits.length,
+    `two archetypes are wearing the same kit: ${kits.join(' ')}`);
+  expect(r.brute.shoulder > r.raider.shoulder * 1.5,
+    `a JUGGERNAUT's plate is ${r.brute.shoulder} m off centre against a RAIDER's ${r.raider.shoulder}`);
+  expect(r.marksman.height > 1.7 && r.brute.height > 1.7,
+    'a hostile is shorter than it was');
+  return r;
+});
+
 check('the bake darkens the ground the city stands on', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

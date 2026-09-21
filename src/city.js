@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { World, randRange, pick } from './world.js';
 import * as TEX from './textures.js';
 import { TILE, FACADE_BAYS, FACADE_FLOORS, FACADE_VARIANTS } from './textures.js';
-import { reserve, makeRandom } from './rng.js';
+import { reserve, spend, makeRandom, UUID_COST } from './rng.js';
+import { chamferGeo, loftGeo, loftGeoZ, mergeIntoOne } from './shapes.js';
 
 const BLOCK = 34;      // centre-to-centre distance between city lots
 const GRID = 6;        // lots per axis
@@ -271,51 +272,184 @@ function shadeGeometry(geo, tint, occlusion, mottle = 0) {
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
 }
 
+/* ------------------------------------------------------------- prop shapes */
+
 /**
- * Concatenate geometries that are already in world space into one buffer.
+ * The panels a wreck is cut from, minted once and shared by every car.
  *
- * `BufferGeometryUtils` lives in three's examples, which this repo does not
- * vendor, so this covers the one case the city needs: position/normal/uv/
- * colour, indexed output, indexed or non-indexed input.
+ * A car used to be five boxes, and it read as five boxes: flat sides, a flat
+ * top, square ends, and a cabin sitting on it like a crate. What actually
+ * says "car" at fifty metres is the profile — sills tucked under, shoulders
+ * at the waistline, a bonnet that falls away to the nose and a screen raked
+ * back over it — and none of that is expensive, it is just not a box. The
+ * parts that share a material are merged into one geometry, so the detail
+ * costs meshes rather than draw calls, and the whole sector's wrecks are cut
+ * from four geometries per silhouette instead of seven per car.
+ *
+ * Front is +Z, and the numbers are the collider: 1.9 m across, 4.4 m long.
+ * Nothing here may reach past that, because the collider is what you feel.
  */
-function mergeIntoOne(geos) {
-  let verts = 0, indices = 0;
-  for (const g of geos) {
-    verts += g.attributes.position.count;
-    indices += g.index ? g.index.count : g.attributes.position.count;
-  }
-  const pos = new Float32Array(verts * 3);
-  const nor = new Float32Array(verts * 3);
-  const uv = new Float32Array(verts * 2);
-  const col = new Float32Array(verts * 3).fill(1);
-  const idx = verts > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+function carShapes(pickup) {
+  const M = TILE.metal;
 
-  let vOff = 0, iOff = 0;
-  for (const g of geos) {
-    const p = g.attributes.position, n = g.attributes.normal, t = g.attributes.uv;
-    pos.set(p.array, vOff * 3);
-    if (n) nor.set(n.array, vOff * 3);
-    if (t) uv.set(t.array, vOff * 2);
-    if (g.attributes.color) col.set(g.attributes.color.array, vOff * 3);
-    if (g.index) {
-      const src = g.index.array;
-      for (let i = 0; i < src.length; i++) idx[iOff + i] = src[i] + vOff;
-      iOff += src.length;
-    } else {
-      for (let i = 0; i < p.count; i++) idx[iOff + i] = vOff + i;
-      iOff += p.count;
+  /**
+   * One band of the tub, tapered in plan at both ends.
+   *
+   * A profile stacked up Y cannot narrow the nose, and a flat wall across
+   * the front is what made the old wreck read as a crate from any angle in
+   * front of it. Stacking two of these instead gives the plan taper and a
+   * rocker inset under the doors, which is the line the side was missing.
+   */
+  const band = (lo, hi, wMid, wEnd, drop = 0) => {
+    const at = (hx, d) => ({ hx, hy: (hi - lo - d) / 2, cy: (lo + hi - d) / 2 });
+    return loftGeoZ([
+      { z: -2.20, ...at(wEnd, drop) },
+      { z: -1.86, ...at(wMid, 0) },
+      { z: 1.86, ...at(wMid, 0) },
+      { z: 2.20, ...at(wEnd, drop) },
+    ], M);
+  };
+
+  const panels = [
+    band(0.30, 0.66, 0.86, 0.68),             // rocker
+    band(0.60, 1.26, 0.95, 0.76, 0.10),       // body side, drooping at the ends
+    // bonnet: level over the wings, then falling away and narrowing at the nose
+    loftGeoZ([
+      { z: pickup ? 0.58 : 0.42, hx: 0.84, hy: 0.10, cy: 1.28 },
+      { z: 1.55, hx: 0.82, hy: 0.085, cy: 1.30 },
+      { z: 2.14, hx: 0.64, hy: 0.055, cy: 1.19 },
+    ], M),
+    // arches, standing a little proud of the tub: the line down the side
+    chamferGeo(1.96, 0.34, 1.02, 0.11, M, [0, 0.96, 1.34]),
+    chamferGeo(1.96, 0.34, 1.02, 0.11, M, [0, 0.96, -1.34]),
+  ];
+
+  if (pickup) {
+    // an open bed: two rails, a tailgate and a floor to see into
+    panels.push(
+      chamferGeo(0.16, 0.46, 1.30, 0.05, M, [-0.82, 1.46, -1.50]),
+      chamferGeo(0.16, 0.46, 1.30, 0.05, M, [0.82, 1.46, -1.50]),
+      chamferGeo(1.80, 0.46, 0.14, 0.05, M, [0, 1.46, -2.10]),
+      chamferGeo(1.72, 0.09, 1.30, 0.03, M, [0, 1.27, -1.50]),
+      chamferGeo(1.34, 0.11, 1.16, 0.04, M, [0, 1.80, -0.12]));       // cab roof
+  } else {
+    panels.push(
+      loftGeoZ([                                                       // boot lid
+        { z: -2.16, hx: 0.70, hy: 0.06, cy: 1.22 },
+        { z: -1.62, hx: 0.82, hy: 0.085, cy: 1.30 },
+        { z: -1.24, hx: 0.84, hy: 0.10, cy: 1.30 },
+      ], M),
+      chamferGeo(1.34, 0.11, 1.52, 0.04, M, [0, 1.76, -0.22]));        // roof
+  }
+
+  // The greenhouse, raked at both ends, and the lamps — everything on the
+  // car that is glass rather than steel, in one mesh. A burnt-out shell
+  // wears this in charred steel instead, which is what a car with no windows
+  // left actually looks like.
+  const G = TILE.glass;
+  const glass = [pickup
+    ? loftGeo([
+      { y: 1.20, hx: 0.80, hz: 0.72, cz: -0.10 },
+      { y: 1.58, hx: 0.76, hz: 0.64, cz: -0.14 },
+      { y: 1.78, hx: 0.66, hz: 0.52, cz: -0.18 },
+    ], G)
+    : loftGeo([
+      { y: 1.16, hx: 0.80, hz: 1.04, cz: -0.22 },
+      { y: 1.54, hx: 0.76, hz: 0.90, cz: -0.26 },
+      { y: 1.74, hx: 0.66, hz: 0.70, cz: -0.30 },
+    ], G)];
+  for (const sx of [-1, 1]) {
+    glass.push(chamferGeo(0.30, 0.16, 0.12, 0.03, G, [sx * 0.46, 1.04, 2.15]));
+    glass.push(chamferGeo(0.26, 0.13, 0.10, 0.03, G, [sx * 0.46, 1.04, -2.15]));
+  }
+
+  const trim = [
+    chamferGeo(1.72, 0.26, 0.22, 0.07, M, [0, 0.62, 2.08]),            // bumpers
+    chamferGeo(1.72, 0.26, 0.22, 0.07, M, [0, 0.62, -2.08]),
+    chamferGeo(1.16, 0.20, 0.14, 0.05, M, [0, 0.88, 2.12]),            // grille
+  ];
+
+  const wheels = [];
+  for (const wx of [-0.80, 0.80]) {
+    for (const wz of [-1.34, 1.34]) {
+      wheels.push(cylGeo(0.42, 0.42, 0.30, TILE.rubber, 12)
+        .rotateZ(Math.PI / 2).translate(wx, 0.44, wz));
     }
-    vOff += p.count;
   }
 
-  const out = new THREE.BufferGeometry();
-  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  out.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  out.setIndex(new THREE.BufferAttribute(idx, 1));
-  out.computeBoundingSphere();
-  return out;
+  return {
+    panels: mergeIntoOne(panels),
+    cabin: mergeIntoOne(glass),
+    trim: mergeIntoOne(trim),
+    wheels: mergeIntoOne(wheels),
+  };
+}
+
+/**
+ * A jersey barrier, which is a profile and not a slab.
+ *
+ * The shape is the whole point of the thing: a wide foot, a kink at knee
+ * height and a narrow top, so a vehicle rides up it instead of stopping dead.
+ * As a box it was a grey wall that happened to be waist high, and the kink is
+ * four numbers. The foot stays 0.7 m across because that is the footprint the
+ * collider registers.
+ */
+function jerseyBarrier() {
+  return loftGeo([
+    { y: 0, hx: 1.10, hz: 0.35 },
+    { y: 0.16, hx: 1.10, hz: 0.33 },
+    { y: 0.36, hx: 1.10, hz: 0.19 },
+    { y: 0.98, hx: 1.10, hz: 0.13 },
+    { y: 1.05, hx: 1.07, hz: 0.11 },
+  ], TILE.concrete);
+}
+
+/**
+ * A shipping container: a box, plus the six details that stop it being one.
+ *
+ * Corner castings, a sill rail top and bottom, and a pair of doors at one end
+ * with the locking bars still on them. All one material, so it merges into
+ * one geometry and costs exactly what the box cost.
+ */
+function shippingContainer() {
+  const R = TILE.rust;
+  const w = 2.5, h = 2.6, d = 6.0;
+  const parts = [
+    chamferGeo(w - 0.1, h - 0.24, d - 0.1, 0.05, R, [0, h / 2, 0]),
+    chamferGeo(w, 0.2, d, 0.05, R, [0, h - 0.1, 0]),                  // top rail
+    chamferGeo(w, 0.2, d, 0.05, R, [0, 0.1, 0]),                      // sill
+  ];
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      for (const sy of [0, 1]) {
+        parts.push(chamferGeo(0.26, 0.26, 0.26, 0.05, R,
+          [sx * (w / 2 - 0.13), sy ? h - 0.13 : 0.13, sz * (d / 2 - 0.13)]));
+      }
+    }
+  }
+  // doors on the -Z end: two leaves, four locking bars
+  parts.push(chamferGeo(w - 0.16, h - 0.44, 0.08, 0.03, R, [0, h / 2, -d / 2 - 0.02]));
+  for (const bx of [-0.78, -0.26, 0.26, 0.78]) {
+    parts.push(chamferGeo(0.07, h - 0.6, 0.07, 0.02, R, [bx, h / 2, -d / 2 - 0.07]));
+  }
+  return mergeIntoOne(parts);
+}
+
+/**
+ * An oil drum with its rolling hoops, which is what a drum is for.
+ *
+ * Two raised bands around a cylinder: cheap, and the only thing that stops a
+ * lit barrel reading as a tube. Ten sides, as before — it is on fire, and
+ * nobody is going to count them.
+ */
+function oilDrum() {
+  const R = TILE.rust;
+  return mergeIntoOne([
+    cylGeo(0.42, 0.42, 1.05, R, 10).translate(0, 0.52, 0),
+    cylGeo(0.45, 0.45, 0.09, R, 10).translate(0, 0.35, 0),
+    cylGeo(0.45, 0.45, 0.09, R, 10).translate(0, 0.70, 0),
+    cylGeo(0.44, 0.44, 0.07, R, 10).translate(0, 1.01, 0),            // chime
+  ]);
 }
 
 /**
@@ -496,11 +630,29 @@ export function buildCity(scene) {
         map: metalTex, normalMap: TEX.normalFrom(metalTex, 1.1, 'painted', 1),
         normalScale: new THREE.Vector2(0.4, 0.4), vertexColors: true,
       }));
+    // A burnt-out shell wears the same panels as a painted one, so it is
+    // unwrapped at the same tile — what changed is the surface, not the car.
+    const charTex = TEX.charred();
+    const charSurface = TEX.surfaceFrom(charTex, { dark: 1, lite: 0.45, metalDark: 0.05, metalLite: 0.6 }, 'char');
     const burntMat = new THREE.MeshStandardMaterial({
-      color: 0x1d1c1b, roughness: 0.92, metalness: 0.3, vertexColors: true,
+      color: 0xffffff,
+      map: charTex, normalMap: TEX.normalFrom(charTex, 1.4, 'char', 1),
+      normalScale: new THREE.Vector2(0.9, 0.9),
+      roughnessMap: charSurface, metalnessMap: charSurface,
+      roughness: 1, metalness: 1, envMapIntensity: 0.55, vertexColors: true,
     });
+    // One tile carries the tread and the wheel behind it — see `TEX.tire`.
+    // Rubber is the flattest thing in the city and the rim behind it is the
+    // brightest, and the difference between them is what makes a wheel read
+    // as a wheel: one packed map, keyed off the tile's own luminance.
+    const tireTex = TEX.tire();
+    const tireSurface = TEX.surfaceFrom(tireTex, { dark: 1, lite: 0.35, metalDark: 0, metalLite: 0.9 }, 'tire');
     const tireMat = new THREE.MeshStandardMaterial({
-      color: 0x17181a, roughness: 0.96, metalness: 0, vertexColors: true,
+      color: 0xffffff,
+      map: tireTex, normalMap: TEX.normalFrom(tireTex, 1.5, 'tire', 1),
+      normalScale: new THREE.Vector2(0.8, 0.8),
+      roughnessMap: tireSurface, metalnessMap: tireSurface,
+      roughness: 1, metalness: 1, envMapIntensity: 0.7, vertexColors: true,
     });
 
     // Record the world size each material's tile covers, so the contract in
@@ -516,6 +668,8 @@ export function buildCity(scene) {
     label(glassMat, 'glass', TILE.glass);
     label(asphaltMat, 'asphalt', TILE.asphalt);
     label(paintMat, 'paint', TILE.paint);
+    label(burntMat, 'burnt', TILE.metal);
+    label(tireMat, 'tire', TILE.rubber);
 
     return { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
       asphaltMat, paintMat, carBodyMats, burntMat, tireMat };
@@ -526,6 +680,24 @@ export function buildCity(scene) {
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
   const rustFor = (x, z) =>
     rusts[Math.floor(hash2(Math.round(x), Math.round(z), 21) * rusts.length)];
+
+  /**
+   * Every shape the street furniture is cut from, minted once.
+   *
+   * Inside `reserve`, like the materials above and for the same reason: three
+   * spends four draws of the seeded stream on each geometry's UUID, so
+   * building these here would otherwise move every city. What each *prop*
+   * then costs the stream is a fixed bill it pays with `spend` — see the note
+   * in `rng.js`. Between the two, a wreck can be rebuilt out of a hundred and
+   * eighty triangles of profile instead of five boxes and stay parked in the
+   * same street, which is the only reason this pass was affordable at all.
+   */
+  const shapes = reserve(() => ({
+    cars: { saloon: carShapes(false), pickup: carShapes(true) },
+    barrier: jerseyBarrier(),
+    container: shippingContainer(),
+    drum: oilDrum(),
+  }));
 
   // ---------------------------------------------------------------- ground
   const groundSize = GRID * BLOCK + 120;
@@ -726,7 +898,7 @@ export function buildCity(scene) {
   // reads the same three, so there is one definition of where a street is.
   const streets = { centres: STREETS, half: ROAD_HALF, end: STREET_END };
 
-  return { world, group, fireBarrels, perches, batches, streets };
+  return { world, group, fireBarrels, perches, batches, streets, shapes };
 
   /** True when no registered box taller than `maxTop` overlaps the rectangle. */
   function areaClear(w, minX, minZ, maxX, maxZ, maxTop = 0.4) {
@@ -989,8 +1161,9 @@ export function buildCity(scene) {
   function containerStack(g, w, x, z, rot, perchList) {
     const cw = 2.5, ch = 2.6, cd = 6.0;
     for (let k = 0; k < 2; k++) {
-      const m = new THREE.Mesh(boxGeo(cw, ch, cd, TILE.rust), rustFor(x, z + k * 3));
-      m.position.set(x + (k ? randRange(-0.4, 0.4) : 0), ch / 2 + k * ch, z);
+      spend(2 * UUID_COST);                       // what the box used to cost
+      const m = reserve(() => new THREE.Mesh(shapes.container, rustFor(x, z + k * 3)));
+      m.position.set(x + (k ? randRange(-0.4, 0.4) : 0), k * ch, z);
       m.rotation.y = rot;
       m.castShadow = m.receiveShadow = true;
       m.userData.tint = tintAt(x, z, 2 + k, 0.14);
@@ -1459,76 +1632,93 @@ export function buildCity(scene) {
     }
   }
 
+  /**
+   * A wrecked car.
+   *
+   * The shape of it is in `carShapes`; what is here is the bookkeeping that
+   * let the shape change. Every mesh is an `Object3D` and costs four draws of
+   * the seeded stream, so the seven boxes this used to be built from were
+   * part of where the *next* prop stands — rebuilding it out of profiles
+   * would have moved every city. So the parts are minted inside `reserve` and
+   * the old bill is paid here on purpose: a group, then the paint roll, then
+   * three panels, then the burn roll, then four wheels, in that order,
+   * because the values each roll receives depend on how many draws came
+   * before it. `a seed still lays out the city it did` is what notices if
+   * this ever stops adding up.
+   */
   function wreckedCar(g, w, x, z, rot, metal, glass) {
-    const car = new THREE.Group();
+    spend(UUID_COST);                                     // the group
     // the branch still draws exactly one number either way, so the seeded
     // stream — and every city it lays out — is unchanged by the palette
     const bodyMat = Math.random() < 0.5 ? rustFor(x, z) : pick(carBodyMats);
-    const bw = 1.9, bl = 4.4;
-
-    const paint = tintAt(x, z, 4, 0.16);
-    const chassis = new THREE.Mesh(boxGeo(bw, 0.75, bl, TILE.metal), bodyMat);
-    chassis.position.y = 0.75;
-    chassis.castShadow = chassis.receiveShadow = true;
-    chassis.userData.tint = paint;
-    car.add(chassis);
-
-    const cabin = new THREE.Mesh(boxGeo(bw - 0.25, 0.75, bl * 0.45, TILE.glass), glass);
-    cabin.position.set(0, 1.5, -0.2);
-    cabin.castShadow = true;
-    car.add(cabin);
-
-    const hood = new THREE.Mesh(boxGeo(bw - 0.1, 0.35, bl * 0.3, TILE.metal), bodyMat);
-    hood.position.set(0, 1.25, bl * 0.32);
-    hood.userData.tint = paint;
-    car.add(hood);
-
-    // burnt-out cars lose their wheels and sit on the rims
+    spend(3 * 2 * UUID_COST);                             // three panels
     const burnt = Math.random() < 0.4;
-    if (!burnt) {
-      for (const [wx, wz] of [[-bw / 2, bl / 3], [bw / 2, bl / 3], [-bw / 2, -bl / 3], [bw / 2, -bl / 3]]) {
-        const t = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.28, 10), tireMat);
-        t.rotation.z = Math.PI / 2;
-        t.position.set(wx, 0.42, wz);
-        car.add(t);
-      }
-    } else {
-      chassis.material = burntMat;
-      cabin.visible = false;
-      chassis.position.y = 0.5;
-    }
+    if (!burnt) spend(4 * 2 * UUID_COST);                 // four wheels
+    const yaw = rot + randRange(-0.12, 0.12);
+    const roll = burnt ? 0 : randRange(-0.03, 0.03);
 
-    car.position.set(x, 0, z);
-    car.rotation.y = rot + randRange(-0.12, 0.12);
-    car.rotation.z = burnt ? 0 : randRange(-0.03, 0.03);
-    g.add(car);
+    const bw = 1.9, bl = 4.4;
+    const paint = tintAt(x, z, 4, 0.16);
+    // which silhouette, from where it is parked, so it costs no stream
+    const set = shapes.cars[hash2(Math.round(x), Math.round(z), 31) < 0.42 ? 'pickup' : 'saloon'];
 
-    w.addRotatedBox(x, z, bw / 2, bl / 2, car.rotation.y, 1.5);
-    w.solids.push(chassis, cabin);
+    const built = reserve(() => {
+      const car = new THREE.Group();
+      const add = (geo, mat, tint) => {
+        const m = new THREE.Mesh(geo, mat);
+        m.castShadow = m.receiveShadow = true;
+        if (tint) m.userData.tint = tint;
+        car.add(m);
+        return m;
+      };
+
+      // A burnt-out shell keeps its pillars and loses its glass, so the
+      // greenhouse is the same shape in charred steel. It used to be hidden
+      // instead — and left in `world.solids`, where bullets went on stopping
+      // in the air above the wreck.
+      const body = add(set.panels, burnt ? burntMat : bodyMat, burnt ? null : paint);
+      const cabin = add(set.cabin, burnt ? burntMat : glass);
+      add(set.trim, metal);
+      if (!burnt) add(set.wheels, tireMat);
+
+      return { car, body, cabin };
+    });
+
+    built.car.position.set(x, burnt ? -0.2 : 0, z);
+    built.car.rotation.y = yaw;
+    built.car.rotation.z = roll;
+    g.add(built.car);
+
+    w.addRotatedBox(x, z, bw / 2, bl / 2, yaw, 1.5);
+    w.solids.push(built.body, built.cabin);
   }
 
   function barricade(g, w, x, z, rot, conc) {
     const n = 2 + (Math.random() * 2 | 0);
     for (let k = 0; k < n; k++) {
-      const m = new THREE.Mesh(boxGeo(2.2, 1.05, 0.7, TILE.concrete), conc);
+      spend(2 * UUID_COST);                       // what a slab used to cost
       const off = (k - (n - 1) / 2) * 2.3;
-      m.position.set(x + Math.cos(rot) * off, 0.55, z + Math.sin(rot) * off);
-      m.rotation.y = rot + Math.PI / 2 + randRange(-0.08, 0.08);
+      const px = x + Math.cos(rot) * off, pz = z + Math.sin(rot) * off;
+      const ry = rot + Math.PI / 2 + randRange(-0.08, 0.08);
+      const m = reserve(() => new THREE.Mesh(shapes.barrier, conc));
+      m.position.set(px, 0, pz);                  // the profile stands on the ground
+      m.rotation.y = ry;
       m.castShadow = m.receiveShadow = true;
-      m.userData.tint = tintAt(m.position.x, m.position.z, 7, 0.1);
+      m.userData.tint = tintAt(px, pz, 7, 0.1);
       g.add(m);
       w.solids.push(m);
       // 2.2 x 0.7 m of slab, turned. It used to register a 2.2 m square
       // whatever its angle — three times the footprint, so three quarters of
       // a metre of nothing stopped you either side of every barrier.
-      w.addRotatedBox(m.position.x, m.position.z, 1.1, 0.35, m.rotation.y, 1.05);
+      w.addRotatedBox(px, pz, 1.1, 0.35, ry, 1.05);
     }
   }
 
   function container(g, w, x, z, rot) {
     const cw = 2.5, ch = 2.6, cd = 6.0;
-    const m = new THREE.Mesh(boxGeo(cw, ch, cd, TILE.rust), rustFor(x, z));
-    m.position.set(x, ch / 2, z);
+    spend(2 * UUID_COST);                         // what the box used to cost
+    const m = reserve(() => new THREE.Mesh(shapes.container, rustFor(x, z)));
+    m.position.set(x, 0, z);
     m.rotation.y = rot;
     m.castShadow = m.receiveShadow = true;
     m.userData.tint = tintAt(x, z, 2, 0.16);
@@ -1538,9 +1728,10 @@ export function buildCity(scene) {
   }
 
   function fireBarrel(g, w, x, z) {
-    const drum = new THREE.Mesh(cylGeo(0.42, 0.42, 1.05, TILE.rust, 10), rustFor(x, z));
+    spend(2 * UUID_COST);                         // what the drum used to cost
+    const drum = reserve(() => new THREE.Mesh(shapes.drum, rustFor(x, z)));
     drum.userData.tint = tintAt(x, z, 2, 0.16);
-    drum.position.set(x, 0.52, z);
+    drum.position.set(x, 0, z);
     drum.castShadow = true;
     g.add(drum);
     w.addBox(x - 0.45, z - 0.45, x + 0.45, z + 0.45, 1.05);

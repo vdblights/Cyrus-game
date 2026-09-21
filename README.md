@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 31 checks, headless
+npm test           # 34 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -65,8 +65,11 @@ unwrapped at its own scale, the route field covering the whole
 sector, a hostile walking around a building rather than into it, a turned prop
 stopping you where you can see it, the ground you stand on being the ground
 you can see, the best-score line sitting clear of the deploy button, aiming
-without pointer lock, settings and record persistence, and a four-minute
-scripted run that must reach wave 3 with hostiles still able to engage.
+without pointer lock, settings and record persistence, every archetype being
+kitted and keeping its hit zones, nothing in the city or on a hostile being
+wound inside out, three seeds laying out exactly the cities they laid out
+before, and a four-minute scripted run that must reach wave 3 with hostiles
+still able to engage.
 
 Three things make it trustworthy rather than merely green: the random stream
 is seeded, every check reloads the page so none of them inherit another's
@@ -188,9 +191,13 @@ They hunt by sight, by proximity and by the sound of your gunfire, steer around
 buildings and wrecks, strafe while holding their preferred range, and hold fire
 for a beat after spotting you. Health scales ~9% per wave.
 
+Each archetype wears its own kit — plate and pauldrons, a carrier and pouches,
+scrap strapped on one side, a hood and a long coat — so you can tell what is
+walking toward you before the marker band is legible.
+
 Waves grow each round, hostiles trickle in rather than appearing all at once,
 and clearing a wave awards a score bonus plus an ammo resupply. Kills sometimes
-drop ammo crates, medkits and frags. Health regenerates five seconds after you
+drop stencilled ammunition cases, medical cases and frags. Health regenerates five seconds after you
 stop taking fire. Your best wave and score are kept between sessions.
 
 ## Objectives
@@ -286,6 +293,29 @@ the barrel fires, a muzzle flash), and one final pass tone-maps, grades the
 shade cold against warm highlights, vignettes, and lays a fine grain over the
 top.
 
+Nothing in the sector is a plain box any more, and that is mostly about
+shape rather than pixels. A wrecked car is a profile: the rocker tucks under
+the doors, the body narrows in plan toward the nose, the bonnet falls away,
+the screen rakes back, the arches stand proud of the tub and the wheels wear
+tread and a dished steel rim. Half of them are pickups with an open bed, and
+the burnt-out ones are the same panels in charred steel with no glass left,
+sitting on their rims. A jersey barrier has the splayed foot and the kink at
+knee height that make it a jersey barrier; a shipping container has corner
+castings, sill and roof rails and doors with locking bars; a burning drum has
+its rolling hoops.
+
+Hostiles are wearing something. A raider has a plate carrier with pouches and
+shoulder straps, a breaker heavy plate and pauldrons behind a visor, a
+juggernaut plate everywhere and a pack, a scavenger whatever was to hand
+strapped on one side, a marksman a hood and a coat that hangs past the belt.
+That is not decoration: a wave is read at forty metres against a dusk skyline
+where the archetype's colour is barely a colour, and the outline is what tells
+you what is coming. The kit is merged into the parts that already take hits,
+so what you can see is what you can shoot. The cloth, the webbing and the
+cases they drop are painted pale on purpose, because a texture multiplies the
+colour on the material — put a mid-grey weave under an olive drab coat and
+every hostile is a silhouette.
+
 Hostiles carry a contact shadow under them, because the sun's shadow map only
 covers the ground near the player and anything beyond it would otherwise
 float.
@@ -343,7 +373,8 @@ src/enemies.js      hostile archetypes, AI, procedural bodies
 src/objectives.js   objective sites, channels, markers and waypoints
 src/grenades.js     thrown frags: fuse, bounce physics, detonation
 src/effects.js      pooled tracers, impacts, blood, casings, explosions
-src/textures.js     canvas-painted textures (asphalt, facades, rust, sky)
+src/textures.js     canvas-painted textures (asphalt, facades, rust, cloth, sky)
+src/shapes.js       chamfers, lofted profiles, geometry merging
 src/post.js         bloom, tone mapping, grade, vignette and grain
 src/audio.js        synthesised gunfire and feedback via Web Audio
 src/hud.js          HUD readouts, killfeed, radar, damage indicators
@@ -354,7 +385,8 @@ A few notes on the implementation:
 
 - **Nothing is loaded from disk or network.** Every texture is painted into a
   canvas at boot, every sound is synthesised from noise bursts and oscillator
-  envelopes, and every model is assembled from boxes and cylinders.
+  envelopes, and every model is assembled out of chamfered boxes and profiles
+  described by their cross-sections.
 - **Normal maps are generated, not authored.** A Sobel pass over each
   texture's own luminance becomes its normal map, so painted detail lights
   like geometry without shipping a second set of images.
@@ -369,7 +401,12 @@ A few notes on the implementation:
   hand every seed a different city. Boot-time graphics now run inside a call
   that rewinds the stream afterwards, and the decorative pass over the city
   draws from a generator of its own — so a seed lays out the same streets
-  whether or not the buildings are wearing any of their detail.
+  whether or not the buildings are wearing any of their detail. A prop is the
+  harder case, because its collider *is* the city: a wreck builds its shape
+  inside the same rewind and then pays a fixed number of draws for what it
+  used to cost, so it can be rebuilt out of fourteen shapes instead of seven
+  boxes and stay parked in the same street. A check pins three seeds to a
+  fingerprint of every collider's position and turn.
 - **The city is generated per session.** A 6×6 grid of lots is filled with
   towers, gutted low ruins and rubble lots, then dressed with wrecked cars,
   shipping containers, barricades, streetlights and burning barrels — and the

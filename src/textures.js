@@ -35,6 +35,15 @@ export const TILE = {
   rust: 2.5,
   metal: 2,
   glass: 4,
+  // A wheel is one tile carrying two surfaces — see `tire`. 1.2 m puts a
+  // 0.42 m wheel's tread in the bottom quarter and its hub in the middle.
+  rubber: 1.2,
+  // Cloth, webbing and plate on a hostile. A torso is half a metre across, so
+  // the weave has to be small or a jacket reads as a tarpaulin.
+  kit: 0.9,
+  // A dropped case is looked at from a metre away: one tile covers it, so the
+  // stencil lands on the lid once rather than repeating across it.
+  crate: 0.5,
   // Road paint is shape, not pattern: the geometry of a dash *is* the dash,
   // and this tile only carries how worn it is. 2 m across a 512 tile puts
   // 256 px/m on a line 0.14 m wide, so the wear reads at walking distance.
@@ -715,6 +724,312 @@ export function paintedMetal() {
       ctx.stroke();
     }
     grit(ctx, s, 700, '210,214,218', '18,18,20', 1.1);
+    noise(ctx, s, 14);
+    return c;
+  });
+}
+
+/**
+ * A wheel: tread and hub on one tile.
+ *
+ * A wheel is a cylinder, and `cylGeo` unwraps the two parts of one to
+ * different places — which is the whole trick here. The barrel runs around
+ * the circumference and up the width, so a 0.3 m wide wheel on a 1.2 m tile
+ * only ever shows `v` from 0 to 0.25: the bottom quarter. The end caps are
+ * unwrapped across their own diameter about the middle of the tile, so a
+ * 0.42 m wheel shows a disc of radius 0.35 centred on (0.5, 0.5).
+ *
+ * Those two regions barely touch, so one texture paints both and a wheel is
+ * one mesh instead of a tyre plus a rim. The tread lives in the bottom
+ * quarter and has to tile across `u`, because the barrel repeats twice round;
+ * the hub is drawn in the middle and never appears on the barrel at all.
+ */
+export function tire() {
+  return make('tire', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    const TREAD = s * 0.75;            // where the barrel's quarter starts
+
+    ctx.fillStyle = '#191a1d';
+    ctx.fillRect(0, 0, s, s);
+
+    // sidewall: shallow concentric moulding, so the cap is not a black disc
+    for (let r = s * 0.35; r > s * 0.2; r -= s * 0.022) {
+      ctx.strokeStyle = `rgba(${chance(0.5) ? '58,58,62' : '10,10,12'},0.5)`;
+      ctx.lineWidth = rr(0.6, 1.8);
+      ctx.beginPath(); ctx.arc(s / 2, s / 2, r, 0, Math.PI * 2); ctx.stroke();
+    }
+    // raised lettering round the sidewall, at the size it would really be
+    for (let k = 0; k < 26; k++) {
+      const a = (k / 26) * Math.PI * 2, r = s * 0.30;
+      ctx.fillStyle = 'rgba(96,96,100,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(s / 2 + Math.cos(a) * r, s / 2 + Math.sin(a) * r, 2.6, 1.3, a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // the rim: a dished steel disc with a bolt circle and a centre cap
+    const hub = ctx.createRadialGradient(s / 2 - 8, s / 2 - 8, 2, s / 2, s / 2, s * 0.21);
+    hub.addColorStop(0, '#8d9096');
+    hub.addColorStop(0.7, '#5d6066');
+    hub.addColorStop(1, '#3a3c40');
+    ctx.fillStyle = hub;
+    ctx.beginPath(); ctx.arc(s / 2, s / 2, s * 0.21, 0, Math.PI * 2); ctx.fill();
+    for (let k = 0; k < 5; k++) {        // lightening holes, then the studs
+      const a = (k / 5) * Math.PI * 2 + 0.3;
+      ctx.fillStyle = 'rgba(14,14,16,0.85)';
+      ctx.beginPath();
+      ctx.arc(s / 2 + Math.cos(a) * s * 0.135, s / 2 + Math.sin(a) * s * 0.135, s * 0.035, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * Math.PI * 2;
+      const x = s / 2 + Math.cos(a) * s * 0.07, y = s / 2 + Math.sin(a) * s * 0.07;
+      ctx.fillStyle = 'rgba(28,28,30,0.8)';
+      ctx.beginPath(); ctx.arc(x, y, 4.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(168,172,178,0.5)';
+      ctx.beginPath(); ctx.arc(x - 1, y - 1, 2.6, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = '#46484c';
+    ctx.beginPath(); ctx.arc(s / 2, s / 2, s * 0.045, 0, Math.PI * 2); ctx.fill();
+    // rust creeping out of the rim, because nothing here has moved in years
+    splotches(ctx, s, 26, 'rgba(126,74,38,0.30)', 2, 9);
+
+    // tread: blocks in two rows, cut by a circumferential groove. The period
+    // divides the tile, or the pattern steps at the seam where it repeats.
+    ctx.fillStyle = '#101113';
+    ctx.fillRect(0, TREAD, s, s - TREAD);
+    const pitch = s / 16;
+    for (let i = 0; i < 16; i++) {
+      for (const [y0, h, lean] of [[TREAD + 2, (s - TREAD) / 2 - 3, 3], [TREAD + (s - TREAD) / 2 + 1, (s - TREAD) / 2 - 3, -3]]) {
+        ctx.fillStyle = `rgba(${52 + (i % 3) * 5},${52 + (i % 3) * 5},${56 + (i % 3) * 5},1)`;
+        ctx.beginPath();
+        ctx.moveTo(i * pitch + 1, y0);
+        ctx.lineTo(i * pitch + pitch - 2 + lean, y0);
+        ctx.lineTo(i * pitch + pitch - 2, y0 + h);
+        ctx.lineTo(i * pitch + 1 - lean, y0 + h);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    ctx.fillStyle = 'rgba(8,8,10,0.9)';
+    ctx.fillRect(0, TREAD + (s - TREAD) / 2 - 2, s, 3);
+    grit(ctx, s, 400, '150,150,154', '6,6,8', 1.2);
+    noise(ctx, s, 12);
+    return c;
+  });
+}
+
+/**
+ * What is left of a panel after the fire.
+ *
+ * Not simply black: a burnt shell is soot over bare, heat-blued steel, and
+ * the interesting part is where the soot has flaked off. Blistered paint
+ * reads as mottle, the bare patches carry a little colour, and the ash that
+ * washed down the sides is the only light value in it.
+ */
+export function charred() {
+  return make('charred', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#17161a';
+    ctx.fillRect(0, 0, s, s);
+    mottle(ctx, s, 18, 'rgba(6,5,6,0.55)', 10, 46);
+    mottle(ctx, s, 10, 'rgba(84,66,58,0.35)', 8, 30);     // heat-scoured steel
+    mottle(ctx, s, 6, 'rgba(58,72,86,0.22)', 6, 22);      // blued by the heat
+    // blistering: small bright rings where the paint lifted and burst
+    for (let i = 0; i < 140; i++) {
+      const x = rr(0, s), y = rr(0, s), r = rr(1.2, 4.5);
+      ctx.strokeStyle = `rgba(122,104,88,${rr(0.10, 0.30)})`;
+      ctx.lineWidth = rr(0.5, 1.2);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = `rgba(8,7,8,${rr(0.2, 0.5)})`;
+      ctx.beginPath(); ctx.arc(x, y, r * 0.6, 0, Math.PI * 2); ctx.fill();
+    }
+    for (let i = 0; i < 26; i++) runoff(ctx, rr(0, s), rr(0, s * 0.6), rr(2, 9), rr(20, 90), '148,142,132', rr(0.05, 0.16));
+    grit(ctx, s, 900, '170,164,156', '4,4,5', 1.4);
+    noise(ctx, s, 16);
+    return c;
+  });
+}
+
+/**
+ * Worn cloth: what a hostile is dressed in.
+ *
+ * Deliberately pale, for the reason `paintedMetal` is: the archetype's own
+ * colour lives on the material, so one weave clothes a scavenger in olive
+ * drab and a raider in slate without painting a tile for each. What it does
+ * carry is the weave, the seams, the patches sewn over the tears and the
+ * dirt that has been ground in since — at 0.9 m a tile, so a half-metre
+ * torso wears half of it and the weave stays cloth-sized.
+ */
+export function fatigues() {
+  return make('fatigues', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    // Pale on purpose. `map` multiplies `color`, so a mid-grey tile under an
+    // olive drab coat gives a coat at a third of the value it was written as,
+    // and a hostile at dusk comes out a silhouette — the same mistake the
+    // view model made once and is written up in the weapon pass.
+    ctx.fillStyle = '#d6d1c4';
+    ctx.fillRect(0, 0, s, s);
+
+    // weave: a thread each way, which is what stops it reading as paper
+    for (let x = 0; x < s; x += 3) {
+      ctx.fillStyle = `rgba(0,0,0,${rr(0.04, 0.11)})`;
+      ctx.fillRect(x, 0, 1.4, s);
+    }
+    for (let y = 0; y < s; y += 3) {
+      ctx.fillStyle = `rgba(255,255,255,${rr(0.03, 0.09)})`;
+      ctx.fillRect(0, y, s, 1.4);
+    }
+
+    mottle(ctx, s, 16, 'rgba(58,50,38,0.22)', 12, 52);      // ground-in dirt
+    mottle(ctx, s, 9, 'rgba(226,222,212,0.14)', 10, 34);    // sun-bleached
+
+    // patches sewn over the tears, each with its own stitching
+    for (let i = 0; i < 7; i++) {
+      const w = rr(22, 54), h = rr(18, 44), x = rr(0, s - w), y = rr(0, s - h);
+      ctx.fillStyle = `rgba(${chance(0.5) ? '140,132,116' : '96,92,80'},0.55)`;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(40,36,30,0.45)';
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1.1;
+      ctx.strokeRect(x + 2.5, y + 2.5, w - 5, h - 5);
+      ctx.setLineDash([]);
+    }
+
+    // seams, and the fray running off them
+    for (let i = 0; i < 5; i++) {
+      const vertical = chance(0.5);
+      const at = rr(0, s);
+      ctx.fillStyle = 'rgba(52,46,38,0.35)';
+      if (vertical) ctx.fillRect(at, 0, 2.5, s); else ctx.fillRect(0, at, s, 2.5);
+      ctx.strokeStyle = 'rgba(232,226,214,0.22)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (vertical) { ctx.moveTo(at + 4, 0); ctx.lineTo(at + 4, s); }
+      else { ctx.moveTo(0, at + 4); ctx.lineTo(s, at + 4); }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    for (let i = 0; i < 10; i++) runoff(ctx, rr(0, s), rr(0, s * 0.7), rr(3, 12), rr(20, 80), '48,40,30', rr(0.06, 0.18));
+    grit(ctx, s, 600, '236,232,224', '30,26,20', 1.2);
+    noise(ctx, s, 16);
+    return c;
+  });
+}
+
+/**
+ * Strapping, buckles and plate: what is worn over the cloth.
+ *
+ * Webbing is a grid of horizontal straps stitched to a backing, which tiles
+ * about as well as anything in this file — and it is what makes a hostile
+ * read as kitted rather than as a person-shaped set of boxes. Kept mid-grey
+ * so the archetype's accent colour still decides what it is made of.
+ */
+export function webbing() {
+  return make('webbing', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#bcb6aa';
+    ctx.fillRect(0, 0, s, s);
+    mottle(ctx, s, 12, 'rgba(34,30,26,0.22)', 12, 46);
+
+    // rows of strapping, stitched down at a regular pitch
+    const rows = 6, pitch = s / rows;
+    for (let r = 0; r < rows; r++) {
+      const y = r * pitch + pitch * 0.18, h = pitch * 0.52;
+      const g = ctx.createLinearGradient(0, y, 0, y + h);
+      g.addColorStop(0, 'rgba(226,222,212,0.22)');
+      g.addColorStop(0.5, 'rgba(70,66,58,0.10)');
+      g.addColorStop(1, 'rgba(18,16,14,0.40)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, y, s, h);
+      ctx.fillStyle = 'rgba(16,14,12,0.45)';
+      ctx.fillRect(0, y + h, s, 1.6);
+      for (let x = pitch * 0.35; x < s; x += pitch) {      // the stitch bars
+        ctx.fillStyle = 'rgba(30,26,22,0.55)';
+        ctx.fillRect(x, y, 2.4, h);
+      }
+    }
+
+    // buckles and press studs, bright enough to catch the sky
+    for (let i = 0; i < 14; i++) {
+      const x = rr(0, s), y = rr(0, s), w = rr(6, 13);
+      ctx.fillStyle = 'rgba(196,200,206,0.55)';
+      ctx.fillRect(x, y, w, w * 0.55);
+      ctx.fillStyle = 'rgba(24,22,20,0.7)';
+      ctx.fillRect(x + 2, y + 1.5, w - 4, w * 0.55 - 3);
+    }
+    for (let i = 0; i < 40; i++) {
+      ctx.fillStyle = `rgba(210,214,218,${rr(0.15, 0.45)})`;
+      ctx.beginPath(); ctx.arc(rr(0, s), rr(0, s), rr(1, 2.4), 0, Math.PI * 2); ctx.fill();
+    }
+
+    splotches(ctx, s, 30, 'rgba(112,64,32,0.28)', 2, 10);    // rust off the metal
+    grit(ctx, s, 500, '226,222,214', '22,20,18', 1.2);
+    noise(ctx, s, 14);
+    return c;
+  });
+}
+
+/**
+ * A stencilled supply case, for what a hostile leaves behind.
+ *
+ * A pickup is looked at from a metre away and from directly above, which is
+ * further inside the player's attention than anything else this file paints.
+ * Pale again, so one tile serves an ammunition case in olive and a medical
+ * one in white — the stencil, the banding and the scuffed corners are the
+ * same on both.
+ */
+export function crate() {
+  return make('crate', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#d2cdc0';
+    ctx.fillRect(0, 0, s, s);
+    mottle(ctx, s, 14, 'rgba(50,46,38,0.18)', 10, 40);
+
+    // steel banding round the case, with rivets along it
+    for (const x of [s * 0.18, s * 0.82]) {
+      ctx.fillStyle = 'rgba(78,76,72,0.55)';
+      ctx.fillRect(x - 7, 0, 14, s);
+      ctx.fillStyle = 'rgba(232,230,224,0.18)';
+      ctx.fillRect(x - 7, 0, 3, s);
+      for (let y = 10; y < s; y += 26) {
+        ctx.fillStyle = 'rgba(40,38,34,0.6)';
+        ctx.beginPath(); ctx.arc(x, y, 2.6, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(224,222,216,0.35)';
+        ctx.beginPath(); ctx.arc(x - 0.8, y - 0.8, 1.5, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // stencilling: blocks and bars rather than letters, which at this size is
+    // what lettering looks like anyway, and needs no font to be installed
+    ctx.fillStyle = 'rgba(38,36,32,0.62)';
+    for (let k = 0; k < 7; k++) ctx.fillRect(s * 0.30 + k * 9, s * 0.30, 5.5, 18);
+    for (let k = 0; k < 5; k++) ctx.fillRect(s * 0.30 + k * 9, s * 0.56, 5.5, 13);
+    ctx.strokeStyle = 'rgba(38,36,32,0.5)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(s * 0.26, s * 0.24, s * 0.44, s * 0.52);
+
+    // corners take the knocks, so that is where the paint is gone
+    for (const [x, y] of [[0, 0], [s, 0], [0, s], [s, s]]) {
+      const g = ctx.createRadialGradient(x, y, 2, x, y, s * 0.22);
+      g.addColorStop(0, 'rgba(96,88,74,0.5)');
+      g.addColorStop(1, 'rgba(96,88,74,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, s * 0.22, 0, Math.PI * 2); ctx.fill();
+    }
+    for (let i = 0; i < 60; i++) {
+      ctx.strokeStyle = `rgba(${chance(0.5) ? '70,64,54' : '236,232,224'},${rr(0.08, 0.26)})`;
+      ctx.lineWidth = rr(0.4, 1.3);
+      const x = rr(0, s), y = rr(0, s), a = rr(0, Math.PI * 2), len = rr(5, 26);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+      ctx.stroke();
+    }
+    splotches(ctx, s, 22, 'rgba(120,70,36,0.26)', 2, 8);
+    grit(ctx, s, 500, '236,232,224', '28,24,20', 1.2);
     noise(ctx, s, 14);
     return c;
   });

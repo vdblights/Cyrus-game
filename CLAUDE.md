@@ -52,11 +52,12 @@ builds, never to play.
 | `src/grenades.js` | Fuse, flight, bounce, detonation |
 | `src/effects.js` | Pooled tracers, impacts, blood, casings, explosions |
 | `src/textures.js` | Every texture, painted to canvas at boot |
+| `src/shapes.js` | Chamfers, lofted profiles, geometry merging — the shapes that are not boxes |
 | `src/post.js` | Bloom, tone mapping, grade, vignette, grain |
 | `src/audio.js` | Every sound, synthesised via Web Audio |
 | `src/hud.js` | DOM readouts, killfeed, radar, capture banner |
 | `src/nav.js` | Walkable grid over `world.boxes`, and a route field to the player |
-| `src/rng.js` | Seeded `Math.random` for the page's lifetime |
+| `src/rng.js` | Seeded `Math.random` for the page's lifetime, and `reserve`/`spend` |
 
 The whole game hangs off `window.__game`, which is how tests and probes drive it.
 
@@ -154,6 +155,9 @@ These each cost real debugging time. Changing them needs a reason.
   reads, and shot through because the impact lands on the ground plane 2 cm
   below the paint, which is nowhere the eye can find. Anything *flush* with
   an existing surface is safe decoration; anything standing off one is not.
+  What `decor` cannot help with is a prop whose collider *is* the city — a
+  wreck, a barrier, a container. That is what `spend` is for; see "what a
+  prop costs the seeded stream" further down.
 - **The route field is a hint, never an authority.** `nav.js` builds a 1.5 m
   grid off `world.boxes` and a Dijkstra cost field from the player, rebuilt
   only when they cross a cell. Nothing in it moves a hostile or decides what
@@ -229,15 +233,59 @@ These each cost real debugging time. Changing them needs a reason.
   low-frequency shapes into a 96px canvas and lets the upscale smooth them,
   which is the same picture for about a thousandth of the cost. Nothing in
   `textures.js` should set `ctx.filter` again.
-- **The view model is chamfered, and its winding is computed, not written.**
-  `chamferGeo` in `weapons.js` builds every gun part as a box with its edges
-  broken: 20 extra triangles that put a moving highlight along each edge,
-  which is most of what "boxy" means when one sun lights a cube. Winding is
-  derived per facet by testing the cross product against the intended normal,
-  because hand-writing it gets every facet with an odd number of negative
-  axes backwards — and an inverted facet does not error, it vanishes, so it
-  reads as a notch bitten out of the part. A check counts inverted facets
-  across all four models and fails on one.
+- **Anything that is not a box comes out of `shapes.js`, and its winding is
+  computed, not written.** `chamferGeo` builds a box with its edges broken: 20
+  extra triangles that put a moving highlight along each edge, which is most
+  of what "boxy" means when one sun lights a cube. `loftGeo` describes a shape
+  by its cross-sections instead of by a width and a depth, which is the other
+  half of it — a jersey barrier is a kinked profile, a car's greenhouse is a
+  raked one, and both read as furniture the moment the sides stop being
+  vertical. `loftGeoZ` lays the same loft down so the sections run along the
+  length of the thing, which is how a bonnet is described. All three unwrap
+  planar at a declared `TILE`, so the texel-density check covers them, and all
+  three derive each facet's winding by testing the cross product against the
+  intended normal. Hand-writing that order gets every facet with an odd number
+  of negative axes backwards, and an inverted facet does not error, it
+  vanishes — so it reads as a notch bitten out of the part. It has been
+  shipped twice, on the view model and on the road markings. `nothing is built
+  inside out` measures the whole merged city, every prop shape and every
+  hostile; restoring a hand-written order reports 21,198 of 142,754 city
+  facets inside out.
+- **What a prop costs the seeded stream is a bill it pays, not a side effect
+  of how it is built.** Three spends four draws on a UUID for every object
+  (see the `generateUUID` invariant above), so the *number of meshes* a wreck
+  happens to be assembled from is part of where the next wreck parks. That
+  made every change to how something looks a change to the layout, and is why
+  a seed only ever described the same city within one version of the code.
+  `decor` solved it for anything purely decorative; a wreck is not decorative,
+  because its collider is the city. The answer is the other half of `reserve`:
+  build the shape inside it, where the stream is rewound, and then pay a fixed
+  `spend(n)` for what the prop used to cost. The stream then sees a constant
+  whatever the prop is made of. `wreckedCar` pays 4 for its group, 24 for
+  three panels and 32 for four wheels, *in that order and interleaved with its
+  own rolls exactly as they used to be*, because the value a roll receives
+  depends on how many draws came before it; `barricade`, `container`,
+  `containerStack` and `fireBarrel` pay 8 apiece. Those numbers are
+  archaeology and are meant to stay that way — the point is that nobody has to
+  think about them again. Measured across seeds 1, 7, 99991, 20260101 and
+  20260813, rebuilding the wrecks, barriers, containers and drums left every
+  box, perch and barrel exactly where it was, and `a seed still lays out the
+  city it did` is the check that keeps it so.
+- **Kit that is not a hit zone is armour you shoot through.** A hostile's
+  plate, pauldrons, hood and pouches are merged into the meshes that already
+  carry a `zone` — the torso, the rig, the head — rather than hung beside them
+  as extra meshes. A mesh with no zone is not in `hitMeshes`, so it is not
+  raycast: kit hung on loose would be a silhouette bullets pass through, and
+  would also put another dozen meshes per hostile into the per-pellet
+  intersect list. The same merge is why a hostile is now 12 meshes rather than
+  15 while carrying six times the triangles.
+- **A part's own position is where that part is.** The kit geometry is built
+  *about* each part's origin (`AT` in `enemies.js`) and the mesh is placed
+  there, not baked to world height with the mesh left at zero. Every check
+  that shoots a hit zone reads `parts.head.getWorldPosition()`, which is the
+  testing note about hardcoded aim heights from the other side: baking the
+  offsets in put every part at the feet, and turned the headshot check into a
+  leg shot that quietly still passed the "did damage" half.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -342,6 +390,19 @@ silhouette by a colour multiplying its map, and facets missing because their
 winding was inside out. Neither would have shown up in any assertion that
 was plausible to write first.
 
+The props pass added a third framing to that fifth trap, for a prop rather
+than a view model: hide the merged city (`g.city.visible = false`), put the
+shape on a clear patch of ground in front of the player and light it harder
+than dusk does. Four things went wrong before a single frame of it was
+trustworthy, and all four are worth knowing. The solids are off the scene
+graph with frozen matrices, so `getWorldPosition` on one recomputes
+`matrixWorld` from its local matrix and hands back the origin — read
+`matrixWorld.elements` instead. A line of sight into a prop's own middle is
+blocked by the prop, so sight the air above it. Hostiles spread along the
+view direction stack up in depth and look like one hostile — spread them
+across it. And they charge: stub `e.update` or the lineup is gone by the time
+the shutter opens.
+
 A sixth, which is really a tool rather than a trap: the bot that plays the
 scripted run lives in `tests/harness.js` as `window.__botRun(seconds)`, not
 inside a check, because more than one check now reads it and two divergent
@@ -385,6 +446,85 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The props pass came out of play, and out of one sentence: the cars and the
+world obstacles are still too boxy, and the hostiles and their drops need
+better skins. All four were true, and all four had the same cause — a prism
+wearing a tiled photograph is the flattest thing this renderer can draw, and
+every one of these was a prism.
+
+What is different now. A wreck is a profile rather than a crate: a rocker
+inset under the doors, a body side tapered in plan at both ends so the nose is
+narrower than the doors, a bonnet that falls away and narrows to the nose, a
+boot lid, arches standing proud of the tub, a greenhouse raked at both ends,
+bumpers, a grille and lamps that catch the sky, and four wheels wearing tread
+and a dished steel rim. Two silhouettes — a saloon and a pickup with an open
+bed — chosen by a hash of where the thing is parked, so it costs no stream. A
+burnt-out shell is the same panels in charred steel with no glass, sitting
+0.2 m lower on its rims. A jersey barrier is a jersey barrier: wide splayed
+foot, kink at knee height, narrow top, which is the whole reason the shape
+exists. A container has corner castings, a sill and top rail, and door leaves
+with locking bars. A drum has its rolling hoops. A hostile is wearing
+something — a plate carrier with pouches, heavy plate with pauldrons, scrap
+strapped on one side, a hood and a long coat, a respirator and a filter — and
+every archetype wears its own, because a wave is read at forty metres against
+a dusk skyline where the archetype's colour is barely a colour. A drop is a
+stencilled case with a lid, banding and latches, or a grenade with a spoon and
+a pin ring, instead of two boxes and an icosahedron.
+
+Five textures came with it: tread-and-rim, charred steel, worn cloth, webbing
+and a stencilled case. Two things about them are worth keeping. A wheel is one
+mesh because `cylGeo` unwraps a barrel and its end caps to different places —
+the tread lives in the bottom quarter of the tile, where a 0.3 m wide wheel's
+barrel lands, and the hub in the middle, where the caps do, and they barely
+touch. And the kit maps are deliberately pale, because `map` multiplies
+`color`: the first attempt kept a mid-grey weave under an olive drab coat and
+every hostile came out a silhouette at dusk. That is the same mistake the
+weapon pass made once and wrote up, made again one file over.
+
+**None of it moved a single city, and that is the part worth reading.** Three
+spends four draws of the seeded stream on every object's UUID, so rebuilding a
+wreck out of fourteen shapes instead of seven boxes would have moved every
+prop placed after it — which is why every look change in this repo's history
+has also been a layout change. `spend` in `rng.js` is the fix and the
+invariant above has the rule. Measured on seeds 1, 7, 99991, 20260101 and
+20260813, before and after: identical box, solid, perch and barrel counts, and
+an identical fingerprint over every collider's position, extent and turn.
+`a seed still lays out the city it did` pins three of those seeds and was
+confirmed to fail — dropping one `spend` call reports seed 1 laying out 339
+boxes instead of 332.
+
+What it cost, on seed 1: merged triangles 100,378 → 142,754 in the same 27
+draw batches, textures 72 → 78, and boot to the menu 18.5 s → 17.7 s, which is
+to say indistinguishable (both inflated about twofold by software rendering).
+A hostile went from 15 meshes and 179 triangles to 12 meshes and 1,170,
+because the kit is merged into the parts that already carry a hit zone rather
+than hung beside them — fewer draw calls per hostile, six times the shape, and
+no new meshes in the per-pellet intersect list. Materials and geometry are now
+cached per archetype and built at boot inside `reserve`, where they used to be
+minted per spawn: a wave of sixteen was sixty-odd one-off materials that no
+batching could merge.
+
+One real bug fell out of it. A burnt-out wreck used to hide its cabin and
+leave it in `world.solids`, so bullets stopped in the air above every burnt
+car in the sector. The cabin is charred steel now and visible, so the solid
+and the silhouette agree again.
+
+Three checks came with the pass, each confirmed to fail against what it
+guards: `a seed still lays out the city it did` (above), `nothing is built
+inside out` — 0 of 142,754 city facets, 0 of 2,552 prop facets and 0 of 5,850
+hostile facets, against 21,198 city facets when the winding is written by hand
+instead of derived — and `every archetype is kitted, textured, and keeps its
+hit zones`, which fails both ways: give two archetypes the same kit and it
+names them, and drop a `zone` off the rig and it reports 7 meshes that can be
+shot instead of 8.
+
+The suite also caught a regression in itself, which is the fourth entry in the
+testing traps and worth the reminder: baking each part's height into its
+geometry left every mesh at the group origin, so `parts.head.getWorldPosition()`
+returned the hostile's feet and the headshot check became a leg shot — which
+still did damage, so only the "head hurts more" half failed. The kit is built
+about each part's origin now (`AT` in `enemies.js`).
 
 Road markings landed, which was item 2 of the old list and the one thing the
 texture pass deliberately left undone. Lane paint cannot live in the asphalt
@@ -849,9 +989,11 @@ Suggested next work, in the order I would do it:
 3. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
    only the player calls it, so a car roof is still a place they cannot follow
    you to.
-4. **Convert the hostiles to PBR.** The city and the view model are Standard
-   materials reading the sky environment; enemies are still Lambert and mint
-   four materials each, so they neither catch the sky nor batch.
+4. **Animate what the kit made possible.** The hostiles now have arms, a
+   weapon and a rig as separate parts wearing separate materials, and they
+   still walk on a sine wave. A shoulder that swings with the gun, a reload
+   that is visible from across the street, a stagger on a hit that is not just
+   a colour flash — all of it is reachable from where the parts already are.
 5. **More on the ground now that paint is there.** The markings pass put a
    geometry layer on the road and left the pavement alone: manhole covers,
    kerb drops at the crossings, hatched keep-clear boxes and painted parking
