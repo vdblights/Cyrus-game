@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { audio } from './audio.js';
 import { randRange, SUPPORT_RADIUS } from './world.js';
-import { blobShadow } from './textures.js';
+import * as TEX from './textures.js';
+import { TILE, blobShadow } from './textures.js';
+import { chamferGeo, mergeIntoOne } from './shapes.js';
+import { reserve } from './rng.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
@@ -45,46 +48,258 @@ const PERCH_PATIENCE = 15;
 /**
  * Hostile archetypes. `preferred` is the range the AI tries to hold; melee
  * types simply close to contact.
+ *
+ * `kit` is what the thing is wearing, and it is not decoration: a wave is
+ * read at forty metres against a dusk skyline, where the archetype's colour
+ * is barely a colour. What tells you a JUGGERNAUT from a SCAVENGER at that
+ * range is the outline — plate and pauldrons against a hood and a coat — so
+ * the outline is what carries it, and the marker band is the confirmation.
  */
 export const ENEMY_TYPES = {
   scavenger: {
     name: 'SCAVENGER', hp: 65, speed: 4.6, scale: 0.95, melee: true,
     damage: 14, rate: 1.0, preferred: 1.6, accuracy: 1, color: 0x8a9c62, accent: 0xb07a42,
     score: 100, detect: 55, marker: 0xd8452f,
+    kit: { head: 'hood', armour: 'scrap', coat: 0.26, weapon: 'hook' },
   },
   raider: {
     name: 'RAIDER', hp: 110, speed: 3.0, scale: 1.0, melee: false,
     damage: 6, rate: 0.16, burst: 3, burstPause: 2.4, preferred: 13, accuracy: 0.085,
     color: 0x66788a, accent: 0x3f4750, score: 150, detect: 65, sound: 'rifle', marker: 0xe8a33a,
+    kit: { head: 'helm', armour: 'carrier', coat: 0, weapon: 'rifle' },
   },
   shotgunner: {
     name: 'BREAKER', hp: 170, speed: 3.6, scale: 1.08, melee: false,
     damage: 5, pellets: 6, rate: 1.15, preferred: 6, accuracy: 0.14, falloff: 16,
     color: 0x9a7550, accent: 0x53412f, score: 200, detect: 50, sound: 'shotgun', marker: 0x3fa9d8,
+    kit: { head: 'visor', armour: 'heavy', coat: 0, weapon: 'shotgun' },
   },
   marksman: {
     name: 'MARKSMAN', hp: 90, speed: 2.4, scale: 1.0, melee: false,
     damage: 26, rate: 2.9, preferred: 26, accuracy: 0.022, detect: 95,
     color: 0x5c6f5a, accent: 0x2f3a30, score: 250, sound: 'rifle', marker: 0x7ce04a,
     laser: true, perch: true,
+    kit: { head: 'hood', armour: 'light', coat: 0.34, weapon: 'long' },
   },
   brute: {
     name: 'JUGGERNAUT', hp: 420, speed: 2.4, scale: 1.35, melee: false,
     damage: 7, rate: 0.13, burst: 6, burstPause: 2.8, preferred: 9, accuracy: 0.105,
     color: 0x7d5a5a, accent: 0x3a3533, score: 400, detect: 70, sound: 'smg', marker: 0xb03be0,
+    kit: { head: 'helm', armour: 'plated', coat: 0, weapon: 'drum' },
   },
 };
 
-/** Blocky humanoid built from boxes; parts are tagged for hit zones. */
+/**
+ * Everything a hostile is built from, per archetype, minted once.
+ *
+ * Two reasons this is a cache rather than a constructor. A hostile used to
+ * mint four materials and fourteen geometries every time one spawned — a
+ * wave of sixteen was sixty-odd one-off materials, none of which any batching
+ * can merge, and the textures they now carry would have been repainted with
+ * each of them. And it is built inside `reserve` (see `rng.js`), so the
+ * seeded stream never sees it; `primeEnemyKits` runs at boot for the same
+ * reason, because a kit built mid-run costs the stream whatever it costs.
+ *
+ * What differs per archetype is what it is wearing, which is the point: a
+ * BREAKER should be recognisable as the thing that closes on you fast from
+ * its outline alone, before the colour band is legible. So the silhouette
+ * carries it — plate, pauldrons, a hood, a coat — rather than a hue.
+ */
+const KITS = new Map();
+
+/**
+ * Where each part sits on the body.
+ *
+ * The geometry is built *about* these rather than baked to them, so a part's
+ * own position is still where that part is — `parts.head.getWorldPosition()`
+ * is the head, which is what every check that aims at a hit zone reads, and
+ * what the note in CLAUDE.md means by "use the actual part's world position"
+ * instead of a hardcoded aim height. Baking the offsets in put every part at
+ * the feet and quietly turned a headshot check into a leg shot.
+ */
+const AT = {
+  torso: [0, 1.18, 0], rig: [0, 1.22, 0], head: [0, 1.66, 0], headKit: [0, 1.66, 0],
+  band: [0, 1.36, 0], eye: [0.07, 1.63, -0.175],
+  armL: [-0.34, 1.45, 0], armR: [0.34, 1.45, 0],
+  legL: [-0.14, 0.86, 0], legR: [0.14, 0.86, 0],
+  weapon: [0.30, 1.28, -0.12],
+};
+
+function kitFor(type) {
+  let kit = KITS.get(type.name);
+  if (!kit) KITS.set(type.name, kit = reserve(() => makeKit(type)));
+  return kit;
+}
+
+/** Build every archetype's kit up front, so no wave pays for it mid-fight. */
+export function primeEnemyKits() {
+  for (const type of Object.values(ENEMY_TYPES)) kitFor(type);
+}
+
+function makeKit(type) {
+  const k = type.kit;
+  const T = TILE.kit;
+  /** A chamfered part, offset from the origin of the part it belongs to. */
+  const box = (w, h, d, at, bevel) =>
+    chamferGeo(w, h, d, bevel ?? Math.min(w, h, d) * 0.22, T, at);
+
+  const clothTex = TEX.fatigues();
+  const gearTex = TEX.webbing();
+  const gearSurface = TEX.surfaceFrom(gearTex, { dark: 1, lite: 0.35, metalDark: 0, metalLite: 0.8 }, 'webbing');
+  const steelTex = TEX.gunMetal();
+
+  // The maps are pale and carry only the weave, the strapping and the wear —
+  // the archetype's own colours still say what it is, the way `paintedMetal`
+  // lets one texture paint a grey streetlight and a maroon wreck.
+  const cloth = new THREE.MeshStandardMaterial({
+    color: type.color, map: clothTex,
+    normalMap: TEX.normalFrom(clothTex, 1.3, 'fatigues', 1),
+    normalScale: new THREE.Vector2(0.75, 0.75),
+    roughnessMap: TEX.surfaceFrom(clothTex, { dark: 1, lite: 0.86 }, 'fatigues'),
+    // the sky is the only fill a hostile gets on the side away from the
+    // sun, and it is facing you from that side more often than not
+    roughness: 1, metalness: 0, envMapIntensity: 0.75,
+  });
+  const gear = new THREE.MeshStandardMaterial({
+    color: type.accent, map: gearTex,
+    normalMap: TEX.normalFrom(gearTex, 1.4, 'webbing', 1),
+    normalScale: new THREE.Vector2(0.85, 0.85),
+    roughnessMap: gearSurface, metalnessMap: gearSurface,
+    roughness: 1, metalness: 1, envMapIntensity: 0.8,
+  });
+  const skin = new THREE.MeshStandardMaterial({
+    color: 0x8c7159, map: clothTex,
+    normalMap: TEX.normalFrom(clothTex, 1.3, 'fatigues', 1),
+    normalScale: new THREE.Vector2(0.5, 0.5),
+    roughness: 0.92, metalness: 0, envMapIntensity: 0.4,
+  });
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0x9aa0a8, map: steelTex,
+    normalMap: TEX.normalFrom(steelTex, 1.2, 'gunmetal', 1),
+    normalScale: new THREE.Vector2(0.6, 0.6),
+    roughnessMap: TEX.surfaceFrom(steelTex, { dark: 0.92, lite: 0.2, metalDark: 0.5, metalLite: 1 }, 'gunmetal'),
+    roughness: 1, metalness: 1, envMapIntensity: 0.8,
+  });
+
+  // ------------------------------------------------------------ the body
+  const heavy = k.armour === 'heavy' || k.armour === 'plated';
+  const limb = heavy ? 0.04 : 0;
+
+  const torso = [
+    box(0.52, 0.66, 0.30, [0, 0, 0], 0.07),
+    box(0.36, 0.10, 0.26, [0, 0.32, 0], 0.03),                   // collar
+    box(0.16, 0.16, 0.22, [-0.28, 0.29, 0], 0.04),               // shoulder caps
+    box(0.16, 0.16, 0.22, [0.28, 0.29, 0], 0.04),
+  ];
+  if (k.coat) {
+    // a coat that hangs past the belt, which is most of what reads as a
+    // long-range shooter standing still on a roof
+    torso.push(box(0.52, k.coat, 0.34, [0, -0.33 - k.coat / 2, 0], 0.05));
+  }
+
+  const rig = [];
+  if (k.armour === 'carrier') {
+    rig.push(box(0.56, 0.36, 0.36, [0, 0, 0], 0.05));
+    for (const px of [-0.17, 0, 0.17]) rig.push(box(0.14, 0.14, 0.10, [px, -0.15, -0.20], 0.03));
+    for (const px of [-0.16, 0.16]) rig.push(box(0.08, 0.28, 0.07, [px, 0.20, -0.15], 0.02));
+  } else if (k.armour === 'heavy') {
+    rig.push(box(0.60, 0.44, 0.40, [0, 0, 0], 0.06));
+    rig.push(box(0.46, 0.14, 0.34, [0, -0.26, 0], 0.04));        // belly plate
+    for (const px of [-0.35, 0.35]) rig.push(box(0.22, 0.18, 0.30, [px, 0.28, 0], 0.05));
+  } else if (k.armour === 'plated') {
+    rig.push(box(0.64, 0.50, 0.44, [0, 0, 0], 0.07));
+    rig.push(box(0.50, 0.16, 0.38, [0, -0.28, 0], 0.04));
+    for (const px of [-0.40, 0.40]) rig.push(box(0.26, 0.24, 0.34, [px, 0.30, 0], 0.06));
+    rig.push(box(0.40, 0.44, 0.20, [0, 0.04, 0.26], 0.05));      // pack
+    for (const px of [-0.13, 0.13]) rig.push(box(0.10, 0.34, 0.10, [px, 0.38, 0.26], 0.03));
+  } else if (k.armour === 'scrap') {
+    // whatever was to hand, strapped on one side and not the other
+    rig.push(box(0.42, 0.30, 0.34, [-0.05, 0.02, 0], 0.04));
+    rig.push(box(0.24, 0.20, 0.28, [0.30, 0.26, 0], 0.05));
+    rig.push(box(0.09, 0.40, 0.08, [0.10, 0.12, -0.16], 0.02));
+    rig.push(box(0.14, 0.14, 0.10, [-0.18, -0.16, -0.19], 0.03));
+  } else {
+    rig.push(box(0.50, 0.24, 0.33, [0, 0.08, 0], 0.04));
+    for (const px of [-0.16, 0.16]) rig.push(box(0.13, 0.13, 0.09, [px, -0.12, -0.19], 0.03));
+  }
+
+  const headKit = [box(0.27, 0.14, 0.10, [0, -0.04, -0.12], 0.03)];  // respirator
+  headKit.push(box(0.10, 0.10, 0.09, [0, -0.075, -0.20], 0.03));     // filter
+  if (k.head === 'hood') {
+    headKit.push(box(0.35, 0.32, 0.35, [0, 0.05, 0.02], 0.11));
+  } else {
+    headKit.push(box(0.30, 0.13, 0.30, [0, 0.13, 0], 0.05));
+    headKit.push(box(0.30, 0.05, 0.13, [0, 0.095, -0.16], 0.02));    // brim
+    if (k.head === 'visor') headKit.push(box(0.32, 0.12, 0.09, [0, -0.005, -0.145], 0.03));
+  }
+
+  const arm = [box(0.15 + limb, 0.52, 0.16 + limb, [0, -0.26, 0], 0.04)];
+  if (heavy) arm.push(box(0.20, 0.14, 0.22, [0, -0.13, 0], 0.04));   // vambrace
+  const leg = [
+    box(0.19 + limb, 0.85, 0.20 + limb, [0, -0.42, 0], 0.04),
+    box(0.22 + limb, 0.15, 0.27, [0, -0.80, -0.03], 0.04),           // boot
+  ];
+  if (heavy) leg.push(box(0.22, 0.16, 0.12, [0, -0.44, -0.10], 0.03));   // knee plate
+
+  // ---------------------------------------------------------- the weapon
+  const gun = [];
+  if (k.weapon === 'hook') {
+    gun.push(chamferGeo(0.055, 0.055, 0.76, 0.015, TILE.gunMetal, [0, 0, -0.30]));
+    gun.push(chamferGeo(0.05, 0.20, 0.05, 0.012, TILE.gunMetal, [0, -0.09, -0.63]));
+    gun.push(chamferGeo(0.07, 0.07, 0.14, 0.02, TILE.gunMetal, [0, 0, 0.02]));
+  } else {
+    const long = k.weapon === 'long';
+    gun.push(chamferGeo(0.075, 0.15, 0.50, 0.02, TILE.gunMetal, [0, 0, -0.18]));
+    gun.push(chamferGeo(0.05, 0.19, 0.075, 0.015, TILE.gunMetal, [0, -0.15, -0.16]));   // magazine
+    gun.push(chamferGeo(0.05, 0.11, 0.09, 0.015, TILE.gunMetal, [0, -0.11, 0.06]));     // grip
+    const barrel = new THREE.CylinderGeometry(
+      k.weapon === 'shotgun' ? 0.032 : 0.022, 0.022, long ? 0.48 : 0.34, 8);
+    barrel.rotateX(Math.PI / 2).translate(0, 0.01, long ? -0.62 : -0.55);
+    gun.push(barrel);
+    if (long) {
+      gun.push(chamferGeo(0.05, 0.05, 0.22, 0.015, TILE.gunMetal, [0, 0.11, -0.18]));   // scope
+      gun.push(chamferGeo(0.03, 0.06, 0.03, 0.01, TILE.gunMetal, [0, 0.06, -0.10]));
+      gun.push(chamferGeo(0.05, 0.14, 0.14, 0.02, TILE.gunMetal, [0, -0.03, 0.22]));    // stock
+    }
+    if (k.weapon === 'drum') {
+      const drum = new THREE.CylinderGeometry(0.11, 0.11, 0.06, 10);
+      drum.rotateX(Math.PI / 2).translate(0, -0.16, -0.14);
+      gun.push(drum);
+    }
+  }
+
+  return {
+    materials: { cloth, gear, skin, steel },
+    geo: {
+      torso: mergeIntoOne(torso),
+      rig: mergeIntoOne(rig),
+      head: box(0.25, 0.27, 0.25, [0, 0, 0], 0.05),
+      headKit: mergeIntoOne(headKit),
+      arm: mergeIntoOne(arm),
+      leg: mergeIntoOne(leg),
+      gun: mergeIntoOne(gun),
+      band: new THREE.BoxGeometry(0.58, 0.09, 0.38),
+      eye: new THREE.BoxGeometry(0.05, 0.03, 0.02),
+      shadow: new THREE.PlaneGeometry(1.5, 1.5),
+      beam: null,
+    },
+  };
+}
+
+/**
+ * A hostile, assembled from its archetype's kit. Parts are tagged for hit
+ * zones; anything untagged is not raycast against, which is why the detail
+ * is merged into the parts that are rather than hung beside them.
+ */
 function buildBody(type) {
+  const kit = kitFor(type);
+  const { cloth, gear, skin, steel } = kit.materials;
+  const geo = kit.geo;
   const g = new THREE.Group();
-  const cloth = new THREE.MeshLambertMaterial({ color: type.color });
-  const gear = new THREE.MeshLambertMaterial({ color: type.accent });
-  const skin = new THREE.MeshLambertMaterial({ color: 0x8c7159 });
-  const metal = new THREE.MeshLambertMaterial({ color: 0x26292d });
 
   const parts = {};
-  const add = (mesh, zone, key) => {
+  const add = (mesh, where, zone, key) => {
+    mesh.position.set(where[0], where[1], where[2]);
     mesh.castShadow = true;
     mesh.userData.zone = zone;
     g.add(mesh);
@@ -92,70 +307,32 @@ function buildBody(type) {
     return mesh;
   };
 
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.66, 0.30), cloth);
-  torso.position.y = 1.18;
-  add(torso, 'body', 'torso');
+  add(new THREE.Mesh(geo.torso, cloth), AT.torso, 'body', 'torso');
+  add(new THREE.Mesh(geo.rig, gear), AT.rig, 'body', 'rig');
+  add(new THREE.Mesh(geo.head, skin), AT.head, 'head', 'head');
+  add(new THREE.Mesh(geo.headKit, gear), AT.headKit, 'head');
 
-  const rig = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.36, 0.36), gear);
-  rig.position.y = 1.22;
-  add(rig, 'body');
-
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.27, 0.25), skin);
-  head.position.y = 1.66;
-  add(head, 'head', 'head');
-
-  // gas mask / helmet
-  const mask = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.14, 0.09), gear);
-  mask.position.set(0, 1.62, -0.13);
-  add(mask, 'head');
-  const helm = new THREE.Mesh(new THREE.BoxGeometry(0.29, 0.12, 0.29), gear);
-  helm.position.set(0, 1.79, 0);
-  add(helm, 'head');
-  const band = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.09, 0.38),
-    new THREE.MeshBasicMaterial({ color: type.marker || 0xd8452f }));
-  band.position.y = 1.36;
+  // The archetype band and the eye stay flat-shaded and per-instance: one
+  // turns gold on an elite and the other flares white when hurt, and a
+  // material shared across a wave would do it to all of them at once.
+  const band = new THREE.Mesh(geo.band, new THREE.MeshBasicMaterial({ color: type.marker || 0xd8452f }));
+  band.position.set(...AT.band);
   g.add(band);
   parts.band = band;
 
-  const eye = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.03, 0.02),
-    new THREE.MeshBasicMaterial({ color: 0xff4a2a }));
-  eye.position.set(0.07, 1.63, -0.175);
+  const eye = new THREE.Mesh(geo.eye, new THREE.MeshBasicMaterial({ color: 0xff4a2a }));
+  eye.position.set(...AT.eye);
   g.add(eye);
   parts.eye = eye;
 
-  const armGeo = new THREE.BoxGeometry(0.15, 0.52, 0.16);
-  armGeo.translate(0, -0.26, 0);
-  const armL = new THREE.Mesh(armGeo, cloth); armL.position.set(-0.34, 1.45, 0);
-  const armR = new THREE.Mesh(armGeo, cloth); armR.position.set(0.34, 1.45, 0);
-  add(armL, 'limb', 'armL'); add(armR, 'limb', 'armR');
-
-  const legGeo = new THREE.BoxGeometry(0.19, 0.85, 0.20);
-  legGeo.translate(0, -0.42, 0);
-  const legL = new THREE.Mesh(legGeo, gear); legL.position.set(-0.14, 0.86, 0);
-  const legR = new THREE.Mesh(legGeo, gear); legR.position.set(0.14, 0.86, 0);
-  add(legL, 'limb', 'legL'); add(legR, 'limb', 'legR');
+  add(new THREE.Mesh(geo.arm, cloth), AT.armL, 'limb', 'armL');
+  add(new THREE.Mesh(geo.arm, cloth), AT.armR, 'limb', 'armR');
+  add(new THREE.Mesh(geo.leg, gear), AT.legL, 'limb', 'legL');
+  add(new THREE.Mesh(geo.leg, gear), AT.legR, 'limb', 'legR');
 
   // weapon in the right hand
   const weapon = new THREE.Group();
-  if (type.melee) {
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.75), metal);
-    bar.position.z = -0.3;
-    weapon.add(bar);
-    const hook = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.18, 0.05), metal);
-    hook.position.set(0, -0.08, -0.63);
-    weapon.add(hook);
-  } else {
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.14, 0.5), metal);
-    body.position.z = -0.18;
-    weapon.add(body);
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.34, 6), metal);
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.z = -0.55;
-    weapon.add(barrel);
-    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.18, 0.07), metal);
-    mag.position.set(0, -0.14, -0.16);
-    weapon.add(mag);
-  }
+  weapon.add(new THREE.Mesh(geo.gun, steel));
   if (type.laser) {
     const beam = new THREE.Mesh(
       new THREE.CylinderGeometry(0.012, 0.012, 1, 4, 1, true),
@@ -171,7 +348,7 @@ function buildBody(type) {
     parts.beam = beam;
   }
 
-  weapon.position.set(0.30, 1.28, -0.12);
+  weapon.position.set(...AT.weapon);
   g.add(weapon);
   parts.weapon = weapon;
   const muzzle = new THREE.Object3D();
@@ -181,13 +358,12 @@ function buildBody(type) {
 
   // Contact shadow. The sun's shadow map only covers the area around the
   // player, so distant hostiles would otherwise float; this grounds every one
-  // of them at any range, and follows them onto rooftops.
-  const shadow = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.5, 1.5),
-    new THREE.MeshBasicMaterial({
-      map: blobShadow(), transparent: true, depthWrite: false,
-      opacity: 0.75, blending: THREE.NormalBlending,
-    }));
+  // of them at any range, and follows them onto rooftops. Its material fades
+  // per hostile as one dies or bobs, so it stays per-instance.
+  const shadow = new THREE.Mesh(geo.shadow, new THREE.MeshBasicMaterial({
+    map: blobShadow(), transparent: true, depthWrite: false,
+    opacity: 0.75, blending: THREE.NormalBlending,
+  }));
   shadow.rotation.x = -Math.PI / 2;
   shadow.position.y = 0.03;
   shadow.renderOrder = -1;
