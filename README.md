@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 29 checks, headless
+npm test           # 30 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -63,8 +63,9 @@ surface, the ambient darkening baked under the city, the view model being
 solid and unwrapped at its own scale, the route field covering the whole
 sector, a hostile walking around a building rather than into it, a turned prop
 stopping you where you can see it, the ground you stand on being the ground
-you can see, aiming without pointer lock, settings and record persistence, and a four-minute scripted run that
-must reach wave 3 with hostiles still able to engage.
+you can see, the best-score line sitting clear of the deploy button, aiming
+without pointer lock, settings and record persistence, and a four-minute
+scripted run that must reach wave 3 with hostiles still able to engage.
 
 Three things make it trustworthy rather than merely green: the random stream
 is seeded, every check reloads the page so none of them inherit another's
