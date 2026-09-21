@@ -147,7 +147,13 @@ These each cost real debugging time. Changing them needs a reason.
   because decoration is in neither list, it is something you walk through and
   something bullets ignore — so it has to live where you can do neither, on a
   wall, on a roof, or above head height. That is why the fire escape's lowest
-  platform is at 4.6 m and why there are no bollards.
+  platform is at 4.6 m and why there are no bollards. The road markings are
+  the fourth place and the one that is easy to miss: flat on a surface you
+  already walk over and bullets already pass through to. A marking 2 cm off
+  the ground is walked over because the ground under it is what the footing
+  reads, and shot through because the impact lands on the ground plane 2 cm
+  below the paint, which is nowhere the eye can find. Anything *flush* with
+  an existing surface is safe decoration; anything standing off one is not.
 - **The route field is a hint, never an authority.** `nav.js` builds a 1.5 m
   grid off `world.boxes` and a Dijkstra cost field from the player, rebuilt
   only when they cross a cell. Nothing in it moves a hostile or decides what
@@ -379,6 +385,72 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+Road markings landed, which was item 2 of the old list and the one thing the
+texture pass deliberately left undone. Lane paint cannot live in the asphalt
+tile: that tile repeats every 8 m over a 324 m ground plane, so a centre line
+painted into it lands on 100% of the ground, and only 10.5% of the ground is
+carriageway — 89.5% of the paint would be on a sidewalk, a lot or a plaza.
+The check computes both numbers, so the result line carries its own reason
+for existing.
+
+What is there: a centre line down every street, dashed or — on 2 of the 10
+streets, by a hash of the street's own position — effectively solid; edge
+lines inside both kerbs; a zebra crossing on 32 of the 100 junction
+approaches, a stop bar behind each one over the lane that gives way, and a
+straight-ahead arrow in that lane. Roughly one marking in six is skipped
+outright by a hash of where it would have gone (12% of centre dashes, 14% of
+crossing stripes, 18% of edge-line chunks), and the texture under the rest
+carries only the wear, so the shape is geometry and the pixels are nothing
+but a decade of tyres. Seed 1 lays 2,764 triangles of paint over
+552 m²: merged triangles 97,634 → 100,398, draw batches 26 → 27, textures
+71 → 74 (the map plus the normal and roughness derived off it), and boot
+indistinguishable from noise — a median of 25.5 s against 26.1 s over three
+boots each, both inflated about twofold by the suite running alongside.
+
+Four things about it are worth keeping.
+
+The geometry is derived, not declared. `ROAD_HALF`, `STREETS` and
+`STREET_END` in `city.js` come off `BLOCK`, `LOT` and `GRID`, which is where
+the streets already came from — a sidewalk apron is `LOT + 6` on a lot centre
+and lot centres are `BLOCK` apart, so the 6 m between two aprons is the road.
+`buildCity` returns them as `streets`, `main.js` hangs them on the game, and
+the check reads the same three numbers the generator laid paint off. Change a
+lot size and the paint moves with it.
+
+**The street's own frame maps onto the two axes with opposite handedness, and
+that flips the winding.** Every marking is described as `u` across the
+carriageway and `v` along it, and mapped to world at the last moment: for an
+east-west street `(u, v)` becomes `(z, x)` and for a north-south one `(x, z)`.
+Those two swaps have opposite orientation, so one corner order comes out
+facing the sky on one axis and facing the ground on the other — and a facet
+wound the wrong way round does not error, it vanishes. Exactly the lesson the
+chamfered view model learned; the fix is the same, which is to say which order
+each case wants rather than write one and hope.
+
+Paint is decoration, so it costs the layout nothing and it is in neither
+`world.boxes` nor `world.solids` — which is only safe because it lies flush
+on a surface you already walk over and already shoot through. That is a
+fourth home for decoration alongside a wall, a roof and above head height,
+and it is written into the invariant. Measured with the whole pass switched
+off and back on, seeds 1, 7 and 20260101 lay out 332/405/12, 296/354/10 and
+332/410/12 boxes, solids and perches either way.
+
+The one number that had to be chosen rather than derived is the 2 cm the
+paint sits above the ground. Lower and it z-fights; higher and it hovers when
+you crouch beside it. A 0.06 m near plane over 600 m cannot separate 2 cm
+past about 140 m, so the material carries a polygon offset as well, and a
+street was rendered end to end — 198 m of it — and looked at to confirm it.
+Five framings were rendered in all, because the suite cannot assert on
+pixels: down a street, an approach to a junction at eye level and from low
+overhead, straight down onto a junction, and crouched beside a line.
+`lane paint lies on the road and faces the sky` guards the placement, the
+winding and the count together: 0 triangles past a kerb, 0 wound inside out,
+all 10 streets reached. It was confirmed to fail both ways, breaking the
+reader rather than the data each time. Using one corner order for both axes
+reports 1,396 of 2,764 facets inside out. Laying the paint on `lotCenter(i)`
+while the published street grid stays correct reports it running 16.7 m past
+the kerb and reaching 0 of 10 streets.
 
 The best-score line on the menu ran through the bottom of the DEPLOY button,
 by 8 px, for anyone who had ever finished a run — so the only people who saw
@@ -772,21 +844,20 @@ Suggested next work, in the order I would do it:
 1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-2. **Road markings as geometry.** The one thing the texture pass deliberately
-   did not do. Lane paint cannot live in a tiled asphalt texture — painted
-   once, it comes out as a grid of stripes across the whole sector instead of
-   a line down a street, which is what it was doing before — so the old tile's
-   centre line was dropped rather than fixed. Doing it properly means thin
-   quads laid along the streets at generation time, which the grid already
-   knows the position of. Crossings and stop bars fall out of the same work.
-3. **Positional audio** — sounds are mono, so you cannot hear which side fire
+2. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
-4. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
+3. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
    only the player calls it, so a car roof is still a place they cannot follow
    you to.
-5. **Convert the hostiles to PBR.** The city and the view model are Standard
+4. **Convert the hostiles to PBR.** The city and the view model are Standard
    materials reading the sky environment; enemies are still Lambert and mint
    four materials each, so they neither catch the sky nor batch.
+5. **More on the ground now that paint is there.** The markings pass put a
+   geometry layer on the road and left the pavement alone: manhole covers,
+   kerb drops at the crossings, hatched keep-clear boxes and painted parking
+   bays all fall out of the same `roadMarkings` machinery and the same street
+   grid. Drop them in the same merged mesh and they cost one more batch of
+   nothing.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403

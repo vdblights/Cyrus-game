@@ -35,6 +35,10 @@ export const TILE = {
   rust: 2.5,
   metal: 2,
   glass: 4,
+  // Road paint is shape, not pattern: the geometry of a dash *is* the dash,
+  // and this tile only carries how worn it is. 2 m across a 512 tile puts
+  // 256 px/m on a line 0.14 m wide, so the wear reads at walking distance.
+  paint: 2,
   // The gun is the one surface always within arm's reach, so its tiles are
   // small: 0.3 m across a 512 tile is 1,700 px/m, against 64 for the road.
   gunPoly: 0.3,
@@ -206,7 +210,8 @@ function make(key, builder, repeat = [1, 1], colorSpace = THREE.SRGBColorSpace) 
  *
  * No lane markings: they are painted here only once, so at any tiling they
  * come out as a grid of stripes across the whole sector rather than a line
- * down a street. Road paint belongs on the roads, as its own geometry.
+ * down a street. Road paint belongs on the roads, as its own geometry —
+ * `roadMarkings` in `city.js`, wearing `roadPaint` below.
  */
 export function asphalt(variant = 0) {
   return make('asphalt' + variant, () => {
@@ -711,6 +716,64 @@ export function paintedMetal() {
     }
     grit(ctx, s, 700, '210,214,218', '18,18,20', 1.1);
     noise(ctx, s, 14);
+    return c;
+  });
+}
+
+/**
+ * Worn thermoplastic road paint.
+ *
+ * The shape of a marking is geometry, not pixels — `city.js` lays a quad the
+ * size of the dash — so this tile paints only what a decade of tyres does to
+ * a line: chalked-off edges, scuffs down to the aggregate, the odd stretch
+ * rubbed away entirely. Bare patches use the asphalt's own base colour so a
+ * hole in the paint reads as road showing through rather than as a grey mark.
+ *
+ * Deliberately not white. The base is a warm 73% grey, because the post
+ * chain blooms everything brighter than white and a line at full value turns
+ * into a glowing stripe under a low sun — and because a freshly laid road is
+ * the one thing this sector is not.
+ */
+export function roadPaint() {
+  return make('roadpaint', () => {
+    const s = 512, c = canvas(s), ctx = c.getContext('2d');
+    const BARE = '70,70,76';                 // the asphalt underneath
+
+    ctx.fillStyle = '#bab5a6';
+    ctx.fillRect(0, 0, s, s);
+
+    // dirt held in the texture of the paint, and the yellowing of old resin
+    mottle(ctx, s, 12, 'rgba(120,112,92,0.22)', 30, 120);
+    mottle(ctx, s, 8, 'rgba(196,186,150,0.20)', 25, 90);
+
+    // tyre scuffs: the wear that actually kills a line, running across it
+    for (let i = 0; i < 34; i++) {
+      ctx.save();
+      ctx.translate(rr(0, s), rr(0, s));
+      ctx.rotate(rr(-0.4, 0.4) + Math.PI / 2);
+      ctx.fillStyle = `rgba(${BARE},${rr(0.10, 0.30)})`;
+      ctx.fillRect(-rr(20, 90), -rr(1, 5), rr(40, 180), rr(2, 10));
+      ctx.restore();
+    }
+
+    // stretches rubbed off entirely, soft-edged because wear has no border
+    softLayer(ctx, s, (l) => {
+      for (let i = 0; i < 10; i++) {
+        l.fillStyle = `rgba(${BARE},${rr(0.45, 0.85)})`;
+        l.beginPath();
+        l.ellipse(rr(0, s), rr(0, s), rr(14, 62), rr(10, 40), rr(0, 3), 0, Math.PI * 2);
+        l.fill();
+      }
+    }, 128);
+
+    // chips and the cracks the road's own movement opens through the film
+    splotches(ctx, s, 120, `rgba(${BARE},0.5)`, 1, 5);
+    for (let i = 0; i < 16; i++) {
+      crack(ctx, s, rr(0, s), rr(0, s), rr(40, 150), rr(0.6, 1.8), `rgba(${BARE},0.8)`);
+    }
+
+    grit(ctx, s, 1800, '232,228,214', '46,45,48', 1.6);
+    noise(ctx, s, 16);
     return c;
   });
 }
