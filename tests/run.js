@@ -1371,6 +1371,91 @@ check('the gun in your hands is solid and textured at its declared scale', async
   return { meshes: r.meshes, tris: r.tris, inverted: r.inverted, perMetre: +r.medianPerMetre.toFixed(2) };
 });
 
+check('lane paint lies on the road and faces the sky', async (page) => {
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const mesh = g.city.children.find((m) => m.material?.userData?.name === 'paint');
+    if (!mesh) return { found: false };
+    const { centres, half, end } = g.streets;
+    const pos = mesh.geometry.attributes.position;
+    const index = mesh.geometry.index;
+
+    // A street is a corridor `half` either side of a centre line, on one axis
+    // or the other, so a point is on the carriageway when it is inside at
+    // least one of them. This returns how far outside the nearest one it is.
+    const outside = (x, z) => {
+      let best = Infinity;
+      for (const c of centres) {
+        for (const [along, across] of [[x, z], [z, x]]) {
+          if (Math.abs(along) > end) continue;         // past the last sidewalk
+          best = Math.min(best, Math.max(0, Math.abs(across - c) - half));
+        }
+      }
+      return best === Infinity ? 99 : best;
+    };
+
+    let tris = 0, facingDown = 0, worst = 0, painted = 0;
+    const touched = new Set();
+    for (let t = 0; t < index.count; t += 3) {
+      const a = index.getX(t), b = index.getX(t + 1), c = index.getX(t + 2);
+      const e1 = [pos.getX(b) - pos.getX(a), pos.getY(b) - pos.getY(a), pos.getZ(b) - pos.getZ(a)];
+      const e2 = [pos.getX(c) - pos.getX(a), pos.getY(c) - pos.getY(a), pos.getZ(c) - pos.getZ(a)];
+      const cross = [
+        e1[1] * e2[2] - e1[2] * e2[1],
+        e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0],
+      ];
+      const len = Math.hypot(cross[0], cross[1], cross[2]);
+      if (len < 1e-9) continue;
+      tris++;
+      painted += len / 2;
+      // a quad wound the wrong way round does not error, it vanishes — and
+      // the two axes map the street's own frame onto world space with
+      // opposite handedness, so it is one order for each
+      if (cross[1] <= 0) facingDown++;
+      for (const v of [a, b, c]) worst = Math.max(worst, outside(pos.getX(v), pos.getZ(v)));
+
+      // which street this marking is on, counted only where the answer is
+      // unambiguous: near a junction a point sits in both corridors at once,
+      // and counting those would let paint on one axis alone claim all ten
+      const mx = (pos.getX(a) + pos.getX(b) + pos.getX(c)) / 3;
+      const mz = (pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3;
+      const on = [];
+      for (const c2 of centres) {
+        if (Math.abs(mx - c2) <= half) on.push('x' + c2);
+        if (Math.abs(mz - c2) <= half) on.push('z' + c2);
+      }
+      if (on.length === 1) touched.add(on[0]);
+    }
+
+    // What the same paint would have cost inside the asphalt tile, which is
+    // where it lived until now: a tile repeats over the whole ground plane,
+    // so a line painted into it lands everywhere, and only this share of
+    // everywhere is actually a road.
+    const ground = g.city.children.find((m) => m.material?.userData?.name === 'asphalt');
+    ground.geometry.computeBoundingBox();
+    const bb = ground.geometry.boundingBox;
+    const groundArea = (bb.max.x - bb.min.x) * (bb.max.z - bb.min.z);
+    const roadArea = centres.length * 2 * (half * 2) * (end * 2)
+      - centres.length * centres.length * (half * 2) * (half * 2);
+
+    return {
+      found: true, tris, facingDown,
+      streets: touched.size, ofStreets: centres.length * 2,
+      worst: +worst.toFixed(3),
+      painted: Math.round(painted),
+      offRoadAsTile: +(1 - roadArea / groundArea).toFixed(3),
+    };
+  });
+
+  expect(r.found, 'the city has no lane paint');
+  expect(r.tris > 1500, `only ${r.tris} marking triangles`);
+  expect(r.facingDown === 0, `${r.facingDown} of ${r.tris} marking facets are wound inside out`);
+  expect(r.worst < 0.05, `paint runs ${r.worst} m past the kerb`);
+  expect(r.streets === r.ofStreets, `paint reaches ${r.streets} of ${r.ofStreets} streets`);
+  return r;
+});
+
 check('the bake darkens the ground the city stands on', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

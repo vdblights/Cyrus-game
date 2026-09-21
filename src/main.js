@@ -68,6 +68,7 @@ class Game {
     this.fireBarrels = city.fireBarrels;
     this.perches = city.perches;
     this.batches = city.batches;
+    this.streets = city.streets;     // where the carriageways are, as built
 
     // Where hostiles can walk, and which way is toward you from anywhere in
     // the sector. Built once the city's boxes are final, and out of typed

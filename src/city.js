@@ -11,6 +11,20 @@ const HALF = (GRID - 1) / 2;
 
 const lotCenter = (i) => (i - HALF) * BLOCK;
 
+/**
+ * The carriageway, derived rather than declared.
+ *
+ * A sidewalk apron is `LOT + 6` square on each lot centre, and lot centres
+ * are `BLOCK` apart, so what is left between two aprons is the road: 6 m
+ * wide, centred half a block off each lot. Every number the markings use
+ * comes off these three, so widening a lot moves the paint with it.
+ */
+const ROAD_HALF = (BLOCK - (LOT + 6)) / 2;
+/** Centre of each street, on either axis — the lines between the lots. */
+const STREETS = Array.from({ length: GRID - 1 }, (_, i) => lotCenter(i) + BLOCK / 2);
+/** Where a street stops: the last sidewalk, short of the perimeter wall. */
+const STREET_END = (GRID * BLOCK) / 2 - ROAD_HALF;
+
 /** Window and floor pitch in metres — what a wall's UVs are snapped to. */
 const BAY = TILE.facade / FACADE_BAYS;
 const STOREY = TILE.facade / FACADE_FLOORS;
@@ -461,6 +475,19 @@ export function buildCity(scene) {
       roughness: 1, metalness: 0.05, envMapIntensity: 0.5, vertexColors: true,
     });
 
+    // Lane paint. It lies 2 cm off a ground plane that stretches 324 m, and
+    // a depth buffer with a 0.06 m near plane cannot separate those past
+    // about 140 m, so the offset is backed up by a polygon offset rather than
+    // by lifting the paint high enough to hover when you crouch next to it.
+    const paintTex = TEX.roadPaint();
+    const paintMat = new THREE.MeshStandardMaterial({
+      map: paintTex, normalMap: TEX.normalFrom(paintTex, 0.6, 'paint', 1),
+      normalScale: new THREE.Vector2(0.35, 0.35),
+      roughnessMap: TEX.surfaceFrom(paintTex, { dark: 0.98, lite: 0.62 }, 'paint'),
+      roughness: 1, metalness: 0.02, envMapIntensity: 0.5, vertexColors: true,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+
     // Wrecked cars used to mint a material per car — 140-odd one-off materials
     // that no batching can ever merge. One palette, shared.
     const carBodyMats = [0x74797f, 0xa25b51, 0x5e735f, 0x8b8b80, 0x4c5157].map((color) =>
@@ -488,12 +515,13 @@ export function buildCity(scene) {
     label(metalMat, 'metal', TILE.metal);
     label(glassMat, 'glass', TILE.glass);
     label(asphaltMat, 'asphalt', TILE.asphalt);
+    label(paintMat, 'paint', TILE.paint);
 
     return { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
-      asphaltMat, carBodyMats, burntMat, tireMat };
+      asphaltMat, paintMat, carBodyMats, burntMat, tireMat };
   });
   const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
-    asphaltMat, carBodyMats, burntMat, tireMat } = mats;
+    asphaltMat, paintMat, carBodyMats, burntMat, tireMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
   const rustFor = (x, z) =>
@@ -542,6 +570,11 @@ export function buildCity(scene) {
       group.add(walk);
     }
   }
+
+  // Lane paint down every street. Decoration, and therefore free — see the
+  // note on `decor` — but it is laid off the same grid the lots are, so it
+  // lands on the roads and nowhere else.
+  roadMarkings(group, paintMat);
 
   // ------------------------------------------------------------- buildings
   const fireBarrels = [];
@@ -688,7 +721,12 @@ export function buildCity(scene) {
 
   const batches = bakeStatic(group, world);
 
-  return { world, group, fireBarrels, perches, batches };
+  // The street grid, published rather than re-derived. `roadMarkings` lays
+  // paint off these three numbers and the check that the paint is on the road
+  // reads the same three, so there is one definition of where a street is.
+  const streets = { centres: STREETS, half: ROAD_HALF, end: STREET_END };
+
+  return { world, group, fireBarrels, perches, batches, streets };
 
   /** True when no registered box taller than `maxTop` overlaps the rectangle. */
   function areaClear(w, minX, minZ, maxX, maxZ, maxTop = 0.4) {
@@ -1230,6 +1268,166 @@ export function buildCity(scene) {
           else run.rotation.z = (k % 2 ? 1 : -1) * tilt;
         }
       }
+    });
+  }
+
+  /**
+   * Lane paint, laid along the streets the grid already knows the position of.
+   *
+   * This is the one thing the texture pass deliberately left undone, and the
+   * reason is worth keeping: paint cannot live in the asphalt tile. That tile
+   * repeats every 8 m across a 324 m ground plane, so a centre line painted
+   * into it comes out as a grid of stripes over the entire sector — across
+   * the sidewalks, across the lots, everywhere except down a street. The one
+   * thing a marking needs is the one thing a tiled texture cannot have, which
+   * is a position. So the shape of every marking is geometry here, and
+   * `TEX.roadPaint` carries only how worn it is.
+   *
+   * It is decoration in the strict sense of the rule above `decor`: it
+   * registers no box and no solid, which is safe because it lies flat on a
+   * road you already walk over and bullets already pass through to.
+   *
+   * Everything is described in the street's own frame — `u` across the
+   * carriageway, `v` along it — and mapped onto whichever axis the street
+   * runs on at the last moment, so one description serves both grids.
+   */
+  function roadMarkings(gr, mat) {
+    decor(() => {
+      const Y = 0.02;
+      const pos = [], nor = [], uv = [];
+      const r = (a, b, salt) => hash2(Math.round(a), Math.round(b), salt);
+
+      // Mapping (u, v) onto (z, x) for one axis and onto (x, z) for the other
+      // swaps the handedness of the frame, so the same corner order comes out
+      // front-facing on the east-west streets and inside out on the
+      // north-south ones — and an inverted facet does not error, it vanishes.
+      // Same lesson as the chamfer winding in `weapons.js`; the fix is to say
+      // which order each case wants rather than to write one and hope.
+      const TRI = [[-1, -1], [1, -1], [-1, 1], [1, -1], [1, 1], [-1, 1]];
+      const FLIPPED = [TRI[2], TRI[1], TRI[0], TRI[5], TRI[4], TRI[3]];
+
+      /** One flat quad: `w` across the street, `d` along it, raked by `turn`. */
+      const quad = (axisX, u, v, w, d, turn = 0) => {
+        const c = Math.cos(turn), s = Math.sin(turn);
+        for (const [su, sv] of (axisX ? TRI : FLIPPED)) {
+          const lu = su * w / 2, lv = sv * d / 2;
+          const pu = u + lu * c - lv * s;
+          const pv = v + lu * s + lv * c;
+          const px = axisX ? pv : pu, pz = axisX ? pu : pv;
+          pos.push(px, Y, pz);
+          nor.push(0, 1, 0);
+          // planar off the world, so no two dashes wear the same square metre
+          uv.push(px / TILE.paint, pz / TILE.paint);
+        }
+      };
+
+      /**
+       * What a junction approach wears: a crossing over the full carriageway,
+       * the stop bar for the lane that gives way at it, and an arrow in that
+       * lane. `dir` is which side of the node the approach lies on, so both
+       * sides of every junction are served and none is served twice.
+       *
+       * Returns the `v` past which ordinary lane paint may resume, and pushes
+       * the crossing's footprint into `zones` so the edge lines break at it.
+       */
+      const approach = (axisX, across, node, dir, zones) => {
+        const clear = node + dir * (ROAD_HALF + 0.3);     // edge of the junction
+        // one roll per junction per street, so a crossing is a property of the
+        // junction and both approaches to it are marked or neither is
+        if (r(node, across, axisX ? 91 : 92) > 0.45) return clear;
+
+        const depth = 2.2, stripe = 0.46;
+        const usable = ROAD_HALF * 2 - 0.3;
+        const count = Math.max(4, Math.round(usable / (stripe * 2)));
+        const pitch = usable / count;
+        for (let i = 0; i < count; i++) {
+          const off = (i - (count - 1) / 2) * pitch;
+          if (r(node + off * 7, across + dir, 95) < 0.14) continue;   // gone
+          quad(axisX, across + off, clear + dir * depth / 2, stripe, depth);
+        }
+        zones.push([
+          Math.min(clear, clear + dir * depth) - 0.2,
+          Math.max(clear, clear + dir * depth) + 0.2,
+        ]);
+
+        // Traffic reaching this junction from this side travels toward the
+        // node, so it is in the lane on the `-dir` side of the centre line.
+        const lane = -dir;
+        const bar = clear + dir * (depth + 0.55);
+        quad(axisX, across + lane * (ROAD_HALF / 2), bar, ROAD_HALF - 0.25, 0.4);
+
+        if (r(node, across + lane, 96) < 0.65) {
+          arrow(axisX, across + lane * (ROAD_HALF / 2), bar + dir * 3.0, -dir);
+        }
+        return bar + dir * 0.9;
+      };
+
+      /** A straight-ahead arrow: a shaft and two raked barbs meeting at a tip. */
+      const arrow = (axisX, u, v, fwd) => {
+        const rake = 0.62, barb = 0.9, wide = 0.17;
+        const tip = v + fwd * 0.95;
+        quad(axisX, u, tip - fwd * 0.9, wide, 1.7);
+        for (const side of [-1, 1]) {
+          quad(axisX,
+            u + side * (barb / 2) * Math.sin(rake),
+            tip - fwd * (barb / 2) * Math.cos(rake),
+            wide, barb, side * rake);
+        }
+      };
+
+      for (const axisX of [true, false]) {
+        for (const across of STREETS) {
+          // a minority of streets are marked as no-overtaking instead
+          const solid = r(across, axisX ? 1 : 2, 90) < 0.3;
+          const nodes = [-STREET_END, ...STREETS, STREET_END];
+
+          for (let k = 0; k + 1 < nodes.length; k++) {
+            const loJunction = k > 0, hiJunction = k + 2 < nodes.length;
+            const spanLo = nodes[k] + (loJunction ? ROAD_HALF : 0);
+            const spanHi = nodes[k + 1] - (hiJunction ? ROAD_HALF : 0);
+            const zones = [];
+            const paintLo = loJunction ? approach(axisX, across, nodes[k], 1, zones) : spanLo;
+            const paintHi = hiJunction ? approach(axisX, across, nodes[k + 1], -1, zones) : spanHi;
+
+            // centre line, between whatever the two ends left free
+            const run = paintHi - paintLo;
+            if (run > 2) {
+              const dash = solid ? 3.4 : 2.0;
+              const pitch = solid ? 3.5 : 4.6;
+              const n = Math.max(1, Math.floor(run / pitch));
+              const start = paintLo + (run - (n * pitch - (pitch - dash))) / 2;
+              for (let i = 0; i < n; i++) {
+                const v = start + i * pitch + dash / 2;
+                if (r(v, across, 93) < 0.12) continue;             // worn away
+                quad(axisX, across, v, 0.14, dash);
+              }
+            }
+
+            // edge lines, the length of the span but broken at the crossings
+            for (const side of [-1, 1]) {
+              const u = across + side * (ROAD_HALF - 0.35);
+              const n = Math.max(1, Math.round((spanHi - spanLo) / 3.2));
+              const step = (spanHi - spanLo) / n;
+              for (let i = 0; i < n; i++) {
+                const v = spanLo + step * (i + 0.5);
+                if (zones.some(([lo, hi]) => v > lo - step / 2 && v < hi + step / 2)) continue;
+                if (r(v, u, 94) < 0.18) continue;                  // worn through
+                quad(axisX, u, v, 0.1, step * 0.94);
+              }
+            }
+          }
+        }
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.receiveShadow = true;      // or the paint glows in a building's shade
+      mesh.userData.tint = [1, 1, 1];
+      mesh.userData.mottle = 0.14;
+      gr.add(mesh);
     });
   }
 

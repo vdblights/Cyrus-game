@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 30 checks, headless
+npm test           # 31 checks, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -59,8 +59,9 @@ reach, grenade flight and blast falloff, cook-offs, stair climbing, mantling
 onto ledges (and not onto walls), fall damage, marksman perching and laser
 tracking, warlord spawns, the objective schedule and its payouts, objective
 decay and expiry, waypoint projection, the texel density of every baked
-surface, the ambient darkening baked under the city, the view model being
-solid and unwrapped at its own scale, the route field covering the whole
+surface, the lane paint lying on the carriageway and facing the sky, the
+ambient darkening baked under the city, the view model being solid and
+unwrapped at its own scale, the route field covering the whole
 sector, a hostile walking around a building rather than into it, a turned prop
 stopping you where you can see it, the ground you stand on being the ground
 you can see, the best-score line sitting clear of the deploy button, aiming
@@ -236,6 +237,21 @@ a window at about a metre and a half and a floor at three and a third. Wall
 UVs are snapped to those, so a window is never cut in half at a corner and
 the floor lines meet the ground and the roof square.
 
+One thing refuses to live in a texture at all, and that is the paint on the
+road. A tile repeats, and a centre line painted into the asphalt comes out as
+a grid of stripes over the whole sector — across the sidewalks, across the
+lots, everywhere except down a street — because the one thing a marking needs
+is the one thing a tiled image cannot have, which is a position. So the shape
+of every marking is geometry, laid off the same grid the lots are: a centre
+line down each street, dashed or solid, edge lines inside both kerbs, zebra
+crossings on the junction approaches with a stop bar behind each one and an
+arrow in the lane that gives way. The texture underneath carries only how
+worn the paint is — chalked edges, tyre scuffs, stretches rubbed back to the
+aggregate — and roughly one marking in six is missing outright, which is what
+a decade without maintenance looks like. It costs the layout nothing: like
+the rest of the decorative pass it draws from its own generator, so a seed
+lays out exactly the city it did before.
+
 Surfaces carry a normal map derived from their own texture — the painted
 window reveals, mortar lines and pitted concrete become relief that catches
 the key light instead of reading as a decal. They carry a roughness map from
@@ -360,7 +376,9 @@ A few notes on the implementation:
   blocks themselves with base courses, pilasters, roof tanks and bulkheads,
   shopfront canopies, downpipes, fire escapes and cables strung across the
   streets, because a rectangular prism under one low sun is two lit faces and
-  two dark ones with no line anywhere between them.
+  two dark ones with no line anywhere between them. The roads between them
+  are painted from the same grid — centre lines, edge lines, crossings, stop
+  bars and lane arrows, all of it geometry rather than texture.
 - **Collision is AABB-based.** Everything solid registers a box; entities are
   cylinders pushed out along the shallowest axis. Line of sight uses a slab
   test against the same boxes, so shots can pass over low cover.
