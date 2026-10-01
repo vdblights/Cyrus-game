@@ -736,8 +736,9 @@ the same diff.
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
-tiers (`applyQuality`) drop it first; `auto` measures wall-clock FPS over the
-first seconds of a run and steps down once under 40.
+tiers (`applyQuality`) drop it first; `auto` watches wall-clock FPS for the
+whole run and gives back resolution in a fight, a tier between waves, over
+any three seconds under 45 (see the invariant).
 
 Draw calls used to be the other half of the bill. Measured mid-run on seed
 20260813, the world pass was 567 calls for 9,978 triangles — about 18
