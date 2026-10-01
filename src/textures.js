@@ -52,6 +52,9 @@ export const TILE = {
   // small: 0.3 m across a 512 tile is 1,700 px/m, against 64 for the road.
   gunPoly: 0.3,
   gunMetal: 0.36,
+  // The hands holding it, at the same distance: a glove's weave at 0.25 m a
+  // tile, and the sleeve behind it at the kit's own scale.
+  glove: 0.25,
 };
 
 /** Windows per facade tile. `city.js` snaps wall UVs to these. */

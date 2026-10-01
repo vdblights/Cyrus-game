@@ -467,6 +467,14 @@ A few notes on the implementation:
   chamfered box carrying stippled polymer or parkerised steel at its own tile
   scale — an untextured cube lit by one sun is two faces and two values, which
   is what "boxy" means, and the gun is the one surface always within reach.
+  It is held: two gloved hands closed round its own grips, the trigger finger
+  laid along the frame, sleeved forearms running off the bottom of the
+  frame. Each finger is an arc round the grip's cross-section, so one
+  function closes a hand on a pistol grip, a handguard, a vertical foregrip
+  and a pump. Each gun carries the parts that make it that gun — a trigger in
+  a real guard, ejection port, magwell, charging handle and forward assist,
+  slide serrations, a pump's grooves — and is merged by material into six to
+  nine meshes, fewer than it was before it had hands.
 - **The city is drawn as a handful of meshes.** It is generated as some
   fifteen hundred boxes, then merged by material once it is finished — 567
   draw calls become 39, and the shadow pass falls with them. The meshes it

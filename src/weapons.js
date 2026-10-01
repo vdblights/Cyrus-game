@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import * as TEX from './textures.js';
 import { TILE } from './textures.js';
-import { chamferGeo } from './shapes.js';
+import { chamferGeo, mergeIntoOne } from './shapes.js';
 import { audio } from './audio.js';
 
 /**
@@ -56,12 +56,33 @@ function mats() {
     }),
     GLOW: new THREE.MeshBasicMaterial({ color: 0xff3b2f }),
   };
+
+  // The hands. One pale weave tinted twice: a synthetic glove nearly black,
+  // a faded sleeve in the drab every hostile also wears.
+  const cloth = TEX.fatigues();
+  const clothBits = {
+    map: cloth,
+    normalMap: TEX.normalFrom(cloth, 1.3, 'fatigues-hand', 1),
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    roughnessMap: TEX.surfaceFrom(cloth, { dark: 1, lite: 0.8 }, 'fatigues-hand'),
+  };
+  MATS.GLOVE = new THREE.MeshStandardMaterial({
+    ...clothBits, color: 0x3d3a36, roughness: 1, metalness: 0, envMapIntensity: 0.5,
+  });
+  MATS.SLEEVE = new THREE.MeshStandardMaterial({
+    ...clothBits, color: 0x5a5b4c, roughness: 1, metalness: 0, envMapIntensity: 0.45,
+  });
   return MATS;
 }
 
 // The builders read these by name, so each one resolves through `mats()` at
 // the moment a model is built rather than at import.
 const POLY = 'POLY', METAL = 'METAL', DARK = 'DARK', ACCENT = 'ACCENT', GLOW = 'GLOW';
+const GLOVE = 'GLOVE', SLEEVE = 'SLEEVE';
+
+/** The tile a material's parts unwrap at — see `TILE`. */
+const tileOf = (mat) => (mat === POLY ? TILE.gunPoly : mat === GLOVE ? TILE.glove
+  : mat === SLEEVE ? TILE.kit : TILE.gunMetal);
 
 /**
  * Gun parts, chamfered.
@@ -77,13 +98,14 @@ const POLY = 'POLY', METAL = 'METAL', DARK = 'DARK', ACCENT = 'ACCENT', GLOW = '
  */
 function box(w, h, d, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, bevel = 0) {
   const M = mats()[mat];
-  const tile = mat === POLY ? TILE.gunPoly : TILE.gunMetal;
+  const tile = tileOf(mat);
   const geo = mat === GLOW
     ? new THREE.BoxGeometry(w, h, d)    // the dot is a lit speck, not a part
     : chamferGeo(w, h, d, bevel || Math.min(w, h, d) * 0.25, tile);
   const m = new THREE.Mesh(geo, M);
   m.position.set(x, y, z);
   m.rotation.set(rx, ry, rz);
+  m.userData.tile = tile;
   return m;
 }
 
@@ -95,7 +117,7 @@ function box(w, h, d, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, bevel = 
  */
 function tube(r1, r2, len, mat, x = 0, y = 0, z = 0, rx = Math.PI / 2) {
   const g = new THREE.CylinderGeometry(r1, r2, len, 16, 1, false);
-  const tile = mat === POLY ? TILE.gunPoly : TILE.gunMetal;
+  const tile = tileOf(mat);
   const uv = g.attributes.uv;
   const around = (Math.PI * (r1 + r2)) / tile, along = len / tile;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * around, uv.getY(i) * along);
@@ -103,6 +125,7 @@ function tube(r1, r2, len, mat, x = 0, y = 0, z = 0, rx = Math.PI / 2) {
   const m = new THREE.Mesh(g, mats()[mat]);
   m.position.set(x, y, z);
   m.rotation.x = rx;
+  m.userData.tile = tile;
   return m;
 }
 
@@ -129,6 +152,130 @@ function optic(g, z) {
   g.add(box(0.006, 0.006, 0.004, GLOW, 0, SIGHT_Y, z - d / 2 + 0.004)); // dot
 }
 
+
+/* ------------------------------------------------------------------- hands */
+
+const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
+
+/** A tube through `points`, rounded at both ends — a finger, a thumb. */
+function digit(points, r, mat = GLOVE) {
+  const curve = new THREE.CatmullRomCurve3(points);
+  const geo = new THREE.TubeGeometry(curve, Math.max(6, points.length * 4), r, 10, false);
+  const tile = tileOf(mat), len = curve.getLength();
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len / tile, uv.getY(i) * (2 * Math.PI * r) / tile);
+  uv.needsUpdate = true;
+  const out = [new THREE.Mesh(geo, mats()[mat])];
+  out[0].userData.tile = tile;
+  for (const p of [points[0], points[points.length - 1]]) {
+    const cap = new THREE.SphereGeometry(r, 10, 8);
+    const cuv = cap.attributes.uv;
+    for (let i = 0; i < cuv.count; i++) cuv.setXY(i, cuv.getX(i) * (2 * Math.PI * r) / tile, cuv.getY(i) * (Math.PI * r) / tile);
+    cuv.needsUpdate = true;
+    const m = new THREE.Mesh(cap, mats()[mat]);
+    m.position.copy(p);
+    m.userData.tile = tile;
+    out.push(m);
+  }
+  return out;
+}
+
+/** A tapered limb from `a` (radius ra) to `b` (radius rb): wrist, forearm. */
+function limb(a, b, ra, rb, mat) {
+  const len = a.distanceTo(b);
+  const geo = new THREE.CylinderGeometry(rb, ra, len, 14, 1, true);
+  const tile = tileOf(mat), uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (Math.PI * (ra + rb)) / tile, uv.getY(i) * len / tile);
+  uv.needsUpdate = true;
+  // open-ended, so it is seen from inside where it leaves the frame
+  const m = new THREE.Mesh(geo, sided(mat));
+  m.position.copy(a).add(b).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(v3(0, 1, 0), b.clone().sub(a).normalize());
+  m.userData.tile = tile;
+  return m;
+}
+
+const SIDED = {};
+function sided(mat) {
+  if (!SIDED[mat]) { SIDED[mat] = mats()[mat].clone(); SIDED[mat].side = THREE.DoubleSide; }
+  return SIDED[mat];
+}
+
+/**
+ * A gloved hand closed around a grip, and the arm behind it.
+ *
+ * The grip is described by a frame rather than by the gun: `c` is where the
+ * hand sits, `A` the axis the fingers stack along, `U` the side the palm is
+ * on, `F` the way the fingers go first as they leave it, and `hu`/`hf` the
+ * grip's half-thickness along `U` and `F`. Each finger is an arc around that
+ * cross-section — the same four lines of arithmetic close a hand on a pistol
+ * grip, a handguard, a vertical grip or a pump — and the arm runs from the
+ * heel of the hand back to `elbow`, which is chosen off the bottom of the
+ * frame so the sleeve leaves the picture rather than ending in it.
+ *
+ * `index` replaces the first finger with a path of its own, for a trigger
+ * finger laid along the frame; `thumb` is a path likewise.
+ */
+function hand(g, { c, A, U, F, hu, hf, stack, sweep = 3.6, r = 0.0088, index = null, thumb = null, elbow }) {
+  A = A.clone().normalize(); U = U.clone().normalize(); F = F.clone().normalize();
+  const at = (a, th, out = 0) => c.clone()
+    .addScaledVector(A, a)
+    .addScaledVector(U, Math.cos(th) * (hu + r + out))
+    .addScaledVector(F, Math.sin(th) * (hf + r + out));
+  const fingers = index ? stack.slice(1) : stack;
+  for (const [k, a] of fingers.entries()) {
+    const reach = sweep * (k === fingers.length - 1 ? 0.88 : 1);   // the little finger is short
+    const pts = [];
+    for (let i = 0; i <= 7; i++) pts.push(at(a, 0.32 + (reach - 0.32) * (i / 7), i === 0 ? r * 0.6 : 0));
+    for (const m of digit(pts, r * (k === fingers.length - 1 ? 0.88 : 1))) g.add(m);
+  }
+  if (index) for (const m of digit(index, r)) g.add(m);
+  if (thumb) for (const m of digit(thumb, r * 1.12)) g.add(m);
+
+  // the back of the hand: from the knuckle line back to the wrist, lying on
+  // the palm side of the grip
+  const a0 = stack[0], a1 = stack[stack.length - 1], mid = (a0 + a1) / 2;
+  const span = Math.abs(a1 - a0) + r * 3.2, length = 0.085, thick = 0.026;
+  const back = new THREE.Mesh(chamferGeo(thick, span, length, 0.009, TILE.glove), mats()[GLOVE]);
+  back.userData.tile = TILE.glove;
+  const centre = c.clone().addScaledVector(A, mid).addScaledVector(U, hu + thick / 2 + 0.002)
+    .addScaledVector(F, hf * 0.55 - length / 2);
+  back.position.copy(centre);
+  back.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(U, A, F.clone().negate()));
+  g.add(back);
+
+  // wrist and arm, from the heel of the hand to the elbow
+  const heel = centre.clone().addScaledVector(F, -length / 2 + 0.01);
+  const toElbow = elbow.clone().sub(heel).normalize();
+  const cuff = heel.clone().addScaledVector(toElbow, 0.07);
+  g.add(limb(heel, cuff, 0.03, 0.036, GLOVE));
+  g.add(limb(cuff.clone().addScaledVector(toElbow, -0.006), elbow, 0.041, 0.054, SLEEVE));
+}
+
+
+/**
+ * The frame of a grip built by `box(w, h, d, ..., rx)`: its axis runs down
+ * the grip, its front is the face the fingers close over, both turned by the
+ * grip's own rake.
+ */
+function gripFrame(rx) {
+  return {
+    A: v3(0, -Math.cos(rx), -Math.sin(rx)),          // down the grip
+    F: v3(0, Math.sin(rx), -Math.cos(rx)),           // its front strap
+  };
+}
+
+/** Right hand on a pistol grip, trigger finger laid straight along the frame. */
+function shootingHand(g, { c, rx, hu, hf, stack, index, thumb, elbow = v3(0.11, -0.42, 0.48) }) {
+  const { A, F } = gripFrame(rx);
+  hand(g, { c, A, U: v3(1, 0, 0), F, hu, hf, stack, index, thumb, elbow });
+}
+
+/** Left hand under a handguard or a pump, fingers up its far side. */
+function supportHand(g, { c, hu, hf, stack, thumb, elbow = v3(-0.30, -0.46, 0.12) }) {
+  hand(g, { c, A: v3(0, 0, -1), U: v3(0, -1, 0), F: v3(1, 0, 0), hu, hf, stack, sweep: 2.5, thumb, elbow });
+}
+
 /* ------------------------------------------------------------------ models */
 
 function buildPistol() {
@@ -136,11 +283,34 @@ function buildPistol() {
   g.add(box(0.045, 0.075, 0.24, METAL, 0, 0.02, -0.06));        // slide
   g.add(box(0.042, 0.05, 0.20, POLY, 0, -0.04, -0.04));         // frame
   g.add(box(0.05, 0.115, 0.075, POLY, 0, -0.115, 0.045, 0.22, 0, 0, 0.016)); // grip
-  g.add(box(0.024, 0.03, 0.03, DARK, 0, -0.055, 0.005));        // trigger guard front
+  // trigger guard as a loop, and a trigger inside it
+  g.add(box(0.012, 0.008, 0.058, POLY, 0, -0.088, -0.012, 0, 0, 0, 0.003));   // guard, bottom
+  g.add(box(0.012, 0.03, 0.008, POLY, 0, -0.075, -0.039, 0.2, 0, 0, 0.003));  // guard, front
+  g.add(box(0.006, 0.026, 0.007, DARK, 0, -0.072, -0.008, 0.28, 0, 0, 0.002)); // trigger
+  // slide: rear serrations, ejection port, hammer, decocker
+  for (let i = 0; i < 7; i++) g.add(box(0.0465, 0.05, 0.0028, DARK, 0, 0.022, 0.048 - i * 0.0065, 0, 0, 0, 0.0008));
+  g.add(box(0.013, 0.012, 0.034, DARK, 0.016, 0.054, -0.035, 0, 0, 0, 0.002));   // ejection port
+  g.add(box(0.012, 0.024, 0.012, DARK, 0, 0.046, 0.066, -0.4, 0, 0, 0.003));     // hammer
+  g.add(box(0.052, 0.008, 0.016, DARK, 0, 0.036, 0.042, 0, 0, 0, 0.002));        // decocker
+  g.add(box(0.03, 0.01, 0.05, POLY, 0, -0.07, -0.11));                          // dust cover
+  g.add(box(0.046, 0.012, 0.07, DARK, 0, -0.177, 0.031, 0.22, 0, 0, 0.004));     // mag baseplate
   g.add(tube(0.012, 0.012, 0.05, DARK, 0, 0.02, -0.19));        // muzzle
   g.add(box(0.007, 0.016, 0.008, DARK, 0, 0.070, -0.16));       // front post
   g.add(box(0.010, 0.016, 0.012, DARK, -0.017, 0.070, 0.04));   // rear notch, left
   g.add(box(0.010, 0.016, 0.012, DARK, 0.017, 0.070, 0.04));    // rear notch, right
+  shootingHand(g, {
+    c: v3(0, -0.115, 0.045), rx: 0.22, hu: 0.025, hf: 0.0375, stack: [-0.05, -0.028, -0.004, 0.02],
+    index: [v3(0.031, -0.062, 0.03), v3(0.03, -0.054, -0.015), v3(0.027, -0.05, -0.06)],
+    thumb: [v3(0.018, -0.05, 0.085), v3(-0.006, -0.046, 0.088), v3(-0.029, -0.05, 0.05), v3(-0.031, -0.048, 0.005)],
+  });
+  // the support hand closes over the shooting hand's fingers from the left
+  const { A, F } = gripFrame(0.22);
+  hand(g, {
+    c: v3(0, -0.12, 0.045), A, U: v3(-1, 0, 0), F, hu: 0.044, hf: 0.056,
+    stack: [-0.02, 0.003, 0.026, 0.047], sweep: 3.0,
+    thumb: [v3(-0.036, -0.08, 0.05), v3(-0.036, -0.066, 0.005), v3(-0.032, -0.06, -0.04)],
+    elbow: v3(-0.26, -0.44, 0.44),
+  });
   const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.02, -0.215); g.add(muzzle);
   return { model: g, muzzle };
 }
@@ -154,24 +324,66 @@ function buildSMG() {
   g.add(box(0.035, 0.075, 0.05, POLY, 0, -0.075, -0.19, -0.15, 0, 0, 0.012)); // vertical foregrip
   g.add(box(0.04, 0.05, 0.13, ACCENT, 0, 0.0, 0.19));           // folding stock
   g.add(box(0.055, 0.02, 0.05, DARK, 0, 0.062, 0.06));
+  g.add(tube(0.010, 0.010, 0.14, DARK, 0, 0.058, -0.18));       // cocking tube
+  g.add(box(0.024, 0.01, 0.012, DARK, -0.022, 0.058, -0.215, 0, 0, 0, 0.003)); // cocking handle
+  g.add(box(0.057, 0.006, 0.26, DARK, 0, 0.032, -0.09, 0, 0, 0, 0.002));        // receiver rib
+  g.add(box(0.003, 0.02, 0.05, DARK, 0.028, 0.03, 0.0));                        // ejection port
+  g.add(box(0.012, 0.007, 0.06, POLY, 0, -0.062, 0.045, 0, 0, 0, 0.003));       // guard, bottom
+  g.add(box(0.012, 0.024, 0.008, POLY, 0, -0.05, 0.015, 0.2, 0, 0, 0.003));     // guard, front
+  g.add(box(0.006, 0.024, 0.006, DARK, 0, -0.048, 0.055, 0.25, 0, 0, 0.002));   // trigger
   optic(g, 0.02);
+  shootingHand(g, {
+    c: v3(0, -0.10, 0.10), rx: 0.18, hu: 0.025, hf: 0.03, stack: [-0.042, -0.02, 0.003, 0.026],
+    index: [v3(0.032, -0.062, 0.075), v3(0.032, -0.052, 0.03), v3(0.03, -0.048, -0.01)],
+    thumb: [v3(0.02, -0.045, 0.14), v3(-0.004, -0.04, 0.145), v3(-0.03, -0.045, 0.11), v3(-0.032, -0.04, 0.07)],
+  });
+  // the support hand round the vertical foregrip, palm on its left
+  const fg = gripFrame(-0.15);
+  hand(g, {
+    c: v3(0, -0.078, -0.19), A: fg.A, U: v3(-1, 0, 0), F: fg.F, hu: 0.0175, hf: 0.025,
+    stack: [-0.022, -0.003, 0.016, 0.033], sweep: 3.3,
+    thumb: [v3(-0.024, -0.04, -0.16), v3(-0.006, -0.032, -0.19), v3(0.014, -0.036, -0.215)],
+    elbow: v3(-0.30, -0.46, 0.10),
+  });
   const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.03, -0.34); g.add(muzzle);
   return { model: g, muzzle };
 }
 
 function buildRifle() {
   const g = new THREE.Group();
-  g.add(box(0.055, 0.105, 0.32, POLY, 0, 0.015, -0.02));        // upper/lower receiver
+  g.add(box(0.052, 0.05, 0.30, DARK, 0, 0.042, -0.025, 0, 0, 0, 0.008));  // upper receiver
+  g.add(box(0.05, 0.056, 0.22, POLY, 0, -0.01, 0.03, 0, 0, 0, 0.010));    // lower receiver
+  g.add(box(0.054, 0.042, 0.074, POLY, 0, -0.047, 0.012, 0, 0, 0, 0.008)); // magwell
+  g.add(box(0.003, 0.022, 0.07, ACCENT, 0.0275, 0.04, -0.01));            // ejection port cover
+  g.add(tube(0.009, 0.009, 0.03, METAL, 0.027, 0.052, 0.075));            // forward assist
+  g.add(box(0.05, 0.008, 0.016, DARK, 0, 0.071, 0.13, 0, 0, 0, 0.003));   // charging handle
+  g.add(box(0.012, 0.007, 0.07, POLY, 0, -0.064, 0.07, 0, 0, 0, 0.003));  // guard, bottom
+  g.add(box(0.012, 0.026, 0.008, POLY, 0, -0.05, 0.036, 0.2, 0, 0, 0.003)); // guard, front
+  g.add(box(0.006, 0.024, 0.006, DARK, 0, -0.05, 0.075, 0.25, 0, 0, 0.002)); // trigger
+  // front sight: base on the barrel, post between two wings
+  g.add(box(0.02, 0.014, 0.03, DARK, 0, 0.042, -0.44, 0, 0, 0, 0.003));
+  g.add(box(0.006, 0.042, 0.008, DARK, 0, 0.066, -0.44, 0, 0, 0, 0.002));
+  for (const sx of [-1, 1]) g.add(box(0.004, 0.05, 0.022, DARK, sx * 0.011, 0.064, -0.44, 0, 0, sx * 0.12, 0.0015));
   g.add(box(0.06, 0.07, 0.26, DARK, 0, 0.02, -0.28, 0, 0, 0, 0.010)); // handguard
   for (let i = 0; i < 4; i++) g.add(box(0.062, 0.008, 0.012, ACCENT, 0, 0.055, -0.20 - i * 0.05));
   g.add(tube(0.013, 0.013, 0.20, METAL, 0, 0.025, -0.46));      // barrel
   g.add(tube(0.021, 0.024, 0.06, DARK, 0, 0.025, -0.57));       // flash hider
   g.add(box(0.042, 0.16, 0.06, DARK, 0, -0.11, 0.02, -0.12));   // STANAG mag
   g.add(box(0.05, 0.10, 0.06, POLY, 0, -0.10, 0.12, 0.22, 0, 0, 0.015)); // grip
-  g.add(box(0.05, 0.085, 0.20, POLY, 0, 0.0, 0.24, 0, 0, 0, 0.014));   // buffer stock
-  g.add(box(0.03, 0.045, 0.09, ACCENT, 0, -0.015, 0.19));       // buffer tube
+  g.add(tube(0.016, 0.016, 0.20, DARK, 0, 0.022, 0.24));        // buffer tube
+  g.add(box(0.046, 0.072, 0.12, POLY, 0, 0.0, 0.29, 0, 0, 0, 0.012));  // collapsible stock
+  g.add(box(0.03, 0.012, 0.05, ACCENT, 0, -0.03, 0.24, 0, 0, 0, 0.004)); // stock latch
   g.add(box(0.035, 0.06, 0.02, POLY, 0, -0.06, -0.16, -0.5));   // angled grip
   optic(g, 0.06);
+  shootingHand(g, {
+    c: v3(0, -0.10, 0.12), rx: 0.22, hu: 0.025, hf: 0.03, stack: [-0.042, -0.02, 0.003, 0.026],
+    index: [v3(0.032, -0.064, 0.095), v3(0.032, -0.054, 0.05), v3(0.03, -0.05, 0.01)],
+    thumb: [v3(0.02, -0.045, 0.16), v3(-0.004, -0.04, 0.165), v3(-0.03, -0.045, 0.13), v3(-0.032, -0.04, 0.09)],
+  });
+  supportHand(g, {
+    c: v3(0, 0.02, -0.31), hu: 0.035, hf: 0.03, stack: [-0.028, -0.009, 0.01, 0.028],
+    thumb: [v3(-0.036, -0.012, -0.27), v3(-0.042, 0.004, -0.31), v3(-0.04, 0.016, -0.35)],
+  });
   const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.025, -0.60); g.add(muzzle);
   return { model: g, muzzle };
 }
@@ -182,13 +394,59 @@ function buildShotgun() {
   g.add(tube(0.021, 0.021, 0.46, METAL, 0, 0.035, -0.40));      // barrel
   g.add(tube(0.019, 0.019, 0.36, DARK, 0, -0.015, -0.35));      // magazine tube
   g.add(box(0.055, 0.06, 0.16, POLY, 0, -0.005, -0.26, 0, 0, 0, 0.012)); // pump / forend
+  for (let i = 0; i < 7; i++) g.add(box(0.058, 0.063, 0.005, DARK, 0, -0.005, -0.32 + i * 0.02, 0, 0, 0, 0.0015)); // pump grooves
+  g.add(box(0.03, 0.006, 0.08, DARK, 0, -0.04, -0.06));                    // loading port
+  g.add(box(0.003, 0.024, 0.07, DARK, 0.031, 0.02, -0.02));                // ejection port
+  g.add(box(0.012, 0.007, 0.06, POLY, 0, -0.06, 0.06, 0, 0, 0, 0.003));    // guard, bottom
+  g.add(box(0.012, 0.026, 0.008, POLY, 0, -0.047, 0.03, 0.2, 0, 0, 0.003)); // guard, front
+  g.add(box(0.006, 0.024, 0.006, DARK, 0, -0.046, 0.068, 0.25, 0, 0, 0.002)); // trigger
+  g.add(box(0.012, 0.01, 0.02, ACCENT, 0, 0.064, 0.09));                   // safety
   g.add(box(0.052, 0.10, 0.06, POLY, 0, -0.095, 0.11, 0.20, 0, 0, 0.015)); // grip
   g.add(box(0.055, 0.11, 0.22, POLY, 0, -0.03, 0.24, -0.12, 0, 0, 0.016)); // stock
   g.add(box(0.010, 0.022, 0.012, DARK, 0, 0.072, -0.56));       // bead sight
   g.add(box(0.012, 0.018, 0.014, DARK, -0.018, 0.072, 0.10));   // ghost ring, left
   g.add(box(0.012, 0.018, 0.014, DARK, 0.018, 0.072, 0.10));    // ghost ring, right
+  shootingHand(g, {
+    c: v3(0, -0.095, 0.11), rx: 0.20, hu: 0.026, hf: 0.03, stack: [-0.042, -0.02, 0.003, 0.026],
+    index: [v3(0.033, -0.06, 0.085), v3(0.033, -0.05, 0.04), v3(0.031, -0.046, 0.0)],
+    thumb: [v3(0.02, -0.04, 0.15), v3(-0.004, -0.035, 0.155), v3(-0.031, -0.04, 0.12), v3(-0.033, -0.035, 0.08)],
+  });
+  supportHand(g, {
+    c: v3(0, -0.005, -0.27), hu: 0.03, hf: 0.0275, stack: [-0.03, -0.01, 0.01, 0.03],
+    thumb: [v3(-0.034, -0.03, -0.23), v3(-0.04, -0.012, -0.27), v3(-0.038, 0.002, -0.31)],
+  });
   const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.035, -0.63); g.add(muzzle);
   return { model: g, muzzle };
+}
+
+/**
+ * One mesh per material, for the whole weapon and the hands holding it.
+ *
+ * A gun is forty-odd parts and the hands add thirty more; drawn as they were
+ * built, that is seventy draw calls for something a fifth of a metre long.
+ * Every part is a direct child of the model with a frozen pose, so each is
+ * baked into its material's buffer once and the parts are dropped — the same
+ * trade the city and the hostiles make, vertices for objects. What has to
+ * stay its own object does: the muzzle point, the see-through lens, and the
+ * dot that is drawn unlit.
+ */
+function consolidate(model) {
+  const groups = new Map();
+  for (const o of [...model.children]) {
+    if (!o.isMesh || o.material.transparent || o.material.isMeshBasicMaterial) continue;
+    o.updateMatrix();
+    const geo = o.geometry.clone().applyMatrix4(o.matrix);
+    if (!groups.has(o.material)) groups.set(o.material, { geos: [], tile: o.userData.tile });
+    groups.get(o.material).geos.push(geo);
+    model.remove(o);
+    o.geometry.dispose();
+  }
+  for (const [material, { geos, tile }] of groups) {
+    const m = new THREE.Mesh(mergeIntoOne(geos), material);
+    m.userData.tile = tile;
+    model.add(m);
+    for (const g of geos) g.dispose();
+  }
 }
 
 /* ---------------------------------------------------------------- weapons */
@@ -244,6 +502,7 @@ export class WeaponSystem {
 
     this.weapons = WEAPON_DEFS.map((def) => {
       const { model, muzzle } = def.build();
+      consolidate(model);
       model.visible = false;
       model.traverse((o) => { o.frustumCulled = false; });
       this.root.add(model);
