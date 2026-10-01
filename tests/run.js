@@ -2088,6 +2088,84 @@ check('nothing is built inside out', async (page) => {
   return r;
 });
 
+check('a hostile faces you, and holds its weapon in both hands', async (page) => {
+  // Two things about how a hostile moves, both of which were wrong for as long
+  // as hostiles existed and neither of which any check noticed.
+  //
+  // The body is built facing -z and the turn pointed its +z at the target, so
+  // every hostile shot at you facing the other way: eye glowing from the back
+  // of its head, tracers leaving a muzzle behind it, and walking backwards
+  // on patrol. Measured before the fix: face · toward-you = -0.93, gun -0.95.
+  //
+  // And the weapon hung at a fixed point while one arm swung beside it. The
+  // arms now reach for the weapon's hand-holds (`reach`, two-bone IK) in
+  // whatever pose the weapon is in, so this asks for both fists on their
+  // holds in each of three poses: shouldered and aiming, carried on patrol,
+  // and mid-swing for the one archetype that fights with a hook.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const V = g.player.position.constructor;
+    const a = new V(), b = new V(), c = new V();
+    const p = g.player.position;
+    const rows = {};
+    // furthest a fist is from its hold, in metres at the archetype's own scale
+    const grip = (e) => {
+      e.group.updateMatrixWorld(true);
+      let worst = 0;
+      for (const [fore, hold] of [[e.parts.foreR, e.hold.grip], [e.parts.foreL, e.hold.fore]]) {
+        fore.localToWorld(a.set(0, -e.fist, 0));
+        e.parts.weapon.localToWorld(b.copy(hold));
+        worst = Math.max(worst, a.distanceTo(b) / e.group.scale.x);
+      }
+      return +worst.toFixed(3);
+    };
+    for (const key of Object.keys(g.enemyTypes)) {
+      const e = g.spawnEnemy(key);
+      e.pos.set(p.x + 9, g.world.groundHeight(p.x + 9, p.z, 0.12, 99), p.z + 3);
+      e.group.position.copy(e.pos);
+      e.alert(g.time);
+      for (let k = 0; k < 90; k++) { g.time += 1 / 60; g.step(1 / 60); }
+      e.group.updateMatrixWorld(true);
+      const toYou = c.copy(p).sub(e.pos).setY(0).normalize();
+      e.parts.head.getWorldPosition(a);
+      e.parts.eye.getWorldPosition(b);
+      const face = b.sub(a).setY(0).normalize().dot(toYou);
+      e.parts.weapon.getWorldPosition(a);
+      e.parts.muzzle.getWorldPosition(b);
+      const gun = b.sub(a).setY(0).normalize().dot(toYou);
+      const aimed = grip(e);
+      // on patrol: unalerted and walking, animated directly so nothing wakes it
+      e.alerted = false; e.vel.set(2.4, 0, 0);
+      for (let k = 0; k < 60; k++) e._animate(1 / 60, 30);
+      const patrol = grip(e);
+      let swing = null;
+      if (e.type.melee) {
+        e.alerted = true; e.vel.set(0, 0, 0);
+        for (let k = 0; k < 30; k++) e._animate(1 / 60, 2);
+        e.swingT = 0.12;
+        e._animate(1 / 60, 2);
+        swing = grip(e);
+      }
+      rows[key] = { face: +face.toFixed(2), gun: +gun.toFixed(2), aimed, patrol, swing };
+      e.alive = false; e.group.visible = false;
+    }
+    return rows;
+  });
+  for (const [key, row] of Object.entries(r)) {
+    expect(row.face > 0.85, `${key} faces ${row.face} toward you, not at you`);
+    expect(row.gun > 0.9, `${key} points its weapon ${row.gun} toward you, not at you`);
+    for (const pose of ['aimed', 'patrol', 'swing']) {
+      if (row[pose] === null) continue;
+      expect(row[pose] < 0.03, `${key}'s hands are ${row[pose]} m off its weapon (${pose})`);
+    }
+  }
+  expect(Object.values(r).some((row) => row.swing !== null), 'no archetype swings a melee weapon to measure');
+  return r;
+});
+
 check('every archetype is kitted, textured, and keeps its hit zones', async (page) => {
   // A hostile is read at forty metres against a dusk skyline, where its
   // colour is barely a colour — so the silhouette has to carry the archetype,
@@ -2136,9 +2214,7 @@ check('every archetype is kitted, textured, and keeps its hit zones', async (pag
       e.parts.rig.geometry.computeBoundingBox();
       const rig = e.parts.rig.geometry.boundingBox;
       const counts = ['torso', 'rig', 'headKit', 'gun'].map((part) => {
-        const mesh = part === 'headKit'
-          ? e.group.children.find((o) => o.isMesh && o.userData.zone === 'head' && o !== e.parts.head)
-          : part === 'gun' ? e.parts.weapon.children.find((o) => o.isMesh) : e.parts[part];
+        const mesh = part === 'gun' ? e.parts.weapon.children.find((o) => o.isMesh) : e.parts[part];
         const p = mesh.geometry.attributes.position;
         return (mesh.geometry.index ? mesh.geometry.index.count : p.count) / 3;
       });

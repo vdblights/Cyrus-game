@@ -356,6 +356,16 @@ cases they drop are painted pale on purpose, because a texture multiplies the
 colour on the material — put a mid-grey weave under an olive drab coat and
 every hostile is a silhouette.
 
+They move like people carrying weapons. Knees and elbows bend; the stride
+is paced to the ground covered, so a planted boot does not skate. On patrol
+a rifle is carried low across the body; once a hostile has seen you it
+squares up, blades its shoulders into a stance with its head on you,
+shoulders the weapon and follows your height with it. Both hands stay on the
+gun through all of it, because the arms are solved to reach the gun rather
+than animated beside it. A hit shoves the upper body the way the round was
+travelling and it comes back on a spring; a kill buckles the knees before
+the body follows the shot down.
+
 Hostiles carry a contact shadow under them, because the sun's shadow map only
 covers the ground near the player and anything beyond it would otherwise
 float.
