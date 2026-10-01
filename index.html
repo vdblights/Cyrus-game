@@ -92,9 +92,27 @@
     <div class="menu-inner">
       <h1 class="title">ASHFALL</h1>
       <p class="subtitle">Sector 7 &mdash; abandoned. Something still moves down there.</p>
-      <div id="loading">LOADING&hellip;</div>
-      <button id="start-btn" class="btn hidden">DEPLOY</button>
-      <div id="records" class="records hidden"></div>
+      <div id="loading" class="loading busy">
+        <div class="survey">
+          <canvas id="survey"></canvas>
+          <div class="survey-sweep"></div>
+          <div id="survey-insertion" class="survey-insertion hidden"></div>
+          <div class="survey-label">SECTOR 7 &middot; SURVEY</div>
+        </div>
+        <div class="load-side">
+          <div class="load-progress">
+            <div class="load-head"><span id="load-stage">Deploying</span><span id="load-pct">0%</span></div>
+            <div class="load-bar"><div id="load-fill"></div></div>
+            <ol id="load-steps"></ol>
+          </div>
+          <div class="load-ready">
+            <button id="start-btn" class="btn">DEPLOY</button>
+            <div id="records" class="records hidden"></div>
+          </div>
+          <div class="load-legend"><span class="tri"></span> marksman perch <span class="ring"></span> your insertion</div>
+          <div class="load-note"><span class="label">FIELD NOTE</span><span id="load-tip">Hold Space at a waist-high ledge to haul yourself onto it.</span></div>
+        </div>
+      </div>
       <div class="controls">
         <div class="col">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>

@@ -45,6 +45,17 @@ export class World {
   }
 
   /**
+   * Register a slab laid over the street — a pavement, a courtyard floor. To
+   * every query it is an ordinary box; the flag is for a reader that has to
+   * tell the ground apart from what stands on it, because a 28 cm kerb and
+   * the first tread of a stair are otherwise the same low step.
+   */
+  addFloor(minX, minZ, maxX, maxZ, top) {
+    this.addBox(minX, minZ, maxX, maxZ, top);
+    this.boxes[this.boxes.length - 1].floor = true;
+  }
+
+  /**
    * Register a box turned `rot` about Y, the way three turns a mesh.
    *
    * The alternative is what the props used to do — register the enclosing

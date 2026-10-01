@@ -27,6 +27,13 @@ const STREETS = Array.from({ length: GRID - 1 }, (_, i) => lotCenter(i) + BLOCK 
 /** Where a street stops: the last sidewalk, short of the perimeter wall. */
 const STREET_END = (GRID * BLOCK) / 2 - ROAD_HALF;
 
+/**
+ * The sector's plan, which needs no seed: where the lots and their aprons sit
+ * and where the walls are. The loading screen draws its street grid off this
+ * before a single building exists.
+ */
+export const SECTOR = { block: BLOCK, grid: GRID, apron: LOT + 6, edge: (GRID * BLOCK) / 2 };
+
 /** Window and floor pitch in metres — what a wall's UVs are snapped to. */
 const BAY = TILE.facade / FACADE_BAYS;
 const STOREY = TILE.facade / FACADE_FLOORS;
@@ -204,6 +211,46 @@ function occlusionField(world, extent, cell = 1.6) {
   }
 
   return (x, z) => occ[idx(z) * n + idx(x)];
+}
+
+/**
+ * Make every floor slab something you stand on and something a bullet stops at.
+ *
+ * The sidewalks, the plaza, a rubble lot's slab and a ruin's courtyard were
+ * drawn and registered nowhere, so the footing read the street under them:
+ * the player walked 28 cm inside every kerb and 45 cm inside a ruin's floor,
+ * every hostile on a pavement stood with its boots buried in it, and a shot
+ * at the pavement landed on the street plane below the paint, where nothing
+ * could see the impact. A whole lot is apron — the road between two lots is
+ * 6 m of a 34 m block — so that was most of the ground in the sector.
+ *
+ * Registered *after* everything else is placed, and nothing placed earlier
+ * would have noticed them anyway: every generation-time reader of the box
+ * list — `areaClear`, `occupied`, the occlusion field, the nav bake — skips
+ * anything this low, because each of them is asking about obstacles and a
+ * floor is not one. Appending them is what makes that a guarantee rather than
+ * an argument: every other collider in a seed is exactly where it was.
+ *
+ * The raycast copy is a plain box rather than the slab itself, for the reason
+ * the ground has two: the drawn slab is subdivided for the bake, and three
+ * walks every triangle of a mesh once a ray is inside its bounding sphere,
+ * which for a 28 m slab is most rays fired near it. Built inside `reserve`,
+ * so the UUIDs they mint cost the seeded stream nothing.
+ */
+function registerFloors(world, slabs) {
+  reserve(() => {
+    for (const slab of slabs) {
+      const { width, height, depth } = slab.geometry.parameters;
+      const p = slab.position;
+      world.addFloor(p.x - width / 2, p.z - depth / 2, p.x + width / 2, p.z + depth / 2, p.y + height / 2);
+
+      const hit = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), slab.material);
+      hit.position.copy(p);
+      hit.updateMatrixWorld(true);
+      hit.matrixAutoUpdate = false;
+      world.solids.push(hit);
+    }
+  });
 }
 
 /**
@@ -481,10 +528,15 @@ function bakeStatic(group, world) {
   // which is what the tint and the ambient darkening need
   const occlusion = occlusionField(world, (GRID * BLOCK) / 2 + 62);
 
+  // Keyed on the material itself, never its UUID. Under `reserve` a UUID is
+  // not unique: every reserve that starts from the same place in the seeded
+  // stream mints the same ones, so two materials built in two of them can
+  // share one — and did, the moment the city's materials were painted in
+  // steps, which merged 16 of the city's 27 materials into other ones.
   const buckets = new Map();
   for (const m of meshes) {
-    let b = buckets.get(m.material.uuid);
-    if (!b) buckets.set(m.material.uuid, b = { material: m.material, geos: [], cast: false, receive: false });
+    let b = buckets.get(m.material);
+    if (!b) buckets.set(m.material, b = { material: m.material, geos: [], cast: false, receive: false });
     const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
     shadeGeometry(geo, m.userData.tint || [1, 1, 1], occlusion, m.userData.mottle || 0);
     b.geos.push(geo);
@@ -513,7 +565,220 @@ function bakeStatic(group, world) {
   return buckets.size;
 }
 
-export function buildCity(scene) {
+/**
+ * The city's materials, as steps.
+ *
+ * Painting them is most of boot — seven of the seventeen seconds, measured on
+ * seed 1 under software rendering, and real CPU work on any machine — and it
+ * used to be one block inside `buildCity`, so the page could not draw a
+ * single frame until all of it was done. As steps, the loading screen can
+ * say what is happening and move between them.
+ *
+ * Standard rather than Phong: every one of these surfaces stands under the
+ * image-based sky light hung on `scene.environment`, and only a PBR material
+ * reads it. Roughness comes off each texture's own luminance, so soot and
+ * grime answer the sky flatly while glass and bare metal catch it.
+ *
+ * Each step is run inside its own `reserve`, which rewinds the seeded stream
+ * afterwards: three spends four `Math.random()` calls per material, texture
+ * and geometry on UUIDs, so without it every change to the look handed each
+ * seed a different city (see `rng.js`). That splitting the old single
+ * `reserve` into several is safe rests on one fact: nothing here draws on
+ * the seeded stream for anything but UUIDs. Every texture is painted on a
+ * generator of its own (`paint` in textures.js), so each step seeing the
+ * stream from the same place changes no pixel — measured as an identical
+ * hash over all 66 city textures on seed 1.
+ */
+// `weight` is each step's share of boot in tenths of a second, measured on
+// seed 1 (see `Game.boot`).
+export const CITY_PAINT = [
+  // Several variants per style, not one. Every building of a style used to
+  // wear the identical wall, and a repeated 10 m tile is far less obvious
+  // than a repeated building.
+  ...[0, 1, 2, 3, 4].map((style) => ({
+    label: `Weathering facades ${style + 1}/5`,
+    weight: [15, 10, 8, 8, 7][style],
+    run(m) {
+      m.facades ||= [];
+      for (let v = 0; v < FACADE_VARIANTS; v++) {
+        const key = 'facade' + style + '_' + v;
+        const map = TEX.facade(style, v);
+        m.facades.push(cutWindows(new THREE.MeshStandardMaterial({
+          map, normalMap: TEX.normalFrom(map, 1.1, key, 1, true),
+          normalScale: new THREE.Vector2(0.55, 0.55),
+          roughnessMap: TEX.surfaceFrom(map, { dark: 1, lite: 0.34, half: true }, key),
+          roughness: 1, metalness: 0.05, envMapIntensity: 0.7, vertexColors: true,
+        }), TEX.facadeWindows(style, v)));
+      }
+    },
+  })),
+  {
+    label: 'Pouring concrete',
+    weight: 6,
+    run(m) {
+      const concreteTex = TEX.concrete('#6a6c72');   // cooler stock; the warm key tints it
+      m.concreteMat = new THREE.MeshStandardMaterial({
+        map: concreteTex, normalMap: TEX.normalFrom(concreteTex, 1.1, 'conc', 1),
+        normalScale: new THREE.Vector2(0.7, 0.7),
+        roughnessMap: TEX.surfaceFrom(concreteTex, { dark: 1, lite: 0.72 }, 'conc'),
+        roughness: 1, metalness: 0.02, envMapIntensity: 0.6, vertexColors: true,
+      });
+      const darkTex = TEX.concrete('#53565c', 1);
+      m.darkConcrete = new THREE.MeshStandardMaterial({
+        map: darkTex, normalMap: TEX.normalFrom(darkTex, 1.1, 'dark', 1),
+        normalScale: new THREE.Vector2(0.7, 0.7),
+        roughnessMap: TEX.surfaceFrom(darkTex, { dark: 1, lite: 0.72 }, 'dark'),
+        roughness: 1, metalness: 0.02, envMapIntensity: 0.6, vertexColors: true,
+      });
+    },
+  },
+  {
+    label: 'Rusting the containers',
+    weight: 8,
+    // Containers, shutters and drums are the most repeated props in the city,
+    // and one rust texture made every one of them the same green box. Each
+    // variant is a different paint failing to the same oxide underneath.
+    // Rust is oxide over what is still metal, so the bright pixels hold some
+    // of that back: one packed map feeds both roughness and metalness.
+    run(m) {
+      m.rusts = [0, 1, 2, 3].map((v) => {
+        const tex = TEX.rustMetal(v);
+        const surface = TEX.surfaceFrom(tex, { dark: 1, lite: 0.5, metalDark: 0.1, metalLite: 0.75 }, 'rust' + v);
+        return new THREE.MeshStandardMaterial({
+          map: tex, normalMap: TEX.normalFrom(tex, 1.6, 'rust' + v, 1),
+          normalScale: new THREE.Vector2(1, 1),
+          roughnessMap: surface, metalnessMap: surface,
+          roughness: 1, metalness: 1, envMapIntensity: 0.8, vertexColors: true,
+        });
+      });
+    },
+  },
+  {
+    label: 'Painting the metal, dirtying the glass',
+    weight: 2,
+    run(m) {
+      const metalTex = TEX.paintedMetal();
+      const metalSurface = TEX.surfaceFrom(metalTex, { dark: 0.9, lite: 0.38, metalDark: 0.35, metalLite: 0.85 }, 'painted');
+      // the map is a light grey carrying scratches and rust, so what colour a
+      // thing is painted stays on the material — one texture, many paints
+      m.metalMat = new THREE.MeshStandardMaterial({
+        color: 0x74797f,
+        map: metalTex, normalMap: TEX.normalFrom(metalTex, 1.1, 'painted', 1),
+        normalScale: new THREE.Vector2(0.5, 0.5),
+        roughnessMap: metalSurface, metalnessMap: metalSurface,
+        roughness: 1, metalness: 1, envMapIntensity: 1, vertexColors: true,
+      });
+      // dark glass catches the sky hard, which is what sells it as glass; the
+      // map is the dirt on it, without which it is a mirror in a ruined city
+      const glassTex = TEX.dirtyGlass();
+      m.glassMat = new THREE.MeshStandardMaterial({
+        map: glassTex, normalMap: TEX.normalFrom(glassTex, 0.8, 'glass', 1),
+        normalScale: new THREE.Vector2(0.35, 0.35),
+        roughnessMap: TEX.surfaceFrom(glassTex, { dark: 0.08, lite: 0.7 }, 'glass'),
+        roughness: 1, metalness: 0.88, envMapIntensity: 1.35, vertexColors: true,
+      });
+    },
+  },
+  {
+    label: 'Cracking the asphalt',
+    weight: 6,
+    run(m) {
+      const asphaltTex = TEX.asphalt();
+      m.asphaltMat = new THREE.MeshStandardMaterial({
+        map: asphaltTex, normalMap: TEX.normalFrom(asphaltTex, 0.9, 'asph', 1),
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        roughnessMap: TEX.surfaceFrom(asphaltTex, { dark: 0.98, lite: 0.55 }, 'asph'),
+        roughness: 1, metalness: 0.05, envMapIntensity: 0.5, vertexColors: true,
+      });
+      // Lane paint. It lies 2 cm off a ground plane that stretches 324 m, and
+      // a depth buffer with a 0.06 m near plane cannot separate those past
+      // about 140 m, so the offset is backed up by a polygon offset rather
+      // than by lifting the paint high enough to hover when you crouch next
+      // to it.
+      const paintTex = TEX.roadPaint();
+      m.paintMat = new THREE.MeshStandardMaterial({
+        map: paintTex, normalMap: TEX.normalFrom(paintTex, 0.6, 'paint', 1),
+        normalScale: new THREE.Vector2(0.35, 0.35),
+        roughnessMap: TEX.surfaceFrom(paintTex, { dark: 0.98, lite: 0.62 }, 'paint'),
+        roughness: 1, metalness: 0.02, envMapIntensity: 0.5, vertexColors: true,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      });
+    },
+  },
+  {
+    label: 'Burning out the cars',
+    weight: 4,
+    run(m) {
+      // Wrecked cars used to mint a material per car — 140-odd one-off
+      // materials that no batching can ever merge. One palette, shared.
+      const metalTex = TEX.paintedMetal();
+      m.carBodyMats = [0x74797f, 0xa25b51, 0x5e735f, 0x8b8b80, 0x4c5157].map((color) =>
+        new THREE.MeshStandardMaterial({
+          color, roughness: 0.68, metalness: 0.55, envMapIntensity: 0.8,
+          map: metalTex, normalMap: TEX.normalFrom(metalTex, 1.1, 'painted', 1),
+          normalScale: new THREE.Vector2(0.4, 0.4), vertexColors: true,
+        }));
+      // A burnt-out shell wears the same panels as a painted one, so it is
+      // unwrapped at the same tile — what changed is the surface, not the car.
+      const charTex = TEX.charred();
+      const charSurface = TEX.surfaceFrom(charTex, { dark: 1, lite: 0.45, metalDark: 0.05, metalLite: 0.6 }, 'char');
+      m.burntMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: charTex, normalMap: TEX.normalFrom(charTex, 1.4, 'char', 1),
+        normalScale: new THREE.Vector2(0.9, 0.9),
+        roughnessMap: charSurface, metalnessMap: charSurface,
+        roughness: 1, metalness: 1, envMapIntensity: 0.55, vertexColors: true,
+      });
+      // One tile carries the tread and the wheel behind it — see `TEX.tire`.
+      // Rubber is the flattest thing in the city and the rim behind it is the
+      // brightest, and the difference between them is what makes a wheel read
+      // as a wheel: one packed map, keyed off the tile's own luminance.
+      const tireTex = TEX.tire();
+      const tireSurface = TEX.surfaceFrom(tireTex, { dark: 1, lite: 0.35, metalDark: 0, metalLite: 0.9 }, 'tire');
+      m.tireMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: tireTex, normalMap: TEX.normalFrom(tireTex, 1.5, 'tire', 1),
+        normalScale: new THREE.Vector2(0.8, 0.8),
+        roughnessMap: tireSurface, metalnessMap: tireSurface,
+        roughness: 1, metalness: 1, envMapIntensity: 0.7, vertexColors: true,
+      });
+    },
+  },
+];
+
+/** Every step of `CITY_PAINT` at once, for a caller with nothing to show. */
+function paintCity() {
+  const m = {};
+  for (const step of CITY_PAINT) reserve(() => step.run(m));
+  return m;
+}
+
+/**
+ * Record the world size each material's tile covers, so the contract in
+ * `TILE` is something a check can read back off the finished city rather
+ * than something the two files have to be trusted to agree on.
+ */
+function labelMaterials(m) {
+  const label = (mat, name, tile) => { mat.userData.name = name; mat.userData.tile = tile; };
+  m.facades.forEach((mat, i) => label(mat, 'facade' + i, TILE.facade));
+  m.carBodyMats.forEach((mat, i) => label(mat, 'car' + i, TILE.metal));
+  label(m.concreteMat, 'concrete', TILE.concrete);
+  label(m.darkConcrete, 'dark', TILE.concrete);
+  m.rusts.forEach((mat, i) => label(mat, 'rust' + i, TILE.rust));
+  label(m.metalMat, 'metal', TILE.metal);
+  label(m.glassMat, 'glass', TILE.glass);
+  label(m.asphaltMat, 'asphalt', TILE.asphalt);
+  label(m.paintMat, 'paint', TILE.paint);
+  label(m.burntMat, 'burnt', TILE.metal);
+  label(m.tireMat, 'tire', TILE.rubber);
+}
+
+/**
+ * Lay out the city. `painted` is what `CITY_PAINT` produced, when the caller
+ * has painted it step by step behind a loading screen; without it the
+ * materials are painted here, in one go.
+ */
+export function buildCity(scene, painted = null) {
   const world = new World();
   world.bounds = (GRID * BLOCK) / 2 - 2;
   decorRandom.rewind(0x9e3779b9);     // one city per page, but start it level anyway
@@ -521,160 +786,8 @@ export function buildCity(scene) {
   const group = new THREE.Group();
   scene.add(group);
 
-  // Standard rather than Phong: every one of these surfaces stands under the
-  // image-based sky light hung on `scene.environment`, and only a PBR
-  // material reads it. Roughness comes off each texture's own luminance, so
-  // soot and grime answer the sky flatly while glass and bare metal catch it.
-  //
-  // All of it is minted inside `reserve`, which rewinds the seeded stream
-  // afterwards. Three spends four `Math.random()` calls per material, texture
-  // and geometry on UUIDs, so without this every change to the look here
-  // handed each seed a different city (see `rng.js`).
-  const mats = reserve(() => {
-    // Several variants per style, not one. Every building of a style used to
-    // wear the identical wall, and a repeated 10 m tile is far less obvious
-    // than a repeated building.
-    const facades = [];
-    for (let style = 0; style < 5; style++) {
-      for (let v = 0; v < FACADE_VARIANTS; v++) {
-        const key = 'facade' + style + '_' + v;
-        const map = TEX.facade(style, v);
-        facades.push(cutWindows(new THREE.MeshStandardMaterial({
-          map, normalMap: TEX.normalFrom(map, 1.1, key, 1, true),
-          normalScale: new THREE.Vector2(0.55, 0.55),
-          roughnessMap: TEX.surfaceFrom(map, { dark: 1, lite: 0.34, half: true }, key),
-          roughness: 1, metalness: 0.05, envMapIntensity: 0.7, vertexColors: true,
-        }), TEX.facadeWindows(style, v)));
-      }
-    }
-
-    const concreteTex = TEX.concrete('#6a6c72');   // cooler stock; the warm key tints it
-    const concreteMat = new THREE.MeshStandardMaterial({
-      map: concreteTex, normalMap: TEX.normalFrom(concreteTex, 1.1, 'conc', 1),
-      normalScale: new THREE.Vector2(0.7, 0.7),
-      roughnessMap: TEX.surfaceFrom(concreteTex, { dark: 1, lite: 0.72 }, 'conc'),
-      roughness: 1, metalness: 0.02, envMapIntensity: 0.6, vertexColors: true,
-    });
-
-    const darkTex = TEX.concrete('#53565c', 1);
-    const darkConcrete = new THREE.MeshStandardMaterial({
-      map: darkTex, normalMap: TEX.normalFrom(darkTex, 1.1, 'dark', 1),
-      normalScale: new THREE.Vector2(0.7, 0.7),
-      roughnessMap: TEX.surfaceFrom(darkTex, { dark: 1, lite: 0.72 }, 'dark'),
-      roughness: 1, metalness: 0.02, envMapIntensity: 0.6, vertexColors: true,
-    });
-
-    // Containers, shutters and drums are the most repeated props in the city,
-    // and one rust texture made every one of them the same green box. Each
-    // variant is a different paint failing to the same oxide underneath.
-    // Rust is oxide over what is still metal, so the bright pixels hold some
-    // of that back: one packed map feeds both roughness and metalness.
-    const rusts = [0, 1, 2, 3].map((v) => {
-      const tex = TEX.rustMetal(v);
-      const surface = TEX.surfaceFrom(tex, { dark: 1, lite: 0.5, metalDark: 0.1, metalLite: 0.75 }, 'rust' + v);
-      return new THREE.MeshStandardMaterial({
-        map: tex, normalMap: TEX.normalFrom(tex, 1.6, 'rust' + v, 1),
-        normalScale: new THREE.Vector2(1, 1),
-        roughnessMap: surface, metalnessMap: surface,
-        roughness: 1, metalness: 1, envMapIntensity: 0.8, vertexColors: true,
-      });
-    });
-
-    const metalTex = TEX.paintedMetal();
-    const metalSurface = TEX.surfaceFrom(metalTex, { dark: 0.9, lite: 0.38, metalDark: 0.35, metalLite: 0.85 }, 'painted');
-    // the map is a light grey carrying scratches and rust, so what colour a
-    // thing is painted stays on the material — one texture, many paints
-    const metalMat = new THREE.MeshStandardMaterial({
-      color: 0x74797f,
-      map: metalTex, normalMap: TEX.normalFrom(metalTex, 1.1, 'painted', 1),
-      normalScale: new THREE.Vector2(0.5, 0.5),
-      roughnessMap: metalSurface, metalnessMap: metalSurface,
-      roughness: 1, metalness: 1, envMapIntensity: 1, vertexColors: true,
-    });
-
-    // dark glass catches the sky hard, which is what sells it as glass; the
-    // map is the dirt on it, without which it is a mirror in a ruined city
-    const glassTex = TEX.dirtyGlass();
-    const glassMat = new THREE.MeshStandardMaterial({
-      map: glassTex, normalMap: TEX.normalFrom(glassTex, 0.8, 'glass', 1),
-      normalScale: new THREE.Vector2(0.35, 0.35),
-      roughnessMap: TEX.surfaceFrom(glassTex, { dark: 0.08, lite: 0.7 }, 'glass'),
-      roughness: 1, metalness: 0.88, envMapIntensity: 1.35, vertexColors: true,
-    });
-
-    const asphaltTex = TEX.asphalt();
-    const asphaltMat = new THREE.MeshStandardMaterial({
-      map: asphaltTex, normalMap: TEX.normalFrom(asphaltTex, 0.9, 'asph', 1),
-      normalScale: new THREE.Vector2(0.55, 0.55),
-      roughnessMap: TEX.surfaceFrom(asphaltTex, { dark: 0.98, lite: 0.55 }, 'asph'),
-      roughness: 1, metalness: 0.05, envMapIntensity: 0.5, vertexColors: true,
-    });
-
-    // Lane paint. It lies 2 cm off a ground plane that stretches 324 m, and
-    // a depth buffer with a 0.06 m near plane cannot separate those past
-    // about 140 m, so the offset is backed up by a polygon offset rather than
-    // by lifting the paint high enough to hover when you crouch next to it.
-    const paintTex = TEX.roadPaint();
-    const paintMat = new THREE.MeshStandardMaterial({
-      map: paintTex, normalMap: TEX.normalFrom(paintTex, 0.6, 'paint', 1),
-      normalScale: new THREE.Vector2(0.35, 0.35),
-      roughnessMap: TEX.surfaceFrom(paintTex, { dark: 0.98, lite: 0.62 }, 'paint'),
-      roughness: 1, metalness: 0.02, envMapIntensity: 0.5, vertexColors: true,
-      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-    });
-
-    // Wrecked cars used to mint a material per car — 140-odd one-off materials
-    // that no batching can ever merge. One palette, shared.
-    const carBodyMats = [0x74797f, 0xa25b51, 0x5e735f, 0x8b8b80, 0x4c5157].map((color) =>
-      new THREE.MeshStandardMaterial({
-        color, roughness: 0.68, metalness: 0.55, envMapIntensity: 0.8,
-        map: metalTex, normalMap: TEX.normalFrom(metalTex, 1.1, 'painted', 1),
-        normalScale: new THREE.Vector2(0.4, 0.4), vertexColors: true,
-      }));
-    // A burnt-out shell wears the same panels as a painted one, so it is
-    // unwrapped at the same tile — what changed is the surface, not the car.
-    const charTex = TEX.charred();
-    const charSurface = TEX.surfaceFrom(charTex, { dark: 1, lite: 0.45, metalDark: 0.05, metalLite: 0.6 }, 'char');
-    const burntMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      map: charTex, normalMap: TEX.normalFrom(charTex, 1.4, 'char', 1),
-      normalScale: new THREE.Vector2(0.9, 0.9),
-      roughnessMap: charSurface, metalnessMap: charSurface,
-      roughness: 1, metalness: 1, envMapIntensity: 0.55, vertexColors: true,
-    });
-    // One tile carries the tread and the wheel behind it — see `TEX.tire`.
-    // Rubber is the flattest thing in the city and the rim behind it is the
-    // brightest, and the difference between them is what makes a wheel read
-    // as a wheel: one packed map, keyed off the tile's own luminance.
-    const tireTex = TEX.tire();
-    const tireSurface = TEX.surfaceFrom(tireTex, { dark: 1, lite: 0.35, metalDark: 0, metalLite: 0.9 }, 'tire');
-    const tireMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      map: tireTex, normalMap: TEX.normalFrom(tireTex, 1.5, 'tire', 1),
-      normalScale: new THREE.Vector2(0.8, 0.8),
-      roughnessMap: tireSurface, metalnessMap: tireSurface,
-      roughness: 1, metalness: 1, envMapIntensity: 0.7, vertexColors: true,
-    });
-
-    // Record the world size each material's tile covers, so the contract in
-    // `TILE` is something a check can read back off the finished city rather
-    // than something the two files have to be trusted to agree on.
-    const label = (m, name, tile) => { m.userData.name = name; m.userData.tile = tile; };
-    facades.forEach((m, i) => label(m, 'facade' + i, TILE.facade));
-    carBodyMats.forEach((m, i) => label(m, 'car' + i, TILE.metal));
-    label(concreteMat, 'concrete', TILE.concrete);
-    label(darkConcrete, 'dark', TILE.concrete);
-    rusts.forEach((m, i) => label(m, 'rust' + i, TILE.rust));
-    label(metalMat, 'metal', TILE.metal);
-    label(glassMat, 'glass', TILE.glass);
-    label(asphaltMat, 'asphalt', TILE.asphalt);
-    label(paintMat, 'paint', TILE.paint);
-    label(burntMat, 'burnt', TILE.metal);
-    label(tireMat, 'tire', TILE.rubber);
-
-    return { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
-      asphaltMat, paintMat, carBodyMats, burntMat, tireMat };
-  });
+  const mats = painted || paintCity();
+  labelMaterials(mats);
   const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
     asphaltMat, paintMat, carBodyMats, burntMat, tireMat } = mats;
 
@@ -685,7 +798,7 @@ export function buildCity(scene) {
   /**
    * Every shape the street furniture is cut from, minted once.
    *
-   * Inside `reserve`, like the materials above and for the same reason: three
+   * Inside `reserve`, like the materials and for the same reason: three
    * spends four draws of the seeded stream on each geometry's UUID, so
    * building these here would otherwise move every city. What each *prop*
    * then costs the stream is a fixed bill it pays with `spend` — see the note
@@ -731,6 +844,11 @@ export function buildCity(scene) {
   groundHit.matrixAutoUpdate = false;
   world.solids.push(groundHit);   // so bullets that miss still kick up dust
 
+  // Every slab drawn as something to stand on — the sidewalks, the plaza, a
+  // rubble lot's broken floor, a ruin's courtyard — recorded as it is laid
+  // and registered once the rest of the city is (see `registerFloors`).
+  const floors = [];
+
   // sidewalks: a raised concrete apron around every lot
   const walkMat = concreteMat;
   for (let i = 0; i < GRID; i++) {
@@ -741,6 +859,7 @@ export function buildCity(scene) {
       walk.receiveShadow = true;
       walk.userData.tint = tintAt(lotCenter(i), lotCenter(j), 5, 0.07);
       group.add(walk);
+      floors.push(walk);
     }
   }
 
@@ -892,6 +1011,8 @@ export function buildCity(scene) {
     }
   }
 
+  registerFloors(world, floors);
+
   const batches = bakeStatic(group, world);
 
   // The street grid, published rather than re-derived. `roadMarkings` lays
@@ -1034,6 +1155,7 @@ export function buildCity(scene) {
     slab.receiveShadow = true;
     slab.userData.tint = tintAt(cx, cz, 6, 0.07);
     g.add(slab);
+    floors.push(slab);
     for (let k = 0; k < 5; k++) rubblePile(g, cx + randRange(-8, 8), cz + randRange(-8, 8), conc);
     if (Math.random() < 0.5) container(g, w, cx + randRange(-6, 6), cz + randRange(-6, 6), Math.random() * Math.PI);
   }
@@ -1044,6 +1166,7 @@ export function buildCity(scene) {
     slab.receiveShadow = true;
     slab.userData.tint = tintAt(cx, cz, 6, 0.07);
     g.add(slab);
+    floors.push(slab);
     for (let k = 0; k < 14; k++) {
       rubblePile(g, cx + randRange(-9, 9), cz + randRange(-9, 9), conc, randRange(0.7, 1.9));
     }
@@ -1067,6 +1190,7 @@ export function buildCity(scene) {
     slab.receiveShadow = true;
     slab.userData.tint = tintAt(cx, cz, 6, 0.07);
     g.add(slab);
+    floors.push(slab);
 
     // dry fountain in the middle: cover to fight from
     const ring = new THREE.Mesh(cylGeo(3.2, 3.4, 1, TILE.concrete, 16, true), conc);

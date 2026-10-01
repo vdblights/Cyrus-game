@@ -66,6 +66,7 @@ builds, never to play.
 | `src/hud.js` | DOM readouts, killfeed, radar, capture banner |
 | `src/nav.js` | Walkable grid over `world.boxes`, and a route field to the player |
 | `src/rng.js` | Seeded `Math.random` for the page's lifetime, and `reserve`/`spend` |
+| `src/loading.js` | The loading screen: stages, progress, field notes, the sector survey |
 
 The whole game hangs off `window.__game`, which is how tests and probes drive it.
 
@@ -138,6 +139,27 @@ These each cost real debugging time. Changing them needs a reason.
   they used to, so the stream is unchanged. Measured on seeds 1, 7, 99991,
   20260101 and 20260813: every perch, every barrel, and every collider more
   than 14 m from a perch is identical before and after.
+- **A floor is a collider, and it is registered last.** Every slab drawn as
+  something to stand on — the 28 cm pavement apron on every lot, the plaza,
+  a rubble lot's slab (0.35 m), a ruin's courtyard (0.45 m) — goes through
+  `registerFloors` in `city.js`, which puts it in `world.boxes` via
+  `addFloor` and a plain box copy of it in `world.solids`. They were drawn
+  and registered nowhere: a lot is 28 m of apron in a 34 m block, so for
+  most of the sector the player walked 28 cm inside the kerb, hostiles stood
+  with their boots in it, and a shot at the pavement landed on the street
+  plane underneath. Three things keep it cheap. Every floor is under
+  `STEP_HEIGHT`, so `resolve` walks over it and footing lifts you onto it.
+  Every reader that asks about *obstacles* — `occupied`, `areaClear`, the
+  occlusion field, the nav bake — already skips anything that low, so a
+  floor is invisible to placement. And registering them after everything
+  else is placed makes that a guarantee rather than an argument: the old
+  fingerprint, taken over every box but the floors, reproduces exactly on
+  all three pinned seeds. The `floor` flag on those boxes is for a reader
+  that must tell ground from what stands on it, because a kerb and the first
+  tread of a stair are otherwise the same low step — the stairs check found
+  a perch's pavement before its stairs and walked into its deck. What still
+  assumes y=0 is wrong now: an effect that lands, a pickup, an objective
+  ring and a test that says "on the street" all ask the floor instead.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -220,7 +242,7 @@ These each cost real debugging time. Changing them needs a reason.
   logging `Math.random.mark()` around each step of `buildCity` on both sides
   of the change and walking forward to the first call that disagreed — which
   is the method worth reusing, because it ends the search in minutes. The
-  constructor now builds a throwaway `Sprite` inside that same `reserve`. If
+  first stage of boot builds a throwaway `Sprite` inside that same `reserve`. If
   a later change removes the last Sprite built before the city, or adds a
   first instance of some other lazily-shared three type inside it, the same
   thing happens again, and `a seed still lays out the city it did` is what
@@ -446,6 +468,81 @@ These each cost real debugging time. Changing them needs a reason.
   testing note about hardcoded aim heights from the other side: baking the
   offsets in put every part at the feet, and turned the headshot check into a
   leg shot that quietly still passed the "did damage" half.
+- **Boot is a list of stages, and it yields between them.** `Game.boot` runs
+  a plan of `[label, weight, run]` and gives the page a frame before each
+  one (`yieldToPaint`), so the loading screen can say what is happening and
+  move. It used to be the body of the constructor — one task, seventeen
+  seconds under software rendering, with the page frozen on the word
+  LOADING. Three things keep that from costing the seed anything. Every
+  stage that mints three objects still runs inside `reserve`, or is the city
+  itself, exactly as before. The order is unchanged. And nothing that runs
+  while boot waits may draw on `Math.random`: the loading screen cycles its
+  field notes off the seed and the clock, and the only listeners bound by
+  then are input. The city's materials are `CITY_PAINT` in `city.js`, a step
+  per facade style and per family, because painting them is seven of those
+  seventeen seconds and as one step the bar would sit still for most of
+  boot. Anything that moves *continuously* on the loading screen is a CSS
+  transform or opacity, because between yields no script runs and only the
+  compositor can animate. Weights are tenths of a second: as measured for
+  the CPU stages, estimated for the three GPU ones, which software
+  rendering inflates about a hundredfold. `window.__game` exists from the
+  first stage; `state` is `'loading'` until the last, which is what the
+  harness waits on, and `game.booted` resolves then too.
+- **Under `reserve`, a UUID is not unique — never key anything on one.**
+  `reserve` rewinds the seeded stream, so every reserve that starts from the
+  same place mints the same UUIDs. That was true before boot was staged
+  (each archetype's kit is its own reserve), but nothing keyed on them until
+  `bakeStatic` bucketing by `material.uuid` met the city's materials painted
+  in separate steps: 16 of its 27 materials were merged into other steps'
+  batches, every facade and the streetlights among them, and nothing errored.
+  Key on the object (a `Map` takes one), or on `id`, which three counts and
+  never rewinds. `every city material survives the bake` reports the 16 with
+  the UUID key put back. The texture side of the split was checked the other
+  way: a hash over every pixel of all 66 city textures is identical before
+  and after, because each is painted on its own generator.
+- **Every shader is built before the first fight, and nothing is built
+  lazily in one.** `renderer.compile` only compiles what is visible, and at
+  boot that was the city: every hostile, every pooled tracer, casing and
+  sprite, and the muzzle flash compiled on the first frame that drew them —
+  five programs at first sight of a hostile and three on the first shot,
+  measured on seed 1, a stall at exactly the moment of first contact.
+  `Game.precompileStages` shows every hidden thing, stands one body of each
+  archetype in front of the camera (`sampleBodies`, inside `reserve`, never
+  pooled), compiles both scenes, uploads every texture their materials hold,
+  draws one real frame, and puts everything back. Three things in it are
+  load-bearing. It compiles against `post.sceneTarget()`, because a
+  program's key carries its output colour space — linear into the post
+  target, sRGB onto the canvas — and the first version compiled all eight
+  for the canvas and then compiled them again in the fight. It leaves lights
+  alone, because the light count is in every lit key too. And the real frame
+  is there because a compiled program is not always a finished one: with
+  every program built and every texture uploaded, the first-contact frame was
+  still 0.7 s slower than the next under software rendering, and the frame
+  is what took that out. The other half of the rule: the muzzle flash used
+  to be built on the first shot, which is a compile mid-fight *and* a sprite
+  and a material minted out of the seeded stream at the trigger pull. Build
+  a thing with its owner, inside the owner's `reserve`, never on first use.
+  `nothing compiles at first contact` deploys, shows every archetype, fires,
+  throws and detonates, and requires zero new programs; it reports all eight
+  with the old boot compile put back.
+- **`auto` quality watches the whole run, pulls resolution before tiers, and
+  never goes back up.** It used to judge the first three seconds of a run —
+  an empty street before wave one, the cheapest the game ever is — and then
+  stop. A dozen hostiles is 555 draw calls against 421, and the high tier on
+  a 2x screen draws 1.75x resolution, which costs 2.4x the frame under
+  software rendering — so the fight is where a machine falls short, and the
+  old calibration had stopped looking by then. Now any three seconds of
+  unbroken play under 45 fps gives something back: in a fight, 15% of
+  resolution (`renderScale`, down to 70%), because a pixel ratio change moves
+  no shader; with nothing alive, a tier, because a tier change recompiles
+  every lit material and that stall belongs between waves. Wall clock, since
+  `dt` is clamped; and any gap over a quarter second (a pause, a hidden tab)
+  restarts the window rather than reading as a slow frame, which also means
+  the suite — a software frame takes a second or more — never trips it.
+  Never stepping back up is deliberate: a picture that see-saws between two
+  settings is worse than either. `auto quality keeps watching, and gives
+  back resolution before shaders` fakes the frame clock; it fails on the old
+  calibration and when the tier is allowed to change mid-fight.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -586,8 +683,9 @@ the stripes only form at a grazing angle. That last one is the expensive
 kind, and the only thing that caught it was the rule that a check is
 confirmed to fail against what it guards before it is kept. Two related
 traps came out of the same check. "Open" by the box list is not open: the
-sidewalks are a 28 cm visual apron outside `world.boxes`, so a spot clear of
-every box still has kerbs either side, and kerbs are rightly occluded. The
+sidewalks are a 28 cm kerb that every obstacle query skips, so a spot clear
+of every obstacle still has kerbs either side, and kerbs are rightly
+occluded. The
 check now hides every city mesh but the merged ground plane, so the frame is
 flat by construction. And a look bench that hides the city for one view has
 to put it back before it measures frame cost, or it measures an empty
@@ -609,6 +707,31 @@ its setup had a trap of its own once the stairs moved: the walk started 4 m
 out from the first tread, which on one deck put a streetlight between the
 player and the stairs. Start a walk where the thing being walked onto
 begins, not where a margin happens to land.
+
+A ninth, from the floors pass, in two halves. "On the street" was written
+into setups as a height — `feetY < 0.2`, `groundHeight(...) > 0.2` — and
+meant two different things: *on the road* (`__place`, the route check, which
+want level ground at both ends) and *on the ground rather than on a prop*
+(the ledge, wall and pull-up setups). Once the pavement held you up at
+0.28 m the second kind started refusing every approach from a pavement. They
+read 0.5 m now, which is above every floor and below every prop; the first
+kind was left alone, because the road is still what they mean. When a
+floor's height changes, grep the suite for both.
+
+The other half is how to tell a bot-run regression from noise, and it is
+cheap. Any change that perturbs one runtime draw — here, objective siting
+rejecting a different number of candidates — sends every later spawn, wave
+composition and pick down another path, and the scripted run diverges
+completely: seed 1 went from wave 5 at 185 s with 55 kills to wave 5 at
+240 s with 40, because its wave 4 rolled eight marksmen on perches the bot
+can neither reach nor often see. Before reading anything into that, put one
+extra `Math.random()` at the top of `startRun` on the *unchanged* code and
+run the same seeds. On seven seeds it swung 20260101 from wave 5 and 54
+kills to wave 4 and 39, and seed 7 from 52 kills to 69 — the same size as
+the change being judged. That is the noise floor; a regression has to clear
+it. And trace what the bot spent the slow wave on before concluding either
+way: the trace is what found a real (if harmless) economy change hiding in
+the same diff.
 
 ## Performance
 
@@ -650,6 +773,35 @@ real hardware the extra shadow pass is vertex work a GPU barely notices, and
 the half-resolution passes are fractions of a millisecond; software
 rendering makes both look expensive.
 
+They also all come from a pixel ratio of 1, because headless Chromium has
+one, and nobody playing on a laptop does. High draws at up to 1.75x, which
+on a 2x screen is 3.06x the pixels of every figure above, and the passes this
+repo has been adding — occlusion, bloom, two soft cascades, the window
+tracing — are all paid per pixel. Measured with `devicePixelRatio`
+overridden to 2, twelve alerted hostiles on the plaza, seed 1: 2,946 ms a
+frame becomes 7,066, with the same 555 draw calls and the same 1 ms of game
+step. To measure what a player actually gets, override it the same way
+(`Object.defineProperty(window, 'devicePixelRatio', ...)` before
+`applyQuality`).
+
+What the frame costs on the CPU side, the same twelve hostiles across the
+last five passes (median game step, draw calls, median time to *issue* the
+frame — what three spends in JS before the GPU sees any of it):
+
+| after | step | calls | issue |
+| --- | --- | --- | --- |
+| lighting + perches (#17) | 0.7 ms | 423 | 4.3 ms |
+| windows + stains (#18) | 0.7 ms | 423 | 4.5 ms |
+| hands (#19) | 0.8 ms | 421 | 4.0 ms |
+| motion (#20) | 1.1 ms | 555 | 4.7-6.8 ms |
+| floors | 1.0 ms | 555 | 4.7 ms |
+
+The motion pass is the one step in it: four more meshes a hostile, drawn in
+three passes. About 6 ms of CPU a frame leaves room on anything modern, and
+the software frame time did not move across any of the five, so when "it
+feels laggy" comes back from play the order to look in is pixels first,
+then stalls, then calls — which is the order this pass found them in.
+
 ## State
 
 **Where things stand.** This section describes what is on `main`, and there is
@@ -662,6 +814,96 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The loading pass is the eighth, and it came from play too: a better loading
+screen, or something to look at while the world builds. What there was to
+look at was the word LOADING, frozen, because boot never let the page draw.
+Measured on seed 1 under software rendering, boot was 17 s: 7.0 s painting
+the city's textures, 7.6 s compiling and warming shaders (the part real
+hardware does in a fraction of that), 1.6 s building the guns, and the rest
+small. Boot is staged now (invariant above), and the screen has four things
+on it: the stage and a weighted bar, the last few stages ticked off, a field
+note — twelve, each a real mechanic, cycling every six seconds — and a
+survey of the sector, drawn as a street grid from the constants before
+anything is built and filled in with buildings shaded by height, the
+perches and the insertion point once the city is laid out. A radar sweep
+and a shimmer on the bar are CSS on the compositor, so they keep moving
+through the long stages.
+
+When boot ends the progress gives way to DEPLOY and the best-score line in
+the same column, and the survey stays, because it is the sector you are
+about to drop into. Hiding the panel, the obvious thing, lifted everything
+under it by most of its height at the moment the player was reading it.
+
+Boot is no faster; it is 17 s in software and some seconds on real
+hardware, and this pass makes those seconds legible rather than shorter.
+The way to shorten them is the texture painting, which is pure CPU: painting
+the five facade styles in a worker, or caching the painted canvases between
+visits, is where the time is.
+
+Two checks, each confirmed to fail: `the loading screen moves, and the menu
+does not jump when it is done` (0 frames drawn across 18 stages with the
+yields taken out, and DEPLOY gone with the panel hidden) and `every city
+material survives the bake` (16 of 27 lost with the UUID key put back — the
+bug the staging itself exposed, invariant above).
+
+A trap for anyone looking at it: Playwright cannot photograph boot mid-stage.
+`page.screenshot` and `page.evaluate` both wait for the main thread, so a
+loop that tries to sample the loading screen gets the menu. The look was
+judged by booting, putting the panel back into its busy state and replaying
+a few stages by hand — the survey keeps what it drew.
+
+The responsiveness pass is the seventh, and it came from play as one
+sentence: the most recent version is starting to feel laggy. Nothing could
+be measured on the machine that said it, so it measured the five most recent
+versions against one fixed fight and found the CPU side flat (the table in
+Performance), the GPU side dominated by pixels the suite had never been
+measuring at, and two certain faults: `auto` had stopped looking before the
+first hostile arrived, and first contact compiled eight shaders. Both are
+invariants above now, each with a check confirmed to fail against the old
+code. What it costs: boot to the menu went from 15.5 s to 18 s under
+software rendering, over three boots each — the warm-up frame plus the
+compiles, which are the same compiles that used to land at first contact.
+
+What it does not do is make a frame cheaper. If a machine is short at the
+high tier's resolution floor, the next levers are the ones Performance
+already names: split the merged city per block, so the near cascade stops
+drawing the whole sector a second time, and instance hostiles per archetype
+and part, which is where the motion pass's extra calls went.
+
+The floors pass is the sixth, and it was item 1 of the list: the
+sidewalks were drawn and not stood on. It turned out to be four slabs, not
+one — the pavement apron (0.28 m) on every lot, the plaza (0.30), the rubble
+lots' slab (0.35) and the ruins' courtyard floor (0.45) — and none was in
+`world.boxes` or `world.solids`. Seed 1 has 47 of them: 36 aprons, the plaza,
+4 rubble slabs and 6 courtyards. `registerFloors` puts them in both, last
+(invariant above). Rendered before and after from the kerb, the difference is
+the whole point: before, a hostile on the pavement is cut off at the shin;
+after, it has boots and they are on the pavement.
+
+Everything that had been quietly assuming the ground is at y=0 came with it.
+The player is reset onto whatever is underfoot (the run starts on the
+plaza's 0.30 m slab, not under it); a step up moves the feet at once and
+takes the rise out of the eye height for the damp to hand back, so the view
+moves 0.044 m in its worst frame onto a kerb against 0.278 m; casings, blast
+debris and scorch marks land on the floor under them (`effects.groundAt`,
+asked once at spawn, never per frame); a drop floats over the floor where
+its hostile fell — but never a roof, because a marksman's drop has always
+landed at street level and that is half of what killing one pays; and an
+objective is sited on, and measures "street level" from, the floor under it.
+
+`the pavement is a floor you stand on, step onto and shoot` reads the merged
+city — every level face low enough to walk onto with room for a body on it,
+13,751 m² on seed 1 — and asks the footing what holds each up, then walks a
+road onto the pavement and shoots straight down at it. It was confirmed to
+fail three ways, breaking one reader at a time: floors never registered
+(17,434 m² held up by nothing), in the box list but not the raycast list
+(the shot stops at 0), and the step taken all at once (0.278 m in a frame).
+The layout check was re-measured once, with the old fingerprints written
+into it and reproduced over every box but the floors. Four checks had "on
+the street" written as a height in their setups and were corrected — the
+ninth testing trap above has both halves of that, including how the
+scripted run's swing on seed 1 was shown to be noise.
 
 The motion pass is the fifth, and it started from item 6 of the list — the
 hostiles walked on a sine wave — and found something worse underneath:
@@ -1348,17 +1590,15 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Make the sidewalks something you stand on.** Every lot carries a
-   28 cm concrete apron (`buildCity`, "sidewalks"), and none of them is in
-   `world.boxes`. Measured on seed 1: at all 36 points sampled on the
-   pavement ring between the buildings and the road, `groundHeight` is 0 —
-   so the player walks 28 cm inside the kerb and every hostile on a sidewalk
-   stands with its boots buried in it. It hides well at dusk and gets less
-   hidden the better the lighting gets: contact shading now draws a line
-   exactly where boots meet a surface. Registering them is a layout change
-   (every seed's fingerprint moves), and the nav bake and the step height
-   both need to agree that a 28 cm kerb is a step rather than a wall —
-   `STEP` is 0.55, so it is, but measure it.
+1. **Seat the props that stand on a floor.** Barricades, drums, terrace
+   crates and the containers in a ruin are all built from y=0, so on a lot
+   they are sunk 0.28-0.45 m into the floor, and their colliders' tops are
+   measured from the street rather than from the slab. Nothing walks through
+   anything — the collider still matches the visible top — but a barricade
+   on the pavement stands 28 cm shorter than one in the road, and its
+   foot is buried. Lifting each by `groundHeight` at its footprint is a
+   layout change (every top moves), and the stairs that end at a terrace's
+   deck have to move with it.
 2. **Split the merged city per block.** The near shadow cascade covers 26 m
    and draws all 360k triangles of the sector into it, because a merged mesh
    spanning the city cannot be culled; so does the main camera. Per-block

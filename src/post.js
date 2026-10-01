@@ -378,6 +378,19 @@ export class Post {
   }
 
   /**
+   * Where the scene is drawn, so its shaders can be compiled ahead of time
+   * against the right thing: a program's key includes its output colour
+   * space, which is linear into this target and sRGB onto the canvas, and a
+   * program compiled for the wrong one is simply compiled again on first use.
+   * Null when post is off and the scene is drawn straight to the canvas.
+   */
+  sceneTarget() {
+    if (!this.enabled) return null;
+    if (!this.targets) this._allocate();
+    return this.targets.scene;
+  }
+
+  /**
    * Targets are allocated at first draw and again after every resize or tier
    * change, which is to say in the middle of play, where the seeded stream is
    * deciding spawn points and spread. Each target mints a texture and each

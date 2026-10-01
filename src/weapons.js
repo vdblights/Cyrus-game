@@ -500,6 +500,17 @@ export class WeaponSystem {
     this.root = new THREE.Group();
     viewScene.add(this.root);
 
+    // Built here rather than on the first shot, which is where it used to be:
+    // that compiled its shader in the middle of the first fight and minted
+    // its UUIDs out of the seeded stream the moment the trigger was pulled.
+    this._flashSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: game.effects.spriteMaps.flash,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+    }));
+    this._flashSprite.visible = false;
+    this.root.add(this._flashSprite);
+    this._flashLife = 0;
+
     this.weapons = WEAPON_DEFS.map((def) => {
       const { model, muzzle } = def.build();
       consolidate(model);
@@ -713,16 +724,6 @@ export class WeaponSystem {
   }
 
   flash(def) {
-    if (!this._flashSprite) {
-      const spr = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: this.game.effects.spriteMaps.flash,
-        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-      }));
-      spr.visible = false;
-      this.root.add(spr);
-      this._flashSprite = spr;
-      this._flashLife = 0;
-    }
     const w = this.current;
     w.muzzle.getWorldPosition(this._flashSprite.position);
     this.root.worldToLocal(this._flashSprite.position);

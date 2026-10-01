@@ -22,6 +22,14 @@ vendored in `vendor/`, so it runs fully offline.
 Add `?seed=12345` to the URL to replay an exact city; the seed for the current
 one is printed under the menu.
 
+The world is built in the browser on every load — every texture is painted,
+the city laid out and the shaders compiled — which takes a few seconds. The
+loading screen says which part it is on, with a field note to read, and
+draws a survey of the sector as it goes: the street grid first, then the
+buildings and the rooftops a marksman can take once the city is laid out,
+and where you go in. The survey stays beside DEPLOY afterwards, so you can
+see the sector before you drop into it.
+
 ### One-file build
 
 ```bash
@@ -384,10 +392,17 @@ it is the first thing the quality tiers drop:
 A machine that cannot afford shadows cannot afford a bloom either, so Low
 drops the whole post chain and hands tone mapping back to the renderer.
 
-The default is **Auto**: it watches the first few seconds of a run and steps
-down a tier if the frame rate is under 40, telling you when it does. Picking a
-tier yourself in the pause menu turns that off — an explicit choice is never
-overridden.
+The default is **Auto**, and it keeps watching for as long as you play. Over
+any three seconds under 45 frames a second it gives something back and tells
+you what: in a fight, resolution, 15% at a time down to 70% of the tier's,
+because that costs no stall; between waves, a whole tier, because changing
+tier rebuilds the shaders and that would hitch mid-fight. It never steps back
+up. Picking a tier yourself in the pause menu turns all of it off — an
+explicit choice is never overridden.
+
+Every shader a run needs is built, and every texture uploaded, behind the
+loading screen, so the first hostile you see and the first shot you fire do
+not stall the frame they happen in.
 
 ## Vertical ground
 
@@ -408,6 +423,13 @@ still be shot from.
 The same rules apply to everyone: hostiles climb, stand on, and fall off the
 same surfaces, and a melee rusher cannot reach you across a height gap. Drops
 of more than about four metres hurt, and a long enough fall will kill you.
+
+The ground you see is the ground you stand on. The pavement round every block
+is a 28 cm kerb above the road, and the plaza, the rubble lots and the ruins'
+courtyards are slabs of their own; you step up onto them, hostiles stand on
+them rather than in them, and a shot at the pavement stops at the pavement.
+Stepping up a kerb or a stair moves your feet at once and eases the view up
+after them, so a street crossing is not a jolt.
 
 ## How it is put together
 

@@ -1,10 +1,11 @@
 import * as THREE from 'three';
-import { buildCity } from './city.js';
+import { buildCity, CITY_PAINT } from './city.js';
+import { LoadingScreen, yieldToPaint } from './loading.js';
 import { Player, Input } from './player.js';
 import { WeaponSystem, MELEE_RANGE, MELEE_DAMAGE } from './weapons.js';
 import { GrenadeSystem, FUSE, BLAST_RADIUS, BLAST_DAMAGE } from './grenades.js';
 import { Effects } from './effects.js';
-import { Enemy, ENEMY_TYPES, primeEnemyKits } from './enemies.js';
+import { Enemy, ENEMY_TYPES, primeEnemyKits, sampleBodies } from './enemies.js';
 import { ObjectiveSystem, objectiveForWave } from './objectives.js';
 import { HUD } from './hud.js';
 import { Post } from './post.js';
@@ -12,7 +13,7 @@ import { audio } from './audio.js';
 import * as TEX from './textures.js';
 import { TILE } from './textures.js';
 import { chamferGeo, mergeIntoOne } from './shapes.js';
-import { randRange } from './world.js';
+import { randRange, SUPPORT_RADIUS } from './world.js';
 import { NavGrid } from './nav.js';
 import { installAtmosphere, skyMaterial, environmentFrom, SUN_DIR, SUN_COLOR } from './atmosphere.js';
 import { installShadowCascade, placeShadow, sizeShadow, SUN_DISTANCE } from './shadows.js';
@@ -21,6 +22,20 @@ import { initRandom, getSeed, reserve } from './rng.js';
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
 const SIZE = new THREE.Vector2();
+
+/** Where every run starts: the plaza near the middle of the sector. */
+const INSERTION = { x: -17, z: 24 };
+
+/** Every material slot that can hold a texture boot should upload. */
+const TEXTURE_SLOTS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap',
+  'aoMap', 'alphaMap', 'bumpMap', 'lightMap'];
+
+/** `auto` quality: judged over windows of this many seconds of play… */
+const AUTO_WINDOW = 3;
+/** …against this frame rate… */
+const AUTO_FPS = 45;
+/** …and never drawing at less than this fraction of the tier's resolution. */
+const AUTO_MIN_SCALE = 0.7;
 const RAY = new THREE.Raycaster();
 const SHADOW_AT = new THREE.Vector3();
 const SHADOW_AHEAD = new THREE.Vector3();
@@ -65,52 +80,123 @@ class Game {
 
     this.post = new Post(this.renderer);
 
-    // Everything from here to the city is look, not layout. `reserve` rewinds
-    // the seeded stream afterwards so the UUIDs three mints per material and
-    // texture cannot shift what gets built — see `rng.js`.
-    reserve(() => {
-      this.setupSky();
-      this.setupEnvironment();
-      // three builds the quad every Sprite shares the first time any Sprite is
-      // constructed, and pays for its UUIDs out of the seeded stream. That
-      // used to be the sun's glow, here, inside this reserve. With the sun now
-      // drawn by the sky, the first Sprite was a fire barrel's flame halfway
-      // through laying out the city, and its one-off bill moved every prop
-      // after it: seed 1 laid out 308 boxes instead of 332. So build the
-      // shared quad here, where it has always been built, and costs nothing.
-      new THREE.Sprite();
-    });
-    this.setupLights();
-    // The second cascade is a light the layout has never paid for: it is new,
-    // it is minted before the city, and outside a reserve its UUID would hand
-    // every seed a different city.
-    reserve(() => this.setupShadowCascade());
+    this.state = 'loading';
+    this.loading = new LoadingScreen(getSeed());
+    // Resolves when the menu is up. The checks wait on `state` instead, but a
+    // caller that wants the game built can await this.
+    this.booted = this.boot().catch((err) => { this.loading.fail(err); throw err; });
+  }
 
-    const city = buildCity(this.scene);
-    this.world = city.world;
-    this.city = city.group;          // the merged, baked meshes checks read
-    this.fireBarrels = city.fireBarrels;
-    this.perches = city.perches;
-    this.batches = city.batches;
-    this.streets = city.streets;     // where the carriageways are, as built
-    // The shapes the props are cut from, kept so a check can measure them:
-    // a facet wound the wrong way round does not error, it vanishes, and the
-    // merged city is too late to tell which prop it vanished from.
-    this.propShapes = city.shapes;
+  /**
+   * Everything that takes time, as named stages with a chance to paint between
+   * each, so the loading screen can say what is happening and keep moving.
+   *
+   * It used to be the body of the constructor: one task, seventeen seconds
+   * long under software rendering, during which the page could not draw a
+   * single frame. The order is unchanged, and so is the seeded stream — every
+   * stage that mints anything three gives a UUID either runs inside `reserve`
+   * as it always did or is the city itself, and nothing that runs while boot
+   * is waiting draws on `Math.random` (see loading.js). The layout check and
+   * an identical hash over every city texture are what say so.
+   *
+   * Weights are each stage's share of boot in tenths of a second. The CPU
+   * stages — painting, laying out, building the guns — are as measured on
+   * seed 1. The three GPU stages are not, because software rendering inflates
+   * them about a hundredfold (5.6 s for the warm-up frame alone), and a bar
+   * weighted by that would sit at three quarters on a real machine and then
+   * jump; theirs are an estimate of what a real GPU and driver spend.
+   */
+  async boot() {
+    // kept, so a check can ask whether every one of them survived the bake
+    const painted = this.paintedMaterials = {};
+    let city = null;
+    const plan = [
+      ['Lighting the sky', 3, () => {
+        // Everything from here to the city is look, not layout. `reserve`
+        // rewinds the seeded stream afterwards so the UUIDs three mints per
+        // material and texture cannot shift what gets built — see `rng.js`.
+        reserve(() => {
+          this.setupSky();
+          this.setupEnvironment();
+          // three builds the quad every Sprite shares the first time any
+          // Sprite is constructed, and pays for its UUIDs out of the seeded
+          // stream. That used to be the sun's glow, here, inside this
+          // reserve. With the sun now drawn by the sky, the first Sprite was
+          // a fire barrel's flame halfway through laying out the city, and
+          // its one-off bill moved every prop after it: seed 1 laid out 308
+          // boxes instead of 332. So build the shared quad here, where it has
+          // always been built, and costs nothing.
+          new THREE.Sprite();
+        });
+        this.setupLights();
+        // The second cascade is a light the layout has never paid for: it is
+        // new, it is minted before the city, and outside a reserve its UUID
+        // would hand every seed a different city.
+        reserve(() => this.setupShadowCascade());
+      }],
+      ...CITY_PAINT.map((step) => [step.label, step.weight, () => reserve(() => step.run(painted))]),
+      ['Raising the city', 5, () => {
+        city = buildCity(this.scene, painted);
+        this.world = city.world;
+        this.city = city.group;          // the merged, baked meshes checks read
+        this.fireBarrels = city.fireBarrels;
+        this.perches = city.perches;
+        this.batches = city.batches;
+        this.streets = city.streets;     // where the carriageways are, as built
+        // The shapes the props are cut from, kept so a check can measure
+        // them: a facet wound the wrong way round does not error, it
+        // vanishes, and the merged city is too late to tell which prop it
+        // vanished from.
+        this.propShapes = city.shapes;
 
-    // Where hostiles can walk, and which way is toward you from anywhere in
-    // the sector. Built once the city's boxes are final, and out of typed
-    // arrays only, so it costs the seeded stream nothing — see nav.js.
-    this.nav = new NavGrid(this.world);
+        // Where hostiles can walk, and which way is toward you from anywhere
+        // in the sector. Built once the city's boxes are final, and out of
+        // typed arrays only, so it costs the seeded stream nothing — see
+        // nav.js.
+        this.nav = new NavGrid(this.world);
+        this.loading.survey(this.world, this.perches, INSERTION);
+      }],
+      ['Loading the debris', 1, () => {
+        this.effects = reserve(() => new Effects(this.scene));
+        this.effects.groundAt = (x, z, y) => this.world.groundHeight(x, z, SUPPORT_RADIUS, y);
+        this.player = new Player(this.camera, this.world);
+      }],
+      ['Arming you', 18, () => {
+        this.weapons = reserve(() => new WeaponSystem(this.viewScene, this));
+        this.input = new Input(this.canvas);
+        this.hud = new HUD();
+        this.grenades = new GrenadeSystem(this.scene, this);
+        this.objectives = new ObjectiveSystem(this.scene, this);
+      }],
+      ['Kitting out the hostiles', 4, () => {
+        reserve(() => {
+          this.setupPickupPrototypes();
+          this.setupDust();
+          // Every archetype's meshes and materials, built now rather than
+          // when the first of one spawns: it is a texture pass either way,
+          // and doing it here puts it in the loading screen instead of in a
+          // firefight.
+          primeEnemyKits();
+        });
+        this.settle();
+      }],
+      ...this.precompileStages(),
+    ];
 
-    this.effects = reserve(() => new Effects(this.scene));
-    this.player = new Player(this.camera, this.world);
-    this.weapons = reserve(() => new WeaponSystem(this.viewScene, this));
-    this.input = new Input(this.canvas);
-    this.hud = new HUD();
+    const total = plan.reduce((sum, [, weight]) => sum + weight, 0);
+    for (const [label, weight, run] of plan) {
+      this.loading.stage(label, weight, total);
+      await yieldToPaint();
+      run();
+    }
 
-    this.grenades = new GrenadeSystem(this.scene, this);
-    this.objectives = new ObjectiveSystem(this.scene, this);
+    this.loading.finish();
+    this.state = 'menu';
+    this.renderer.setAnimationLoop(() => this.frame());
+  }
+
+  /** The run-independent state, settings and UI, once the world exists. */
+  settle() {
     this.nades = 3;
     this.maxNades = 5;
     this.fuseLength = FUSE;
@@ -120,16 +206,7 @@ class Game {
     this.enemyTypes = ENEMY_TYPES;   // so a check can walk every archetype
     this.pool = {};
     this.pickups = [];
-    reserve(() => {
-      this.setupPickupPrototypes();
-      this.setupDust();
-      // Every archetype's meshes and materials, built now rather than when
-      // the first of one spawns: it is a texture pass either way, and doing
-      // it here puts it in the loading screen instead of in a firefight.
-      primeEnemyKits();
-    });
 
-    this.state = 'menu';
     this.time = 0;
     this.score = 0;
     this.wave = 0;
@@ -149,6 +226,7 @@ class Game {
     // an embedded page cannot always get pointer lock; the HUD offers a way out
     this.embedded = window.self !== window.top;
     this.settings = this.loadSettings();
+    this.renderScale = 1;      // resolution `auto` has given back, 1 = the tier's own
     this.records = this.loadRecords();
     this.collectMaterials();
     this.bindUI();
@@ -156,12 +234,78 @@ class Game {
     this.resize();
 
     this.clock = new THREE.Clock();
-    this.renderer.compile(this.scene, this.camera);
-    document.getElementById('loading').classList.add('hidden');
-    document.getElementById('start-btn').classList.remove('hidden');
     const seedEl = document.getElementById('seed');
     if (seedEl) seedEl.textContent = 'SECTOR SEED ' + getSeed();
-    this.renderer.setAnimationLoop(() => this.frame());
+  }
+
+  /**
+   * Build every shader a run will need while the loading screen is still up.
+   *
+   * `renderer.compile` only compiles what is visible, and almost nothing a
+   * fight draws is visible at boot: no hostile exists yet, and the pooled
+   * tracers, casings, sprites and debris all stay hidden until used. Each was
+   * compiled on the first frame it appeared instead — five programs the
+   * first time hostiles came into view and three on the first shot, measured
+   * on seed 1, which is a stall at exactly the moment of first contact. So
+   * for one compile every hidden thing is shown, one body of every archetype
+   * stands in the scene, and then all of it is put back. Lights are left as
+   * they are: how many there are is part of every lit program's key, so
+   * showing a hidden one would compile programs nothing ever uses. The same
+   * is true of the target, which is the other half of the key, and the half
+   * that made the first version of this compile all eight a second time.
+   * Every texture those materials hold is uploaded while it is at it, and
+   * then all of it is drawn once. Three stages of boot, so the loading screen
+   * can move between them; nothing draws in between, so what is shown stays
+   * shown until the last of them puts it back.
+   */
+  precompileStages() {
+    let bodies, shown, unculled;
+    return [
+      ['Compiling shaders', 8, () => {
+        bodies = sampleBodies();
+        this.camera.getWorldDirection(V1);
+        bodies.position.copy(this.camera.position).addScaledVector(V1, 6).setY(0);
+        this.scene.add(bodies);
+        shown = [];
+        unculled = [];
+        for (const scene of [this.scene, this.viewScene]) {
+          scene.traverse((o) => { if (!o.visible && !o.isLight) { shown.push(o); o.visible = true; } });
+        }
+        for (const o of [...shown, ...bodies.children]) {
+          o.traverse((c) => { if (c.frustumCulled) { c.frustumCulled = false; unculled.push(c); } });
+        }
+        // against the target the scene is really drawn into, or every program
+        // is keyed for the canvas and built a second time on first use
+        this.renderer.setRenderTarget(this.post.sceneTarget());
+        this.renderer.compile(this.scene, this.camera);
+        this.renderer.compile(this.viewScene, this.viewCamera);
+        this.renderer.setRenderTarget(null);
+      }],
+      ['Uploading textures', 2, () => {
+        // A texture goes to the GPU on the first frame that draws it, which
+        // for a hostile's 1024-pixel kit maps was the frame it first came
+        // into view.
+        const textures = new Set();
+        for (const scene of [this.scene, this.viewScene]) {
+          scene.traverse((o) => {
+            for (const m of [].concat(o.material || [])) {
+              for (const k of TEXTURE_SLOTS) if (m[k]?.isTexture) textures.add(m[k]);
+            }
+          });
+        }
+        for (const t of textures) this.renderer.initTexture(t);
+      }],
+      ['Warming up', 4, () => {
+        // And one real frame of all of it, behind the loading screen: a
+        // compiled program is not always a finished one, and the work some
+        // drivers leave for its first draw is better spent here than at first
+        // contact.
+        this.render();
+        for (const o of shown) o.visible = false;
+        for (const o of unculled) o.frustumCulled = true;
+        this.scene.remove(bodies);
+      }],
+    ];
   }
 
   /** Restart the random stream — used by tests to pin a run exactly. */
@@ -398,7 +542,10 @@ class Game {
 
     this.renderer.shadowMap.enabled = cfg.shadows;
     this.renderer.shadowMap.type = cfg.soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, cfg.pixel));
+    // an explicit tier is drawn at its own resolution; only `auto` scales it
+    if (tier !== 'auto') this.renderScale = 1;
+    this.tierPixel = cfg.pixel;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, cfg.pixel) * this.renderScale);
 
     sizeShadow(this.sun, cfg.span, cfg.shadowSize);
     this.shadowSpan = cfg.span;
@@ -417,30 +564,64 @@ class Game {
   }
 
   /**
-   * On 'auto', watch the first seconds of play and step down if the machine
-   * is struggling. An explicit choice is never overridden.
+   * On 'auto', keep watching the frame rate for as long as you play, and give
+   * some of the picture back when it falls short.
+   *
+   * It used to watch the first three seconds of a run and then stop for good
+   * — three seconds of an empty street before wave one, the cheapest the game
+   * ever is to draw. A dozen hostiles is a third more draw calls on top of
+   * that (421 against 555, measured on seed 1), so a machine that held its
+   * frame rate on the empty street could fall well short of it in the fight
+   * and never be asked again.
+   *
+   * Two levers, in order. Resolution first: it moves no shader, so it can be
+   * pulled mid-fight without a stall, and fill is what the expensive passes —
+   * occlusion, bloom, the window tracing, soft shadows over two cascades —
+   * scale with. The tier only while nothing is alive, because a tier change
+   * recompiles every lit material and that is a stall you would feel in a
+   * fight. Never back up: a picture that see-saws between two settings is
+   * worse than either. An explicit choice is never overridden.
+   *
+   * Wall clock, not game time: the loop's dt is clamped, so a machine at
+   * 15 fps would otherwise look like 30. And only over unbroken play: a gap —
+   * a pause, a hidden tab, a hitch — starts the window again rather than
+   * reading as one very long frame.
    */
   autoCalibrate() {
-    if (this.settings.quality !== 'auto' || this.autoDone) return;
-    // wall clock, not game time: the loop's dt is clamped, so a machine at
-    // 15 fps would otherwise look like 30 and never step down
+    if (this.settings.quality !== 'auto') return;
     const now = performance.now() / 1000;
-    if (!this.autoStart) { this.autoStart = now; this.autoFrames = 0; return; }
+    if (!this.autoStart || now - this.autoLast > 0.25) {
+      this.autoStart = this.autoLast = now;
+      this.autoFrames = 0;
+      return;
+    }
+    this.autoLast = now;
     this.autoFrames++;
     const elapsed = now - this.autoStart;
-    if (elapsed < 3) return;
+    if (elapsed < AUTO_WINDOW) return;
 
     const fps = this.autoFrames / elapsed;
+    this.autoStart = now;
+    this.autoFrames = 0;
+    if (fps >= AUTO_FPS) return;
+
     const order = ['high', 'medium', 'low'];
     const at = order.indexOf(this.activeTier || 'high');
-    if (fps < 40 && at < order.length - 1) {
+    if (this.aliveCount === 0 && at < order.length - 1) {
       this.autoTier = order[at + 1];
       this.applyQuality();
       this.hud.toast('GRAPHICS: ' + this.autoTier.toUpperCase() + ` (${Math.round(fps)} FPS)`);
-      this.autoStart = 0;
-    } else {
-      this.autoDone = true;
+    } else if (this.renderScale > AUTO_MIN_SCALE + 1e-3) {
+      this.renderScale = Math.max(AUTO_MIN_SCALE, this.renderScale - 0.15);
+      this.applyPixelRatio();
+      this.hud.toast(`GRAPHICS: RESOLUTION ${Math.round(this.renderScale * 100)}% (${Math.round(fps)} FPS)`);
     }
+  }
+
+  /** The tier's pixel ratio, capped by the screen's, scaled by `auto`. */
+  applyPixelRatio() {
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.tierPixel) * this.renderScale);
+    this.resize();
   }
 
   saveSettings() {
@@ -581,7 +762,7 @@ class Game {
     this.cookStart = -1;
     this.nextAmbience = 10;
 
-    this.player.reset(-17, 24);            // the plaza near the middle of the map
+    this.player.reset(INSERTION.x, INSERTION.z);
     this.player.onStep = () => audio.step(this.player.crouching);
     this.player.onMantle = () => { audio.mantle(); this.player.addShake(0.08); };
     this.player.onFallDamage = (amount) => {
@@ -1060,18 +1241,23 @@ class Game {
     else if (this.player.health < 45 && r < 0.66) kind = 'health';
     if (!kind) return;
 
+    // It floats over the floor under where the hostile fell: the pavement or
+    // a ruin's courtyard, not the street beneath them. Never a roof, though —
+    // a marksman's drop has always landed at street level under its perch,
+    // and that is half of what makes killing one pay.
+    const floor = this.world.groundHeight(pos.x, pos.z, SUPPORT_RADIUS, 0.5);
     // a clone shares the geometry and the materials; only the nodes are new
     const mesh = this.pickupProto[kind].clone();
-    mesh.position.set(pos.x, 0.45, pos.z);
+    mesh.position.set(pos.x, floor + 0.45, pos.z);
     this.scene.add(mesh);
-    this.pickups.push({ kind, mesh, active: true, born: this.time });
+    this.pickups.push({ kind, mesh, active: true, born: this.time, floor });
   }
 
   updatePickups(dt) {
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const p = this.pickups[i];
       p.mesh.rotation.y += dt * 1.6;
-      p.mesh.position.y = 0.42 + Math.sin((this.time + p.born) * 2.4) * 0.07;
+      p.mesh.position.y = p.floor + 0.42 + Math.sin((this.time + p.born) * 2.4) * 0.07;
 
       const dx = p.mesh.position.x - this.player.position.x;
       const dz = p.mesh.position.z - this.player.position.z;

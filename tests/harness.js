@@ -74,6 +74,20 @@ export async function waitForBoot(page, { freeze = true, seed } = {}) {
 export async function installHelpers(page) {
   await page.addInitScript(() => {
     /**
+     * Frames the page got to draw while the game was booting: from the moment
+     * `window.__game` exists, which is the first stage of boot, to the menu.
+     * Boot that never yields draws none of them.
+     */
+    window.__bootFrames = 0;
+    const count = () => {
+      const g = window.__game;
+      if (g && g.state !== 'loading') return;
+      if (g) window.__bootFrames++;
+      requestAnimationFrame(count);
+    };
+    requestAnimationFrame(count);
+
+    /**
      * A hostile and the player in each other's sight. In a dense city a random
      * pair often has a wall between them, so pick a spot and a heading that
      * are verified clear rather than assuming.

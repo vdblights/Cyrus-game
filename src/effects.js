@@ -11,6 +11,13 @@ export class Effects {
   constructor(scene) {
     this.scene = scene;
     this.time = 0;
+    /**
+     * Height of the floor under (x, z) for something falling from `y`. The
+     * game points this at the world once there is one; until then the floor
+     * is the street. Asked once per casing, chunk or scorch as it is spawned,
+     * never per frame — they travel a metre or two.
+     */
+    this.groundAt = (x, z, y) => 0;
 
     // ---- tracers -------------------------------------------------------
     this.tracers = [];
@@ -69,7 +76,7 @@ export class Effects {
       const m = new THREE.Mesh(caseGeo, brass);
       m.visible = false;
       scene.add(m);
-      this.casings.push({ mesh: m, life: 0, vel: new THREE.Vector3(), spin: new THREE.Vector3() });
+      this.casings.push({ mesh: m, life: 0, floor: 0, vel: new THREE.Vector3(), spin: new THREE.Vector3() });
     }
 
     // ---- muzzle + blast lights ------------------------------------------
@@ -89,7 +96,7 @@ export class Effects {
       const m = new THREE.Mesh(chunk, rubble);
       m.visible = false;
       scene.add(m);
-      this.debris.push({ mesh: m, life: 0, vel: new THREE.Vector3(), spin: new THREE.Vector3() });
+      this.debris.push({ mesh: m, life: 0, floor: 0, vel: new THREE.Vector3(), spin: new THREE.Vector3() });
     }
   }
 
@@ -171,6 +178,7 @@ export class Effects {
       this._sprite(this.spriteMaps.smoke, V, 1.2, 0.9, null, 2.4, 0.3);
     }
 
+    const floor = this.groundAt(point.x, point.z, point.y + 0.3);
     for (let i = 0; i < 10; i++) {
       const d = this.debris.find((x) => x.life <= 0);
       if (!d) break;
@@ -180,11 +188,12 @@ export class Effects {
       d.vel.set((Math.random() - 0.5) * 16, 4 + Math.random() * 9, (Math.random() - 0.5) * 16);
       d.spin.set(Math.random() * 22, Math.random() * 22, Math.random() * 22);
       d.life = 1.6 + Math.random();
+      d.floor = floor;
     }
 
     // scorch mark
     const dec = this.decals[this.decalIdx = (this.decalIdx + 1) % this.decals.length];
-    dec.position.copy(point).setY(0.02);
+    dec.position.copy(point).setY(floor + 0.02);
     dec.rotation.set(-Math.PI / 2, 0, Math.random() * 3);
     dec.scale.setScalar(14);
     dec.visible = true;
@@ -221,6 +230,7 @@ export class Effects {
       .add(new THREE.Vector3((Math.random() - 0.5) * 0.6, 1.8 + Math.random(), (Math.random() - 0.5) * 0.6));
     c.spin.set(Math.random() * 20, Math.random() * 20, Math.random() * 20);
     c.life = 1.6;
+    c.floor = this.groundAt(worldPos.x, worldPos.z, worldPos.y);
   }
 
   update(dt) {
@@ -253,8 +263,8 @@ export class Effects {
       c.mesh.position.addScaledVector(c.vel, dt);
       c.mesh.rotation.x += c.spin.x * dt;
       c.mesh.rotation.z += c.spin.z * dt;
-      if (c.mesh.position.y < 0.03) {
-        c.mesh.position.y = 0.03;
+      if (c.mesh.position.y < c.floor + 0.03) {
+        c.mesh.position.y = c.floor + 0.03;
         c.vel.set(c.vel.x * 0.4, Math.abs(c.vel.y) * 0.25, c.vel.z * 0.4);
         c.spin.multiplyScalar(0.4);
       }
@@ -268,8 +278,8 @@ export class Effects {
       d.mesh.position.addScaledVector(d.vel, dt);
       d.mesh.rotation.x += d.spin.x * dt;
       d.mesh.rotation.y += d.spin.y * dt;
-      if (d.mesh.position.y < 0.06) {
-        d.mesh.position.y = 0.06;
+      if (d.mesh.position.y < d.floor + 0.06) {
+        d.mesh.position.y = d.floor + 0.06;
         d.vel.set(d.vel.x * 0.45, Math.abs(d.vel.y) * 0.3, d.vel.z * 0.45);
         d.spin.multiplyScalar(0.5);
       }
