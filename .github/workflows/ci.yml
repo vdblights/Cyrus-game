@@ -15,10 +15,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Every check boots the game afresh, and under software rendering a boot is
+  # most of a check, so one job running all of them outgrew its time limit
+  # (twenty minutes, every run cancelled). Four shards, dealt round-robin by
+  # `--shard`, each a quarter of the suite.
   test:
-    name: checks
+    name: checks ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +60,28 @@ jobs:
 
       # The runner has no GPU; the harness already asks for SwiftShader.
       - name: Run checks
-        run: npm test
+        run: npm test -- --shard=${{ matrix.shard }}/4
+
+  # The one-file build needs no browser, and only a green suite is worth
+  # handing out as a playable copy.
+  build:
+    name: build
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
 
       - name: Build the one-file copy
         run: npm run build

@@ -402,6 +402,22 @@ kbd {
 }
 .seed { font-size: 11px; letter-spacing: 0.22em; color: rgba(255, 220, 180, 0.3); margin-top: 18px; }
 .hint { font-size: 12px; color: rgba(255, 220, 180, 0.4); margin-top: 16px; }
+.gpu-note {
+  max-width: 460px; margin: 12px auto 0; font-size: 12px; line-height: 1.5;
+  color: var(--red);
+}
+
+/* the frame-rate readout: above every overlay, never in the way of a click */
+#perf {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 50; pointer-events: none;
+  padding: 6px 10px; border-radius: 3px;
+  background: rgba(10, 8, 6, 0.72);
+  font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace;
+  color: rgba(255, 230, 200, 0.85); text-align: center; white-space: nowrap;
+}
+#perf b { color: #fff; font-size: 13px; }
+#perf i { color: var(--red); font-style: normal; }
 
 .settings { margin: 24px 0; font-size: 13px; color: rgba(255, 220, 180, 0.7); }
 .settings label { display: block; margin: 12px 0; }
