@@ -467,6 +467,49 @@ These each cost real debugging time. Changing them needs a reason.
   testing note about hardcoded aim heights from the other side: baking the
   offsets in put every part at the feet, and turned the headshot check into a
   leg shot that quietly still passed the "did damage" half.
+- **Every shader is built before the first fight, and nothing is built
+  lazily in one.** `renderer.compile` only compiles what is visible, and at
+  boot that was the city: every hostile, every pooled tracer, casing and
+  sprite, and the muzzle flash compiled on the first frame that drew them —
+  five programs at first sight of a hostile and three on the first shot,
+  measured on seed 1, a stall at exactly the moment of first contact.
+  `Game.precompile` shows every hidden thing, stands one body of each
+  archetype in front of the camera (`sampleBodies`, inside `reserve`, never
+  pooled), compiles both scenes, uploads every texture their materials hold,
+  draws one real frame, and puts everything back. Three things in it are
+  load-bearing. It compiles against `post.sceneTarget()`, because a
+  program's key carries its output colour space — linear into the post
+  target, sRGB onto the canvas — and the first version compiled all eight
+  for the canvas and then compiled them again in the fight. It leaves lights
+  alone, because the light count is in every lit key too. And the real frame
+  is there because a compiled program is not always a finished one: with
+  every program built and every texture uploaded, the first-contact frame was
+  still 0.7 s slower than the next under software rendering, and the frame
+  is what took that out. The other half of the rule: the muzzle flash used
+  to be built on the first shot, which is a compile mid-fight *and* a sprite
+  and a material minted out of the seeded stream at the trigger pull. Build
+  a thing with its owner, inside the owner's `reserve`, never on first use.
+  `nothing compiles at first contact` deploys, shows every archetype, fires,
+  throws and detonates, and requires zero new programs; it reports all eight
+  with the old boot compile put back.
+- **`auto` quality watches the whole run, pulls resolution before tiers, and
+  never goes back up.** It used to judge the first three seconds of a run —
+  an empty street before wave one, the cheapest the game ever is — and then
+  stop. A dozen hostiles is 555 draw calls against 421, and the high tier on
+  a 2x screen draws 1.75x resolution, which costs 2.4x the frame under
+  software rendering — so the fight is where a machine falls short, and the
+  old calibration had stopped looking by then. Now any three seconds of
+  unbroken play under 45 fps gives something back: in a fight, 15% of
+  resolution (`renderScale`, down to 70%), because a pixel ratio change moves
+  no shader; with nothing alive, a tier, because a tier change recompiles
+  every lit material and that stall belongs between waves. Wall clock, since
+  `dt` is clamped; and any gap over a quarter second (a pause, a hidden tab)
+  restarts the window rather than reading as a slow frame, which also means
+  the suite — a software frame takes a second or more — never trips it.
+  Never stepping back up is deliberate: a picture that see-saws between two
+  settings is worse than either. `auto quality keeps watching, and gives
+  back resolution before shaders` fakes the frame clock; it fails on the old
+  calibration and when the tier is allowed to change mid-fight.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -697,6 +740,35 @@ real hardware the extra shadow pass is vertex work a GPU barely notices, and
 the half-resolution passes are fractions of a millisecond; software
 rendering makes both look expensive.
 
+They also all come from a pixel ratio of 1, because headless Chromium has
+one, and nobody playing on a laptop does. High draws at up to 1.75x, which
+on a 2x screen is 3.06x the pixels of every figure above, and the passes this
+repo has been adding — occlusion, bloom, two soft cascades, the window
+tracing — are all paid per pixel. Measured with `devicePixelRatio`
+overridden to 2, twelve alerted hostiles on the plaza, seed 1: 2,946 ms a
+frame becomes 7,066, with the same 555 draw calls and the same 1 ms of game
+step. To measure what a player actually gets, override it the same way
+(`Object.defineProperty(window, 'devicePixelRatio', ...)` before
+`applyQuality`).
+
+What the frame costs on the CPU side, the same twelve hostiles across the
+last five passes (median game step, draw calls, median time to *issue* the
+frame — what three spends in JS before the GPU sees any of it):
+
+| after | step | calls | issue |
+| --- | --- | --- | --- |
+| lighting + perches (#17) | 0.7 ms | 423 | 4.3 ms |
+| windows + stains (#18) | 0.7 ms | 423 | 4.5 ms |
+| hands (#19) | 0.8 ms | 421 | 4.0 ms |
+| motion (#20) | 1.1 ms | 555 | 4.7-6.8 ms |
+| floors | 1.0 ms | 555 | 4.7 ms |
+
+The motion pass is the one step in it: four more meshes a hostile, drawn in
+three passes. About 6 ms of CPU a frame leaves room on anything modern, and
+the software frame time did not move across any of the five, so when "it
+feels laggy" comes back from play the order to look in is pixels first,
+then stalls, then calls — which is the order this pass found them in.
+
 ## State
 
 **Where things stand.** This section describes what is on `main`, and there is
@@ -709,6 +781,24 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The responsiveness pass is the seventh, and it came from play as one
+sentence: the most recent version is starting to feel laggy. Nothing could
+be measured on the machine that said it, so it measured the five most recent
+versions against one fixed fight and found the CPU side flat (the table in
+Performance), the GPU side dominated by pixels the suite had never been
+measuring at, and two certain faults: `auto` had stopped looking before the
+first hostile arrived, and first contact compiled eight shaders. Both are
+invariants above now, each with a check confirmed to fail against the old
+code. What it costs: boot to the menu went from 15.5 s to 18 s under
+software rendering, over three boots each — the warm-up frame plus the
+compiles, which are the same compiles that used to land at first contact.
+
+What it does not do is make a frame cheaper. If a machine is short at the
+high tier's resolution floor, the next levers are the ones Performance
+already names: split the merged city per block, so the near cascade stops
+drawing the whole sector a second time, and instance hostiles per archetype
+and part, which is where the motion pass's extra calls went.
 
 The floors pass is the sixth, and it was item 1 of the list: the
 sidewalks were drawn and not stood on. It turned out to be four slabs, not

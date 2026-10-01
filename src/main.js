@@ -4,7 +4,7 @@ import { Player, Input } from './player.js';
 import { WeaponSystem, MELEE_RANGE, MELEE_DAMAGE } from './weapons.js';
 import { GrenadeSystem, FUSE, BLAST_RADIUS, BLAST_DAMAGE } from './grenades.js';
 import { Effects } from './effects.js';
-import { Enemy, ENEMY_TYPES, primeEnemyKits } from './enemies.js';
+import { Enemy, ENEMY_TYPES, primeEnemyKits, sampleBodies } from './enemies.js';
 import { ObjectiveSystem, objectiveForWave } from './objectives.js';
 import { HUD } from './hud.js';
 import { Post } from './post.js';
@@ -21,6 +21,17 @@ import { initRandom, getSeed, reserve } from './rng.js';
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
 const SIZE = new THREE.Vector2();
+
+/** Every material slot that can hold a texture `precompile` should upload. */
+const TEXTURE_SLOTS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap',
+  'aoMap', 'alphaMap', 'bumpMap', 'lightMap'];
+
+/** `auto` quality: judged over windows of this many seconds of play… */
+const AUTO_WINDOW = 3;
+/** …against this frame rate… */
+const AUTO_FPS = 45;
+/** …and never drawing at less than this fraction of the tier's resolution. */
+const AUTO_MIN_SCALE = 0.7;
 const RAY = new THREE.Raycaster();
 const SHADOW_AT = new THREE.Vector3();
 const SHADOW_AHEAD = new THREE.Vector3();
@@ -150,6 +161,7 @@ class Game {
     // an embedded page cannot always get pointer lock; the HUD offers a way out
     this.embedded = window.self !== window.top;
     this.settings = this.loadSettings();
+    this.renderScale = 1;      // resolution `auto` has given back, 1 = the tier's own
     this.records = this.loadRecords();
     this.collectMaterials();
     this.bindUI();
@@ -157,12 +169,69 @@ class Game {
     this.resize();
 
     this.clock = new THREE.Clock();
-    this.renderer.compile(this.scene, this.camera);
+    this.precompile();
     document.getElementById('loading').classList.add('hidden');
     document.getElementById('start-btn').classList.remove('hidden');
     const seedEl = document.getElementById('seed');
     if (seedEl) seedEl.textContent = 'SECTOR SEED ' + getSeed();
     this.renderer.setAnimationLoop(() => this.frame());
+  }
+
+  /**
+   * Build every shader a run will need while the loading screen is still up.
+   *
+   * `renderer.compile` only compiles what is visible, and almost nothing a
+   * fight draws is visible at boot: no hostile exists yet, and the pooled
+   * tracers, casings, sprites and debris all stay hidden until used. Each was
+   * compiled on the first frame it appeared instead — five programs the
+   * first time hostiles came into view and three on the first shot, measured
+   * on seed 1, which is a stall at exactly the moment of first contact. So
+   * for one compile every hidden thing is shown, one body of every archetype
+   * stands in the scene, and then all of it is put back. Lights are left as
+   * they are: how many there are is part of every lit program's key, so
+   * showing a hidden one would compile programs nothing ever uses. The same
+   * is true of the target, which is the other half of the key, and the half
+   * that made the first version of this compile all eight a second time.
+   * Every texture those materials hold is uploaded while it is at it, and
+   * then all of it is drawn once.
+   */
+  precompile() {
+    const bodies = sampleBodies();
+    this.camera.getWorldDirection(V1);
+    bodies.position.copy(this.camera.position).addScaledVector(V1, 6).setY(0);
+    this.scene.add(bodies);
+
+    const shown = [], unculled = [];
+    const textures = new Set();
+    for (const scene of [this.scene, this.viewScene]) {
+      scene.traverse((o) => {
+        if (!o.visible && !o.isLight) { shown.push(o); o.visible = true; }
+        for (const m of [].concat(o.material || [])) {
+          for (const k of TEXTURE_SLOTS) if (m[k]?.isTexture) textures.add(m[k]);
+        }
+      });
+    }
+    for (const o of [...shown, ...bodies.children]) {
+      o.traverse((c) => { if (c.frustumCulled) { c.frustumCulled = false; unculled.push(c); } });
+    }
+
+    // against the target the scene is really drawn into, or every program
+    // is keyed for the canvas and built a second time on first use
+    this.renderer.setRenderTarget(this.post.sceneTarget());
+    this.renderer.compile(this.scene, this.camera);
+    this.renderer.compile(this.viewScene, this.viewCamera);
+    this.renderer.setRenderTarget(null);
+    // A texture goes to the GPU on the first frame that draws it, which for a
+    // hostile's 1024-pixel kit maps was the frame it first came into view.
+    for (const t of textures) this.renderer.initTexture(t);
+    // And one real frame of all of it, behind the loading screen: a compiled
+    // program is not always a finished one, and the work some drivers leave
+    // for its first draw is better spent here than at first contact.
+    this.render();
+
+    for (const o of shown) o.visible = false;
+    for (const o of unculled) o.frustumCulled = true;
+    this.scene.remove(bodies);
   }
 
   /** Restart the random stream — used by tests to pin a run exactly. */
@@ -399,7 +468,10 @@ class Game {
 
     this.renderer.shadowMap.enabled = cfg.shadows;
     this.renderer.shadowMap.type = cfg.soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, cfg.pixel));
+    // an explicit tier is drawn at its own resolution; only `auto` scales it
+    if (tier !== 'auto') this.renderScale = 1;
+    this.tierPixel = cfg.pixel;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, cfg.pixel) * this.renderScale);
 
     sizeShadow(this.sun, cfg.span, cfg.shadowSize);
     this.shadowSpan = cfg.span;
@@ -418,30 +490,64 @@ class Game {
   }
 
   /**
-   * On 'auto', watch the first seconds of play and step down if the machine
-   * is struggling. An explicit choice is never overridden.
+   * On 'auto', keep watching the frame rate for as long as you play, and give
+   * some of the picture back when it falls short.
+   *
+   * It used to watch the first three seconds of a run and then stop for good
+   * — three seconds of an empty street before wave one, the cheapest the game
+   * ever is to draw. A dozen hostiles is a third more draw calls on top of
+   * that (421 against 555, measured on seed 1), so a machine that held its
+   * frame rate on the empty street could fall well short of it in the fight
+   * and never be asked again.
+   *
+   * Two levers, in order. Resolution first: it moves no shader, so it can be
+   * pulled mid-fight without a stall, and fill is what the expensive passes —
+   * occlusion, bloom, the window tracing, soft shadows over two cascades —
+   * scale with. The tier only while nothing is alive, because a tier change
+   * recompiles every lit material and that is a stall you would feel in a
+   * fight. Never back up: a picture that see-saws between two settings is
+   * worse than either. An explicit choice is never overridden.
+   *
+   * Wall clock, not game time: the loop's dt is clamped, so a machine at
+   * 15 fps would otherwise look like 30. And only over unbroken play: a gap —
+   * a pause, a hidden tab, a hitch — starts the window again rather than
+   * reading as one very long frame.
    */
   autoCalibrate() {
-    if (this.settings.quality !== 'auto' || this.autoDone) return;
-    // wall clock, not game time: the loop's dt is clamped, so a machine at
-    // 15 fps would otherwise look like 30 and never step down
+    if (this.settings.quality !== 'auto') return;
     const now = performance.now() / 1000;
-    if (!this.autoStart) { this.autoStart = now; this.autoFrames = 0; return; }
+    if (!this.autoStart || now - this.autoLast > 0.25) {
+      this.autoStart = this.autoLast = now;
+      this.autoFrames = 0;
+      return;
+    }
+    this.autoLast = now;
     this.autoFrames++;
     const elapsed = now - this.autoStart;
-    if (elapsed < 3) return;
+    if (elapsed < AUTO_WINDOW) return;
 
     const fps = this.autoFrames / elapsed;
+    this.autoStart = now;
+    this.autoFrames = 0;
+    if (fps >= AUTO_FPS) return;
+
     const order = ['high', 'medium', 'low'];
     const at = order.indexOf(this.activeTier || 'high');
-    if (fps < 40 && at < order.length - 1) {
+    if (this.aliveCount === 0 && at < order.length - 1) {
       this.autoTier = order[at + 1];
       this.applyQuality();
       this.hud.toast('GRAPHICS: ' + this.autoTier.toUpperCase() + ` (${Math.round(fps)} FPS)`);
-      this.autoStart = 0;
-    } else {
-      this.autoDone = true;
+    } else if (this.renderScale > AUTO_MIN_SCALE + 1e-3) {
+      this.renderScale = Math.max(AUTO_MIN_SCALE, this.renderScale - 0.15);
+      this.applyPixelRatio();
+      this.hud.toast(`GRAPHICS: RESOLUTION ${Math.round(this.renderScale * 100)}% (${Math.round(fps)} FPS)`);
     }
+  }
+
+  /** The tier's pixel ratio, capped by the screen's, scaled by `auto`. */
+  applyPixelRatio() {
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.tierPixel) * this.renderScale);
+    this.resize();
   }
 
   saveSettings() {

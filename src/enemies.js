@@ -173,6 +173,20 @@ export function primeEnemyKits() {
   for (const type of Object.values(ENEMY_TYPES)) kitFor(type);
 }
 
+/**
+ * One body of every archetype, for compiling their shaders before play rather
+ * than on the frame the first one comes into view (`Game.precompile`). Built
+ * inside `reserve`, so the meshes it mints cost the seeded stream nothing,
+ * and never pooled, so it changes nothing about how a wave is spawned.
+ */
+export function sampleBodies() {
+  return reserve(() => {
+    const g = new THREE.Group();
+    for (const type of Object.values(ENEMY_TYPES)) g.add(buildBody(type).group);
+    return g;
+  });
+}
+
 function makeKit(type) {
   const k = type.kit;
   const T = TILE.kit;

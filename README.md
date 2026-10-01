@@ -384,10 +384,17 @@ it is the first thing the quality tiers drop:
 A machine that cannot afford shadows cannot afford a bloom either, so Low
 drops the whole post chain and hands tone mapping back to the renderer.
 
-The default is **Auto**: it watches the first few seconds of a run and steps
-down a tier if the frame rate is under 40, telling you when it does. Picking a
-tier yourself in the pause menu turns that off — an explicit choice is never
-overridden.
+The default is **Auto**, and it keeps watching for as long as you play. Over
+any three seconds under 45 frames a second it gives something back and tells
+you what: in a fight, resolution, 15% at a time down to 70% of the tier's,
+because that costs no stall; between waves, a whole tier, because changing
+tier rebuilds the shaders and that would hitch mid-fight. It never steps back
+up. Picking a tier yourself in the pause menu turns all of it off — an
+explicit choice is never overridden.
+
+Every shader a run needs is built, and every texture uploaded, behind the
+loading screen, so the first hostile you see and the first shot you fire do
+not stall the frame they happen in.
 
 ## Vertical ground
 

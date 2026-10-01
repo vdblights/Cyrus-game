@@ -2100,6 +2100,116 @@ const CITY_FINGERPRINT = () => {
   };
 };
 
+check('nothing compiles at first contact', async (page) => {
+  // `renderer.compile` at boot compiled what was visible, which was the city.
+  // Every hostile, every pooled tracer, casing and sprite, and the muzzle
+  // flash — built lazily on the first shot — compiled on the first frame it
+  // was drawn: five programs the first time hostiles came into view and
+  // three on the first shot, which is a stall at exactly the moment of first
+  // contact. This deploys, puts one of every archetype in view, fires,
+  // throws and detonates, and counts what that frame cost in programs.
+  const r = await page.evaluate(async () => {
+    const { ENEMY_TYPES } = await import('/src/enemies.js');
+    const g = window.__game;
+    const gl = g.renderer.getContext();
+    const px = new Uint8Array(4);
+    const frame = () => { g.render(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); };
+    const step = () => { g.time += 1 / 60; g.player.health = 100; g.step(1 / 60); frame(); };
+    frame();                                            // the menu
+    const known = new Set(g.renderer.info.programs);
+
+    g.startRun();
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.input.locked = true;
+    const p = g.player.position;
+    g.player.yaw = 0; g.player.pitch = -0.05;            // face -Z
+    Object.keys(ENEMY_TYPES).forEach((k, i) => {
+      const e = g.spawnEnemy(k);
+      e.pos.set(p.x - 6 + i * 3, g.player.feetY, p.z - 10);
+      e.group.position.copy(e.pos);
+      e.alert(g.time, 0);
+    });
+    step();
+    g.input.fire = true; step(); step(); g.input.fire = false;
+    g.cookStart = g.time; g.throwGrenade(); step();
+    g.explode(new p.constructor(p.x, g.player.feetY + 0.2, p.z - 6)); step();
+
+    const fresh = g.renderer.info.programs.filter((q) => !known.has(q));
+    return { known: known.size, fresh: fresh.map((q) => q.cacheKey.split(',')[0]) };
+  });
+  // Measured on seed 1: 8 programs with the old boot compile put back. On
+  // the way there, 8 again when `precompile` compiled against the canvas
+  // rather than the target the scene is drawn into (the output colour space
+  // is part of the key), and 1 more — the muzzle flash — until that was built
+  // with the view model. The warm-up frame `precompile` now ends with would
+  // catch the first of those on its own, at the price of 22 programs built
+  // for the canvas and never used (52 at the menu against 30) — so this does
+  // not notice the target going missing, and nothing else does either.
+  expect(r.known > 10, `only ${r.known} programs at the menu`);
+  expect(r.fresh.length === 0,
+    `${r.fresh.length} programs compiled mid-fight: ${r.fresh.join(', ')}`);
+  return r;
+});
+
+check('auto quality keeps watching, and gives back resolution before shaders', async (page) => {
+  // It used to judge the first three seconds of a run — an empty street
+  // before wave one, the cheapest the game ever is to draw — and then stop
+  // for good, so a machine that was fine there and short in a fight was
+  // never asked again. The frame clock is faked so the verdicts are exact.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const real = performance.now.bind(performance);
+    let clock = real();
+    performance.now = () => clock;
+    try {
+      g.settings.quality = 'auto';
+      g.autoTier = undefined;
+      g.applyQuality();
+      g.startRun();
+      g.startWave = () => {};
+      g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+      const run = (seconds, fps) => {
+        for (let f = 0; f < seconds * fps; f++) {
+          clock += 1000 / fps;
+          g.time += 1 / 60;
+          g.player.health = 100;
+          g.step(1 / 60);
+        }
+      };
+      const read = () => ({ tier: g.activeTier, scale: +g.renderScale.toFixed(2) });
+
+      run(7, 60);                                       // a quiet street, smooth
+      const calm = read();
+      for (let i = 0; i < 4; i++) g.spawnEnemy('raider').alert(g.time, 0);
+      run(7, 30);                                       // the fight is not
+      const fight = read();
+      clock += 8000;                                    // paused for eight seconds
+      run(1, 60);
+      const paused = read();
+      for (const e of g.enemies) { e.group.visible = false; g._recycle(e); }
+      g.enemies.length = 0;
+      run(4, 30);                                       // between waves, still short
+      const quiet = read();
+      g.settings.quality = 'high';
+      g.applyQuality();
+      run(7, 20);                                       // chosen, never overridden
+      const chosen = read();
+      return { calm, fight, paused, quiet, chosen };
+    } finally {
+      performance.now = real;
+    }
+  });
+  expect(r.calm.tier === 'high' && r.calm.scale === 1, `a smooth start changed ${JSON.stringify(r.calm)}`);
+  expect(r.fight.tier === 'high' && r.fight.scale < 1,
+    `a slow fight after a smooth start left ${JSON.stringify(r.fight)}; it should cost resolution, not the tier`);
+  expect(r.paused.scale === r.fight.scale, `a pause read as a slow frame: ${JSON.stringify(r.paused)}`);
+  expect(r.quiet.tier === 'medium', `a slow stretch between waves left the tier at ${r.quiet.tier}`);
+  expect(r.chosen.tier === 'high' && r.chosen.scale === 1,
+    `an explicit choice was overridden: ${JSON.stringify(r.chosen)}`);
+  return r;
+});
+
 check('a seed still lays out the city it did', async (page) => {
   // The most expensive lesson in this repo, finally made into a check.
   //
