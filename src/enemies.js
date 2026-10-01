@@ -11,6 +11,37 @@ const V2 = new THREE.Vector3();
 const V3 = new THREE.Vector3();
 const V4 = new THREE.Vector3();
 const V5 = new THREE.Vector3();
+const DOWN = new THREE.Vector3(0, -1, 0);
+const IK_A = new THREE.Vector3(), IK_B = new THREE.Vector3(), IK_C = new THREE.Vector3();
+const IK_Q = new THREE.Quaternion();
+const POSE = new THREE.Object3D();          // the weapon's pose, worked out before it is applied
+const M4 = new THREE.Matrix4();
+
+/**
+ * Bend a two-piece limb so its end reaches `target`.
+ *
+ * Both points are in the frame the limb's top piece hangs in. Each piece is
+ * built hanging down its own -y from its joint, so placing it is turning -y
+ * onto the direction it has to point: the upper piece toward the elbow, the
+ * lower one — in the upper piece's own frame — toward the target. The elbow
+ * is put where the law of cosines says it must be, on the side `pole` points
+ * to, which is what keeps an elbow from folding the wrong way. A target out
+ * of reach is reached for with a straight arm.
+ */
+function reach(top, low, target, a, b, pole) {
+  const S = top.position;
+  const d = IK_A.copy(target).sub(S);
+  const L = THREE.MathUtils.clamp(d.length(), Math.abs(a - b) + 1e-3, a + b - 1e-4);
+  d.normalize();
+  const cosA = (a * a + L * L - b * b) / (2 * a * L);
+  const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
+  const perp = IK_B.copy(pole).addScaledVector(d, -pole.dot(d)).normalize();
+  const elbow = IK_C.copy(S).addScaledVector(d, a * cosA).addScaledVector(perp, a * sinA);
+  top.quaternion.setFromUnitVectors(DOWN, IK_B.copy(elbow).sub(S).normalize());
+  const toEnd = IK_A.copy(target).sub(elbow).normalize()
+    .applyQuaternion(IK_Q.copy(top.quaternion).invert());
+  low.quaternion.setFromUnitVectors(DOWN, toEnd);
+}
 
 /**
  * How long the stuck watchdog watches before it believes a hostile is going
@@ -123,7 +154,13 @@ const AT = {
   armL: [-0.34, 1.45, 0], armR: [0.34, 1.45, 0],
   legL: [-0.14, 0.86, 0], legR: [0.14, 0.86, 0],
   weapon: [0.30, 1.28, -0.12],
+  // the upper body turns, leans and flinches about the waist
+  waist: [0, 0.88, 0],
 };
+
+/** Upper arm to elbow, elbow to the middle of the fist; thigh, shin. */
+const ARM = { upper: 0.28, fore: 0.30 };
+const LEG = { thigh: 0.43 };
 
 function kitFor(type) {
   let kit = KITS.get(type.name);
@@ -233,13 +270,21 @@ function makeKit(type) {
     if (k.head === 'visor') headKit.push(box(0.32, 0.12, 0.09, [0, -0.005, -0.145], 0.03));
   }
 
-  const arm = [box(0.15 + limb, 0.52, 0.16 + limb, [0, -0.26, 0], 0.04)];
+  // Limbs in two pieces each, so a knee and an elbow can bend: each piece is
+  // built hanging from its own joint, and the lower one is parented at the
+  // end of the upper (`ARM` and `LEG` below have the lengths).
+  const arm = [box(0.15 + limb, 0.28, 0.16 + limb, [0, -0.14, 0], 0.04)];
   if (heavy) arm.push(box(0.20, 0.14, 0.22, [0, -0.13, 0], 0.04));   // vambrace
-  const leg = [
-    box(0.19 + limb, 0.85, 0.20 + limb, [0, -0.42, 0], 0.04),
-    box(0.22 + limb, 0.15, 0.27, [0, -0.80, -0.03], 0.04),           // boot
+  const fore = [
+    box(0.135 + limb, 0.26, 0.145 + limb, [0, -0.13, 0], 0.035),
+    box(0.11, 0.11, 0.12, [0, -0.30, -0.01], 0.035),                  // gloved fist
   ];
-  if (heavy) leg.push(box(0.22, 0.16, 0.12, [0, -0.44, -0.10], 0.03));   // knee plate
+  const leg = [box(0.19 + limb, 0.45, 0.20 + limb, [0, -0.22, 0], 0.04)];
+  const shin = [
+    box(0.17 + limb, 0.40, 0.18 + limb, [0, -0.20, 0], 0.04),
+    box(0.22 + limb, 0.15, 0.27, [0, -0.375, -0.03], 0.04),          // boot
+  ];
+  if (heavy) shin.push(box(0.22, 0.16, 0.12, [0, -0.01, -0.10], 0.03));  // knee plate
 
   // ---------------------------------------------------------- the weapon
   const gun = [];
@@ -268,7 +313,15 @@ function makeKit(type) {
     }
   }
 
+  // Where the two hands close on the weapon, in the weapon's own frame: the
+  // shooting hand on the grip, the support hand under the front of the
+  // receiver — or both on the shaft, for the hook.
+  const hold = k.weapon === 'hook'
+    ? { grip: [0, 0, 0.02], fore: [0, 0, -0.24] }
+    : { grip: [0, -0.12, 0.06], fore: [0, -0.085, -0.26] };
+
   return {
+    hold,
     materials: { cloth, gear, skin, steel },
     geo: {
       torso: mergeIntoOne(torso),
@@ -276,7 +329,9 @@ function makeKit(type) {
       head: box(0.25, 0.27, 0.25, [0, 0, 0], 0.05),
       headKit: mergeIntoOne(headKit),
       arm: mergeIntoOne(arm),
+      fore: mergeIntoOne(fore),
       leg: mergeIntoOne(leg),
+      shin: mergeIntoOne(shin),
       gun: mergeIntoOne(gun),
       band: new THREE.BoxGeometry(0.58, 0.09, 0.38),
       eye: new THREE.BoxGeometry(0.05, 0.03, 0.02),
@@ -293,42 +348,72 @@ function makeKit(type) {
  */
 function buildBody(type) {
   const kit = kitFor(type);
+  const hold = kit.hold;
   const { cloth, gear, skin, steel } = kit.materials;
   const geo = kit.geo;
   const g = new THREE.Group();
 
   const parts = {};
-  const add = (mesh, where, zone, key) => {
-    mesh.position.set(where[0], where[1], where[2]);
+  // Everything above the belt hangs off `upper`, which pivots at the waist:
+  // that is what turns the shoulders into a shooting stance, leans a run and
+  // takes a hit. Positions stay written in the body's own frame (`AT`) and
+  // are taken back to the parent here, so a part's position is still where
+  // that part is.
+  const upper = new THREE.Group();
+  upper.position.set(...AT.waist);
+  g.add(upper);
+  parts.upper = upper;
+  const local = (where, parent) => (parent === upper
+    ? [where[0] - AT.waist[0], where[1] - AT.waist[1], where[2] - AT.waist[2]] : where);
+  const add = (mesh, where, zone, key, parent = g) => {
+    const at = local(where, parent);
+    mesh.position.set(at[0], at[1], at[2]);
     mesh.castShadow = true;
     mesh.userData.zone = zone;
-    g.add(mesh);
+    parent.add(mesh);
     if (key) parts[key] = mesh;
     return mesh;
   };
 
-  add(new THREE.Mesh(geo.torso, cloth), AT.torso, 'body', 'torso');
-  add(new THREE.Mesh(geo.rig, gear), AT.rig, 'body', 'rig');
-  add(new THREE.Mesh(geo.head, skin), AT.head, 'head', 'head');
-  add(new THREE.Mesh(geo.headKit, gear), AT.headKit, 'head');
+  add(new THREE.Mesh(geo.torso, cloth), AT.torso, 'body', 'torso', upper);
+  add(new THREE.Mesh(geo.rig, gear), AT.rig, 'body', 'rig', upper);
+  // the head turns on a neck of its own, so it can stay on the target while
+  // the shoulders blade into a stance
+  const neck = new THREE.Group();
+  neck.position.set(...local(AT.head, upper));
+  upper.add(neck);
+  parts.neck = neck;
+  const atNeck = (where) => [where[0] - AT.head[0], where[1] - AT.head[1], where[2] - AT.head[2]];
+  add(new THREE.Mesh(geo.head, skin), [0, 0, 0], 'head', 'head', neck);
+  add(new THREE.Mesh(geo.headKit, gear), atNeck(AT.headKit), 'head', 'headKit', neck);
 
   // The archetype band and the eye stay flat-shaded and per-instance: one
   // turns gold on an elite and the other flares white when hurt, and a
   // material shared across a wave would do it to all of them at once.
   const band = new THREE.Mesh(geo.band, new THREE.MeshBasicMaterial({ color: type.marker || 0xd8452f }));
-  band.position.set(...AT.band);
-  g.add(band);
+  band.position.set(...local(AT.band, upper));
+  upper.add(band);
   parts.band = band;
 
   const eye = new THREE.Mesh(geo.eye, new THREE.MeshBasicMaterial({ color: 0xff4a2a }));
-  eye.position.set(...AT.eye);
-  g.add(eye);
+  eye.position.set(...atNeck(AT.eye));
+  neck.add(eye);
   parts.eye = eye;
 
-  add(new THREE.Mesh(geo.arm, cloth), AT.armL, 'limb', 'armL');
-  add(new THREE.Mesh(geo.arm, cloth), AT.armR, 'limb', 'armR');
-  add(new THREE.Mesh(geo.leg, gear), AT.legL, 'limb', 'legL');
-  add(new THREE.Mesh(geo.leg, gear), AT.legR, 'limb', 'legR');
+  // each limb is two pieces, the lower one parented at the joint
+  const limbPair = (upperGeo, lowerGeo, mat, where, key, lowerKey, joint, parent) => {
+    const top = add(new THREE.Mesh(upperGeo, mat), where, 'limb', key, parent);
+    const low = new THREE.Mesh(lowerGeo, mat);
+    low.position.set(0, -joint, 0);
+    low.castShadow = true;
+    low.userData.zone = 'limb';
+    top.add(low);
+    parts[lowerKey] = low;
+  };
+  limbPair(geo.arm, geo.fore, cloth, AT.armL, 'armL', 'foreL', ARM.upper, upper);
+  limbPair(geo.arm, geo.fore, cloth, AT.armR, 'armR', 'foreR', ARM.upper, upper);
+  limbPair(geo.leg, geo.shin, gear, AT.legL, 'legL', 'shinL', LEG.thigh, g);
+  limbPair(geo.leg, geo.shin, gear, AT.legR, 'legR', 'shinR', LEG.thigh, g);
 
   // weapon in the right hand
   const weapon = new THREE.Group();
@@ -371,7 +456,9 @@ function buildBody(type) {
   parts.shadow = shadow;
 
   g.scale.setScalar(type.scale);
-  return { group: g, parts };
+  // yaw outermost, so a lean or a topple is about the body's own axes
+  g.rotation.order = 'YXZ';
+  return { group: g, parts, hold };
 }
 
 export class Enemy {
@@ -382,6 +469,13 @@ export class Enemy {
     const built = buildBody(this.type);
     this.group = built.group;
     this.parts = built.parts;
+    this.hold = {
+      grip: new THREE.Vector3(...built.hold.grip),
+      fore: new THREE.Vector3(...built.hold.fore),
+    };
+    this.poleR = new THREE.Vector3(0.7, -1, 0.35);
+    this.fist = ARM.fore;     // elbow to the middle of the fist
+    this.poleL = new THREE.Vector3(-0.8, -1, 0.1);
     this.hitMeshes = [];
     this.group.traverse((o) => {
       if (o.isMesh && o.userData.zone) { o.userData.enemy = this; this.hitMeshes.push(o); }
@@ -408,8 +502,16 @@ export class Enemy {
     this.deathT = 0;
     this.hurtFlash = 0;
     this.swingT = 0;
+    this.aimT = 0;            // 0 at low ready, 1 shouldered
+    this.kick = 0;            // recoil, decaying
+    this.flinch = { x: 0, z: 0, vx: 0, vz: 0 };   // a spring, kicked by hits
+    this.idleT = Math.random() * 6.28;
+    this.aimPitch = 0;
     this.group.visible = true;
     this.group.rotation.set(0, 0, 0);
+    this.parts.upper?.rotation.set(0, 0, 0);
+    this.parts.upper?.position.set(...AT.waist);
+    for (const k of ['legL', 'legR', 'shinL', 'shinR']) this.parts[k]?.rotation.set(0, 0, 0);
     this.group.scale.setScalar(this.type.scale);
     this.avoidDir = 0;
     this.avoidTimer = 0;
@@ -502,6 +604,15 @@ export class Enemy {
     else if (zone === 'limb') dmg *= 0.75;
     this.hp -= dmg;
     this.hurtFlash = 0.12;
+    // the shot shoves the upper body the way it was travelling, in the
+    // body's own frame: a spring takes it back over a few tenths of a second
+    if (fromDir) {
+      const yaw = this.group.rotation.y, c = Math.cos(yaw), sn = Math.sin(yaw);
+      const lx = fromDir.x * c - fromDir.z * sn, lz = fromDir.x * sn + fromDir.z * c;
+      const hard = Math.min(1.6, 0.5 + dmg / 40) * (zone === 'head' ? 1.5 : 1);
+      this.flinch.vx += lz * 4.5 * hard;
+      this.flinch.vz -= lx * 4.5 * hard;
+    }
     this.alert(this.game.time, 0.35);
     this.game.effects.blood(point, fromDir);
     if (this.hp <= 0) {
@@ -547,12 +658,28 @@ export class Enemy {
   update(dt, time, player, world) {
     if (!this.alive) {
       this.deathT += dt;
-      // topple over in the direction of the killing shot
-      const t = Math.min(1, this.deathT / 0.55);
+      // The knees go first, then the body follows the killing shot down. The
+      // topple is about the body's own axes (`rotation.order` is YXZ), so the
+      // shot's direction is taken into the body's frame before it is used.
+      const P = this.parts;
+      const buckle = Math.min(1, this.deathT / 0.28);
+      const kb = buckle * buckle * (3 - 2 * buckle);
+      for (const [thigh, shin] of [[P.legL, P.shinL], [P.legR, P.shinR]]) {
+        thigh.rotation.x = 0.75 * kb;
+        shin.rotation.x = -1.5 * kb;
+      }
+      const t = THREE.MathUtils.clamp((this.deathT - 0.12) / 0.6, 0, 1);
       const fall = Math.sin(t * Math.PI * 0.5) * (Math.PI / 2);
-      this.group.rotation.x = Math.cos(this.fallDir) * fall;
-      this.group.rotation.z = -Math.sin(this.fallDir) * fall;
-      this.group.position.y = this.pos.y - 0.1 * t;
+      const a = this.fallDir - this.group.rotation.y;
+      this.group.rotation.x = Math.cos(a) * fall;
+      this.group.rotation.z = -Math.sin(a) * fall;
+      // the arms go slack and the upper body folds the way it is falling
+      P.upper.rotation.x = Math.cos(a) * 0.35 * kb;
+      for (const [arm, fore, side] of [[P.armL, P.foreL, -1], [P.armR, P.foreR, 1]]) {
+        arm.rotation.set(-0.3 * kb, 0, side * 0.5 * kb);
+        fore.rotation.set(-0.6 * kb, 0, 0);
+      }
+      this.group.position.y = this.pos.y - 0.42 * kb;
       if (this.parts.shadow) this.parts.shadow.material.opacity = 0.75 * Math.max(0, 1 - this.deathT);
       if (this.deathT > 6) {
         const k = Math.max(0, 1 - (this.deathT - 6) / 1.5);
@@ -764,7 +891,8 @@ export class Enemy {
     // face the player once alerted, otherwise face travel direction
     const faceTarget = this.alerted ? toPlayer : (this.vel.lengthSq() > 0.05 ? V3.copy(this.vel).normalize() : null);
     if (faceTarget) {
-      const want = Math.atan2(faceTarget.x, faceTarget.z);
+      // the body is built facing -z, so its yaw points -z along the target
+      const want = Math.atan2(-faceTarget.x, -faceTarget.z);
       let diff = want - this.group.rotation.y;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
@@ -772,6 +900,9 @@ export class Enemy {
     }
 
     this._updateLaser(player, sees, time);
+    // the gun follows the target's height, so a marksman on a roof aims down
+    const pitchWant = this.alerted ? Math.atan2(player.position.y - 0.25 - (this.pos.y + 1.36 * this.type.scale), Math.max(1, dist)) : 0;
+    this.aimPitch += (pitchWant - this.aimPitch) * Math.min(1, dt * 6);
     this._animate(dt, dist);
     // hit detection raycasts against these meshes before the renderer runs,
     // so their world matrices have to be current now, not next frame
@@ -827,6 +958,7 @@ export class Enemy {
     }
 
     this.game.effects.muzzle(muzzle, t.pellets ? 1.4 : 0.9);
+    this.kick = Math.min(1.5, this.kick + (t.pellets ? 1.3 : 0.8));
     audio.shot(t.sound || 'rifle', THREE.MathUtils.clamp(14 / Math.max(3, dist), 0.16, 1));
 
     if (hits > 0) {
@@ -859,36 +991,101 @@ export class Enemy {
     beam.material.opacity = 0.25 + 0.5 * (1 - Math.max(0, (this.nextFire - time) / 1.1));
   }
 
+  /**
+   * Pose the body: legs from the gait, the upper body from the stance, and
+   * the arms from wherever the weapon is — never the other way round.
+   *
+   * The weapon is posed first, in the body's own frame: shouldered and
+   * pitched at the target once alerted, carried low and across the body on
+   * patrol, raised and brought down through a swing for a melee strike, and
+   * kicked back on every shot. Then each arm reaches for its hand-hold on it
+   * (`reach`), so the hands are always on the gun whatever the gun is doing,
+   * and an animation is only ever written once, for the gun.
+   */
   _animate(dt, dist) {
+    const P = this.parts;
     const speed = Math.hypot(this.vel.x, this.vel.z);
-    this.walkPhase += dt * (2 + speed * 2.6);
-    const amp = Math.min(speed / 4, 1);
-    const s = Math.sin(this.walkPhase) * 0.8 * amp;
-    const c = Math.cos(this.walkPhase) * 0.55 * amp;
-    if (this.parts.legL) this.parts.legL.rotation.x = s;
-    if (this.parts.legR) this.parts.legR.rotation.x = -s;
-    if (this.parts.armL) this.parts.armL.rotation.x = -s * 0.6;
+    // the stride advances with distance covered, not with time, so a foot
+    // that is down stays where it was put down instead of sliding
+    this.walkPhase += dt * (0.6 + speed * 2.4);
+    this.idleT += dt;
+    const amp = Math.min(speed / 3.6, 1);
+    const ph = this.walkPhase;
 
-    // right arm holds the weapon level once alerted
-    const aim = this.alerted ? -0.15 : 0.2;
-    if (this.parts.armR) this.parts.armR.rotation.x = aim + (this.swingT > 0 ? -1.6 : 0);
+    // ---- legs: hip swing, and the knee folding through the swing phase
+    const swing = 0.5 + 0.12 * amp;
+    for (const [thigh, shin, off] of [[P.legL, P.shinL, 0], [P.legR, P.shinR, Math.PI]]) {
+      const p = ph + off;
+      thigh.rotation.x = Math.sin(p) * swing * amp;
+      shin.rotation.x = -(0.06 + Math.max(0, Math.cos(p)) * 1.05 * amp);
+    }
+    // lowest with the feet furthest apart, highest as they pass
+    const bob = 0.035 * amp * (0.5 + 0.5 * Math.cos(2 * ph));
+
+    // ---- stance: square on patrol, bladed and shouldered once alerted
+    this.aimT += ((this.alerted ? 1 : 0) - this.aimT) * Math.min(1, dt * 5);
+    const A = this.aimT;
+    this.kick *= Math.max(0, 1 - dt * 9);
+
+    // flinch: a damped spring the hits kick
+    const f = this.flinch;
+    f.vx += (-60 * f.x - 9 * f.vx) * dt; f.vz += (-60 * f.z - 9 * f.vz) * dt;
+    f.x += f.vx * dt; f.z += f.vz * dt;
+
+    const up = P.upper;
+    const breathe = Math.sin(this.idleT * 1.6) * 0.012 * (1 - amp);
+    up.rotation.set(
+      -0.10 * amp * (1 - 0.5 * A) + breathe + 0.05 * this.kick + f.x,
+      -0.48 * A + Math.sin(ph) * 0.07 * amp * (1 - A) - 0.30 * (1 - A),
+      Math.sin(ph) * 0.035 * amp + f.z,
+    );
+
+    // the head stays on the target while the shoulders turn under it
+    P.neck.rotation.set(this.aimPitch * 0.6 * A - 0.5 * f.x, 0.48 * A + 0.30 * (1 - A), 0, 'YXZ');
+
+    // ---- the weapon, in the body's frame
+    const w = P.weapon;
+    POSE.position.set(
+      THREE.MathUtils.lerp(-0.02, 0.08, A),
+      THREE.MathUtils.lerp(1.20, 1.37, A),
+      THREE.MathUtils.lerp(-0.20, -0.22, A) + 0.05 * this.kick,
+    );
+    POSE.rotation.set(
+      THREE.MathUtils.lerp(-0.45, this.aimPitch, A) + 0.12 * this.kick,
+      THREE.MathUtils.lerp(0.55, 0.0, A),
+      THREE.MathUtils.lerp(0.2, 0.0, A),
+      'YXZ',
+    );
+    if (this.swingT > 0) {
+      // a hook strike: raised over the shoulder, then driven down through
+      const t = 1 - this.swingT / 0.25;
+      const arc = Math.sin(t * Math.PI);
+      POSE.position.y += 0.25 * arc;
+      POSE.rotation.x += THREE.MathUtils.lerp(1.4, -1.0, t);
+    }
     if (this.swingT > 0) this.swingT -= dt;
+    // the weapon rides with the upper body's flinch and recoil, not its turn
+    POSE.rotation.x += f.x * 0.8;
+    w.position.copy(POSE.position);
+    w.quaternion.setFromEuler(POSE.rotation);
+    w.position.y += bob;
 
-    const hop = Math.abs(Math.sin(this.walkPhase)) * 0.05 * amp;
-    this.group.position.y = this.pos.y + hop;
-    if (this.parts.shadow) {
+    // ---- arms reach for it: hand-holds into the upper body's frame
+    up.updateMatrix();
+    w.updateMatrix();
+    M4.copy(up.matrix).invert().multiply(w.matrix);
+    reach(P.armR, P.foreR, V4.copy(this.hold.grip).applyMatrix4(M4), ARM.upper, ARM.fore, this.poleR);
+    reach(P.armL, P.foreL, V4.copy(this.hold.fore).applyMatrix4(M4), ARM.upper, ARM.fore, this.poleL);
+
+    this.group.position.y = this.pos.y + bob;
+    if (P.shadow) {
       // stays on the floor while the body bobs, and fades as it rises
-      this.parts.shadow.position.y = -hop / this.type.scale + 0.03;
-      this.parts.shadow.material.opacity = 0.75 * Math.max(0, 1 - hop * 4);
+      P.shadow.position.y = -bob / this.type.scale + 0.03;
+      P.shadow.material.opacity = 0.75 * Math.max(0, 1 - bob * 4);
     }
 
     // eye flares when hurt
-    if (this.parts.eye) {
-      this.parts.eye.material.color.setHex(this.hurtFlash > 0 ? 0xffffff : 0xff4a2a);
-    }
-    if (this.parts.torso) {
-      this.parts.torso.material.emissive?.setScalar?.(0);
-    }
+    if (P.eye) P.eye.material.color.setHex(this.hurtFlash > 0 ? 0xffffff : 0xff4a2a);
   }
 
   dispose(scene) {

@@ -421,6 +421,24 @@ These each cost real debugging time. Changing them needs a reason.
   would also put another dozen meshes per hostile into the per-pellet
   intersect list. The same merge is why a hostile is now 12 meshes rather than
   15 while carrying six times the triangles.
+- **A hostile is built facing -z, and the weapon decides where the hands
+  go.** The turn used to point the body's +z at its target, so every
+  hostile that ever fought you did it facing away — eye glowing from the
+  back of its head, tracers leaving a muzzle behind it, walking backwards
+  on patrol — and nothing errored, because the body is nearly symmetric
+  front to back and `_shoot` aims from the muzzle's position, not its
+  direction. Measured: face · toward-you -0.93, gun -0.95. The yaw is
+  `atan2(-x, -z)` now, and the group's rotation order is `YXZ`, so a lean
+  or a topple is about the body's own axes. The animation is written once,
+  for the weapon: `_animate` poses the gun in the body's frame (shouldered
+  and pitched at the target, carried low on patrol, raised and driven down
+  for the hook), and both arms reach for its hand-holds (`kit.hold`) by
+  two-bone IK (`reach`). A pose that moves the gun moves the hands; a pose
+  that moved an arm directly would take the hand off the gun, and `a hostile
+  faces you, and holds its weapon in both hands` measures exactly that in
+  three poses. The arm reaches 0.58 m, and a hand-hold further from its
+  shoulder than that is reached for with a straight arm and missed — which
+  is how the first patrol carry failed it, 7 cm short.
 - **A part's own position is where that part is.** The kit geometry is built
   *about* each part's origin (`AT` in `enemies.js`) and the mesh is placed
   there, not baked to world height with the mesh left at zero. Every check
@@ -644,6 +662,34 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The motion pass is the fifth, and it started from item 6 of the list — the
+hostiles walked on a sine wave — and found something worse underneath:
+every hostile faced away from you (invariant above). The rest is the rig.
+Each limb is two pieces, so a knee and an elbow can bend; the upper body
+hangs off a waist pivot (`parts.upper`) and the head off a neck
+(`parts.neck`), so the shoulders can blade into a stance while the head
+stays on the target, a run can lean, and a hit can shove the torso back on
+a spring the way the bullet was going. The stride advances with distance
+covered rather than time, the knee folds through the swing phase, and the
+body bobs at twice the stride, lowest with the feet furthest apart. The
+weapon kicks on every shot, follows the target's height (a marksman on a
+roof aims down), and both hands stay on it by IK. A death buckles the knees
+first and then falls away from the shot, arms gone slack. Every hit zone
+still carries its zone — the four new lower limbs are `limb` — so a hostile
+has 12 shootable meshes against 8, and the kit check now reads the head kit
+by name (`parts.headKit`) because it no longer hangs off the group.
+`a hostile faces you, and holds its weapon in both hands` fails with the
+old turn (-0.94) and with the IK switched off (0.736 m off the weapon).
+
+What it costs: four more meshes a hostile, each drawn in the main pass and
+both shadow cascades, so twelve hostiles in view go from 432 draw calls to
+576 — and frame time does not move (2,364 against 2,373 ms, then 2,194
+against 2,184, on seed 1 under software rendering). Forty-eight calls per
+hostile is now the biggest per-object bill in the frame, though, and a
+hostile cannot be merged the way the city is, because its parts move. If a
+big wave ever costs frame rate, instancing per archetype and part is the
+lever: every raider's left shin is the same geometry and material.
 
 The hands pass is the fourth, and it went after the thing on screen in
 every frame: the gun floated. Nothing held it, and each weapon was eight to
@@ -1326,11 +1372,13 @@ Suggested next work, in the order I would do it:
 5. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
    only the player calls it, so a car roof is still a place they cannot follow
    you to.
-6. **Animate what the kit made possible.** The hostiles now have arms, a
-   weapon and a rig as separate parts wearing separate materials, and they
-   still walk on a sine wave. A shoulder that swings with the gun, a reload
-   that is visible from across the street, a stagger on a hit that is not just
-   a colour flash — all of it is reachable from where the parts already are.
+6. **Finish what the rig made possible.** Hostiles now have knees, elbows,
+   a waist, a neck and a weapon their hands follow, so the rest is poses,
+   not plumbing: a reload visible from across the street (drop the
+   magazine's hold point and let the left hand follow it), a crouch behind
+   cover, a hip-fire spray from a breaker, a turn of the head toward a
+   sound. Each is a weapon pose plus maybe a waist angle; the arms come
+   free.
 7. **More on the ground now that paint is there.** The markings pass put a
    geometry layer on the road and left the pavement alone: manhole covers,
    kerb drops at the crossings, hatched keep-clear boxes and painted parking
