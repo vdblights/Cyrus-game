@@ -1658,6 +1658,74 @@ check('a window is a hole in a wall, and only in a wall', async (page) => {
   return r;
 });
 
+check('weathering is ragged, not round', async (page) => {
+  // Every texture's large-scale grime goes through `mottle`, which used to
+  // fill ellipses. Upscaled, they came out soft-edged and still round, and a
+  // surface of soft round stains is polka dots — the plaza, every barrier,
+  // every container. It thresholds a warped fractal field now.
+  //
+  // Roundness is measurable: for its area a disc has the shortest boundary of
+  // any shape, so perimeter² / (4π·area) is 1 for a disc and grows with a
+  // ragged edge. On a pixel grid a disc reads about 1.6, so the measure is
+  // taken against one painted on the same canvas, and the old discs came out
+  // at 1.04-1.11 of it. The bar sits well clear of that.
+  const r = await page.evaluate(async () => {
+    const T = await import('/src/textures.js');
+    const { makeRandom } = await import('/src/rng.js');
+    const size = 512;
+    const measure = (paint) => {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      paint(ctx);
+      const d = ctx.getImageData(0, 0, size, size).data;
+      let max = 0; for (let i = 3; i < d.length; i += 4) max = Math.max(max, d[i]);
+      const on = new Uint8Array(size * size);
+      for (let i = 0; i < on.length; i++) on[i] = d[i * 4 + 3] > max * 0.5 ? 1 : 0;
+      const seen = new Uint8Array(on.length), q = [];
+      for (let i = 0; i < on.length; i++) {
+        if (!on[i] || seen[i]) continue;
+        const st = [i]; seen[i] = 1;
+        let area = 0, per = 0, edge = false;
+        while (st.length) {
+          const j = st.pop(); area++;
+          const x = j % size, y = (j / size) | 0;
+          if (x === 0 || y === 0 || x === size - 1 || y === size - 1) edge = true;
+          for (const k of [x > 0 ? j - 1 : -1, x < size - 1 ? j + 1 : -1, j - size, j + size]) {
+            if (k < 0 || k >= on.length) continue;
+            if (!on[k]) { per++; continue; }
+            if (!seen[k]) { seen[k] = 1; st.push(k); }
+          }
+        }
+        // whole patches only: one cut by the canvas edge has a straight side
+        if (area > 300 && !edge) q.push((per * per) / (4 * Math.PI * area));
+      }
+      q.sort((a, b) => a - b);
+      return { q, median: q[q.length >> 1] || 0 };
+    };
+    const disc = measure((ctx) => { ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(256, 256, 60, 0, 7); ctx.fill(); });
+    const rows = {};
+    for (const [name, args] of [['grime', [16, 'rgba(0,0,0,0.5)', 12, 40]], ['bloom', [8, 'rgba(140,96,54,0.5)', 8, 34]]]) {
+      // pooled over three generators, so no one roll decides it; each is the
+      // painter's way, a generator of its own, which also leaves the game's
+      // seeded stream alone
+      const q = [];
+      for (const seed of [1, 2, 3]) {
+        const saved = Math.random;
+        Math.random = makeRandom(seed);
+        try { q.push(...measure((ctx) => T.mottle(ctx, size, ...args)).q); } finally { Math.random = saved; }
+      }
+      q.sort((a, b) => a - b);
+      rows[name] = { patches: q.length, ratio: +((q[q.length >> 1] || 0) / disc.median).toFixed(2) };
+    }
+    return { disc: +disc.median.toFixed(2), rows };
+  });
+  for (const [name, row] of Object.entries(r.rows)) {
+    expect(row.patches >= 6, `${name}: only ${row.patches} whole stain patches to measure`);
+    expect(row.ratio > 1.35, `${name}: stains are ${row.ratio}x as ragged as a disc — still round`);
+  }
+  return r;
+});
+
 check('every surface is textured at the world scale it declares', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

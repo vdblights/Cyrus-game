@@ -288,6 +288,12 @@ every building is given a colour drift and a tile offset of its own, so two
 neighbours never read as the same prefab. Tall blocks step back
 near the top, which is most of what gives a skyline its shape.
 
+Weathering is fractal rather than drawn. Every stain, wash and bloom of rust
+is a warped noise field thresholded to a ragged edge, uneven inside and
+present at every size at once, because the soft round blotches it replaced
+read as polka dots on every surface they covered. It wraps at the tile edge
+like everything else, so the eye has no seam to find.
+
 Where surfaces meet, the light does not reach, and a shadow map will not tell
 you that. Every solid in the city deposits into a coarse occlusion grid, and
 the ground reads it back as vertex colour when the city is merged — so the

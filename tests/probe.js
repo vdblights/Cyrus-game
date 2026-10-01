@@ -106,11 +106,13 @@ if (!/\breturn\b/.test(body)) body = `return (${body})`;
 
 const game = await openGame({ seed: SEED, headed: HEADED });
 try {
-  const result = await game.page.evaluate((src) => {
+  const result = await game.page.evaluate(async (src) => {
     const g = window.__game;
     // eslint-disable-next-line no-new-func
     const fn = new Function('g', '__step', '__enemies', '__profile', '__place', src);
-    const value = fn(g, window.__step, window.__enemies, window.__profile, window.__place);
+    // awaited, so a body can return a promise — `return (async () => { const
+    // T = await import('/src/textures.js'); ... })()` reaches any module
+    const value = await fn(g, window.__step, window.__enemies, window.__profile, window.__place);
     // strip anything that will not survive structured cloning
     return JSON.parse(JSON.stringify(value ?? null, (k, v) => (typeof v === 'number' ? +v.toFixed(4) : v)));
   }, body);

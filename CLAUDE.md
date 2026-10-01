@@ -350,6 +350,22 @@ These each cost real debugging time. Changing them needs a reason.
   low-frequency shapes into a 96px canvas and lets the upscale smooth them,
   which is the same picture for about a thousandth of the cost. Nothing in
   `textures.js` should set `ctx.filter` again.
+- **Weathering is a thresholded fractal, never a filled shape.** Every large
+  stain goes through `mottle`, which used to fill ellipses into a low-res
+  layer. Upscaled, they came out soft-edged and still round, and a surface
+  of soft round stains is polka dots — the plaza, every barrier, the
+  containers' "rust eating through" and their "dents". `mottle` now
+  thresholds a domain-warped, tile-wrapping fractal (`wrapFbm`) at the
+  quantile that stains as much of the tile as the discs used to, and shades
+  the inside with a second field; it keeps its old arguments, so every call
+  site is unchanged. A filled `ellipse` for anything larger than a fleck is
+  the thing not to write again — the shell crater is the one place round is
+  right. `weathering is ragged, not round` measures perimeter² / (4π·area)
+  against a disc on the same canvas: the old discs 1.04x, the fractal
+  1.6x. The field is a pixel loop, so it costs boot time where ellipses did
+  not; the layer is a fifth of the tile's resolution (64-160 px) and the
+  noise is written flat, which brought the cost from +2.9 s to +0.7 s of
+  boot under software rendering, and that is CPU, so it is real.
 - **Anything that is not a box comes out of `shapes.js`, and its winding is
   computed, not written.** `chamferGeo` builds a box with its edges broken: 20
   extra triangles that put a moving highlight along each edge, which is most
@@ -463,7 +479,10 @@ frames. Three things make results repeatable, and all three were bugs first:
 
 `--seed=N` replays an exact city. When something looks wrong, reach for
 `tests/probe.js` before reasoning about it — every real bug here was found by
-looking at state, and guessing first cost hours.
+looking at state, and guessing first cost hours. A probe body may return a
+promise, and it is awaited, so `return (async () => { const T = await
+import('/src/textures.js'); ... })()` reaches any module directly — the
+same import a check can make inside `page.evaluate`.
 
 Test setups have historically been buggier than the game. Common traps:
 hardcoded aim heights (use the actual part's world position), unvalidated
@@ -616,6 +635,16 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The stains pass is the third, and it was the next thing a close look found:
+every large stain in every texture was a filled ellipse, so the plaza, the
+barriers and the containers were covered in soft polka dots. `mottle` is a
+thresholded warped fractal now (invariant above), and the five other places
+that painted discs by hand — the containers' rust and dents, oil on the
+asphalt, failed stucco, rubbed-off road paint — go through it too. Small
+flecks (`splotches`) are clusters of uneven offset blobs rather than one
+ellipse each. Layout untouched (378/420/12): painting runs on each texture's
+own generator. Boot went 14.8 s → 15.5 s, measured over three boots each.
 
 The windows pass is the second realism pass, and it went after the largest
 thing left that read as a picture: the windows. Every building is most of
