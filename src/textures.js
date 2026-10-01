@@ -88,16 +88,29 @@ function noise(ctx, size, amount, alpha) {
   ctx.putImageData(img, 0, 0);
 }
 
+/**
+ * Small flecks — rust spots, chipped paint. Each is a cluster of uneven,
+ * offset blobs rather than one ellipse: a single filled ellipse is a coin,
+ * and a sheet of them reads as a pattern, not as corrosion.
+ */
 function splotches(ctx, size, count, color, rMin, rMax) {
   ctx.fillStyle = color;
   for (let i = 0; i < count; i++) {
     const x = Math.random() * size;
     const y = Math.random() * size;
     const r = rMin + Math.random() * (rMax - rMin);
-    ctx.beginPath();
-    ctx.ellipse(x, y, r, r * (0.5 + Math.random()), Math.random() * Math.PI, 0, Math.PI * 2);
-    ctx.fill();
+    const parts = 3 + (Math.random() * 4 | 0);
+    for (let k = 0; k < parts; k++) {
+      const a = Math.random() * Math.PI * 2, off = r * Math.random() * 0.8;
+      const pr = r * (0.25 + Math.random() * 0.5);
+      ctx.globalAlpha = 0.45 + Math.random() * 0.55;
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(a) * off, y + Math.sin(a) * off, pr, pr * (0.4 + Math.random() * 0.8),
+        Math.random() * Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
+  ctx.globalAlpha = 1;
 }
 
 /**
@@ -119,28 +132,91 @@ function softLayer(ctx, size, draw, detail = 96) {
 }
 
 /**
- * Low-frequency blotching that wraps at the tile edge.
+ * Fractal value noise that wraps every `period` lattice cells at its first
+ * octave, so a field built from it tiles. Returns f(u, v) over u, v in 0..1
+ * (anything outside wraps), normalised to 0..1. The lattices are drawn from
+ * `Math.random`, which inside a builder is the texture's own generator
+ * (`paint`), so it costs the layout nothing.
  *
- * Tiling is given away by the eye finding the same *large* shape twice, not
- * the same grain, so every surface gets a soft mottle drawn nine times — once
- * in place and once for each neighbour — and clipped to the tile.
+ * Written flat, because it runs a few hundred thousand times per stain layer
+ * and the painter's budget is the boot time.
  */
-function mottle(ctx, size, count, color, rMin, rMax) {
-  softLayer(ctx, size, (lctx) => {
-    lctx.fillStyle = color;
-    for (let i = 0; i < count; i++) {
-      const x = Math.random() * size, y = Math.random() * size;
-      const r = rr(rMin, rMax), ry = r * rr(0.55, 1.4), rot = Math.random() * Math.PI;
-      for (const ox of [-size, 0, size]) {
-        for (const oy of [-size, 0, size]) {
-          if ((ox || oy) && Math.hypot(x + ox - size / 2, y + oy - size / 2) > size * 1.2 + r) continue;
-          lctx.beginPath();
-          lctx.ellipse(x + ox, y + oy, r, ry, rot, 0, Math.PI * 2);
-          lctx.fill();
-        }
-      }
+function wrapFbm(period, octaves) {
+  const lat = [], per = [], amp = [];
+  let norm = 0;
+  for (let k = 0; k < octaves; k++) {
+    const p = period << k, v = new Float32Array(p * p);
+    for (let i = 0; i < v.length; i++) v[i] = Math.random();
+    lat.push(v); per.push(p); amp.push(0.5 ** k); norm += 0.5 ** k;
+  }
+  return (u, v) => {
+    u -= Math.floor(u); v -= Math.floor(v);
+    let t = 0;
+    for (let k = 0; k < octaves; k++) {
+      const p = per[k], L = lat[k];
+      const x = u * p, y = v * p;
+      const x0 = x | 0, y0 = y | 0;
+      let fx = x - x0, fy = y - y0;
+      fx = fx * fx * fx * (fx * (fx * 6 - 15) + 10);      // quintic: no lattice creases
+      fy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+      const x1 = x0 + 1 === p ? 0 : x0 + 1, r0 = y0 * p, r1 = (y0 + 1 === p ? 0 : y0 + 1) * p;
+      const a = L[r0 + x0], b = L[r0 + x1], c = L[r1 + x0], d = L[r1 + x1];
+      t += ((a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy) * amp[k];
     }
-  });
+    return t / norm;
+  };
+}
+
+/**
+ * Weathering that wraps at the tile edge: stains, washes, blooms.
+ *
+ * Tiling is given away by the eye finding the same *large* shape twice, so
+ * every surface carries something at a scale bigger than its grain. This used
+ * to be `count` filled ellipses, which upscaled soft but stayed discs — and a
+ * field of soft discs is polka dots, on every barrier, every container and
+ * the whole plaza. Real grime is fractal: ragged at the edge, uneven inside,
+ * and present at every size at once. So this thresholds a domain-warped
+ * fractal noise field instead, keeping the arguments it always took: `count`
+ * and the radii set how much of the tile is stained (what the discs used to
+ * cover) and how big the patches run, and `color` is the stain.
+ */
+export function mottle(ctx, size, count, color, rMin, rMax) {
+  const m = /rgba?\(([^,]+),([^,]+),([^,]+)(?:,([^)]+))?\)/.exec(color);
+  const rgb = [+m[1], +m[2], +m[3]], alpha = m[4] === undefined ? 1 : +m[4];
+  const r = (rMin + rMax) / 2;
+  const cover = Math.min(0.62, Math.max(0.12, (count * Math.PI * r * r) / (size * size)));
+  const period = Math.max(2, Math.min(24, Math.round(size / (r * 2.6))));
+  const shape = wrapFbm(period, 4);
+  const warp = wrapFbm(Math.max(2, period >> 1), 2);
+  const warp2 = wrapFbm(Math.max(2, period >> 1), 2);
+  const body = wrapFbm(period * 2, 2);
+  // a fifth of the tile's resolution is enough for something this soft, and
+  // the painter's budget is the boot time
+  const detail = Math.max(64, Math.min(160, Math.round(size / 5)));
+  const layer = canvas(detail), lctx = layer.getContext('2d');
+  const img = lctx.createImageData(detail, detail), d = img.data;
+  const field = new Float32Array(detail * detail);
+  const w = 0.55 / period;                          // warp reach, in tile units
+  for (let y = 0; y < detail; y++) {
+    for (let x = 0; x < detail; x++) {
+      const u = x / detail, v = y / detail;
+      field[y * detail + x] = shape(u + (warp(u, v) - 0.5) * w * 2, v + (warp2(u, v) - 0.5) * w * 2);
+    }
+  }
+  // threshold at the quantile that stains `cover` of the tile
+  const sorted = Float32Array.from(field).sort();
+  const t = sorted[Math.floor((1 - cover) * (sorted.length - 1))];
+  const soft = 0.035;
+  for (let i = 0; i < field.length; i++) {
+    const e = Math.min(1, Math.max(0, (field[i] - t + soft) / (soft * 2)));
+    const edge = e * e * (3 - 2 * e);
+    const x = i % detail, y = (i / detail) | 0;
+    const inside = 0.55 + 0.45 * body(x / detail, y / detail);
+    d[i * 4] = rgb[0]; d[i * 4 + 1] = rgb[1]; d[i * 4 + 2] = rgb[2];
+    d[i * 4 + 3] = Math.round(255 * alpha * edge * inside);
+  }
+  lctx.putImageData(img, 0, 0);
+  ctx.drawImage(layer, 0, 0, size, size);
 }
 
 /** Speckle: the chips of aggregate that stop a flat fill reading as plastic. */
@@ -260,14 +336,7 @@ export function asphalt(variant = 0) {
     }
 
     // oil and ash, dark and soft-edged
-    softLayer(ctx, s, (l) => {
-      for (let i = 0; i < 8; i++) {
-        l.fillStyle = `rgba(16,14,14,${rr(0.10, 0.28)})`;
-        l.beginPath();
-        l.ellipse(rr(0, s), rr(0, s), rr(8, 34), rr(6, 26), rr(0, 3), 0, Math.PI * 2);
-        l.fill();
-      }
-    }, 128);
+    mottle(ctx, s, 8, 'rgba(16,14,14,0.24)', 8, 34);
 
     // wind-drifted dust, which is what keeps the street from reading as new
     mottle(ctx, s, 8, 'rgba(176,150,112,0.13)', 50, 140);
@@ -345,6 +414,25 @@ export function concrete(tint = '#6d6b6d', variant = 0) {
 
 /* ------------------------------------------------------------------ facade */
 
+/**
+ * Where a window sits inside its bay and storey, as fractions: width of the
+ * bay, height of the storey, and how far down from the top of the storey the
+ * opening starts. The painter lays windows out by these and the facade shader
+ * cuts the openings by them, so there is one definition of where a window is.
+ */
+export const WINDOW = { w: 0.58, h: 0.5, top: 0.30 };
+export const WINDOW_GLASS = 0, WINDOW_BROKEN = 1, WINDOW_BOARDED = 2;
+const WINDOW_STATES = new Map();
+
+/**
+ * What is in each of a facade's twelve windows, storey by storey from the
+ * top and bay by bay from the left, as the painter rolled them.
+ */
+export function facadeWindows(style = 0, variant = 0) {
+  facade(style, variant);
+  return WINDOW_STATES.get('facade' + style + '_' + variant);
+}
+
 const FACADE_STYLES = [
   { name: 'panel', base: '#5e584e', trim: '#6a6459' },
   { name: 'brick', base: '#6b4f42', trim: '#7d6a58' },
@@ -399,14 +487,16 @@ export function facade(style = 0, variant = 0) {
       ctx.fillRect(0, y + floor * 0.14, s, 7);
     }
 
-    const winW = bay * 0.58, winH = floor * 0.5;
+    const winW = bay * WINDOW.w, winH = floor * WINDOW.h;
+    const states = [];
     for (let r = 0; r < FACADE_FLOORS; r++) {
       for (let b = 0; b < FACADE_BAYS; b++) {
         const x = b * bay + (bay - winW) / 2;
-        const y = r * floor + floor * 0.30;
-        window_(ctx, x, y, winW, winH, variant);
+        const y = r * floor + floor * WINDOW.top;
+        states.push(window_(ctx, x, y, winW, winH, variant));
       }
     }
+    WINDOW_STATES.set('facade' + style + '_' + variant, states);
 
     // damage that crosses the whole face: shell scars and bullet swarms
     for (let i = 0; i < 2 + (variant % 2); i++) blast(ctx, s, rr(0, s), rr(0, s));
@@ -490,14 +580,7 @@ export function facade(style = 0, variant = 0) {
     } else {
       // render: patchy stucco, with the coat failing to bare grey beneath
       mottle(ctx, s, 22, 'rgba(120,116,108,0.16)', 25, 90);
-      softLayer(ctx, s, (l) => {
-        for (let i = 0; i < 9; i++) {
-          l.fillStyle = `rgba(108,104,98,${rr(0.15, 0.35)})`;
-          l.beginPath();
-          l.ellipse(rr(0, s), rr(0, s), rr(20, 70), rr(16, 55), rr(0, 3), 0, Math.PI * 2);
-          l.fill();
-        }
-      }, 128);
+      mottle(ctx, s, 9, 'rgba(108,104,98,0.30)', 20, 70);
       ctx.fillStyle = jitter(def.trim, 8);
       for (let i = 0; i < 400; i++) {
         ctx.globalAlpha = rr(0.02, 0.08);
@@ -507,7 +590,12 @@ export function facade(style = 0, variant = 0) {
     }
   }
 
-  /** One opening: reveal, sill, lintel and whatever is left in the frame. */
+  /**
+   * One opening: reveal, sill, lintel and whatever is left in the frame.
+   * Returns what is in it — `WINDOW_GLASS`, `WINDOW_BROKEN` or
+   * `WINDOW_BOARDED` — which the facade shader needs to know what to draw
+   * behind the wall plane (`windows.js`).
+   */
   function window_(ctx, x, y, w, h, variant) {
     // the reveal — the wall is thick, so the opening sits back inside it
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -595,6 +683,7 @@ export function facade(style = 0, variant = 0) {
     ctx.fillRect(x - 6, y + h + 5, w + 12, 4);
     if (chance(0.72)) runoff(ctx, x + rr(-4, 4), y + h + 9, w + rr(-10, 8), rr(30, 110), '22,17,12', rr(0.18, 0.4));
     if (chance(0.25)) runoff(ctx, x + rr(0, w), y + h + 9, rr(3, 10), rr(40, 130), '96,52,22', rr(0.16, 0.34));
+    return broken ? WINDOW_BROKEN : boarded ? WINDOW_BOARDED : WINDOW_GLASS;
   }
 
   /** A shell hit: a crater of exposed structure, ringed with soot. */
@@ -646,14 +735,9 @@ export function rustMetal(variant = 0) {
     const paints = ['#3f5a4a', '#6d3b30', '#43506b', '#7a6a3c'];
     ctx.fillStyle = paints[variant % paints.length];
     ctx.fillRect(0, 0, s, s);
-    softLayer(ctx, s, (l) => {
-      for (let i = 0; i < 90; i++) {      // rust eating through the coat
-        l.fillStyle = `rgba(${chance(0.5) ? '138,80,40' : '92,54,30'},${rr(0.25, 0.7)})`;
-        l.beginPath();
-        l.ellipse(rr(0, s), rr(0, s), rr(6, 42), rr(5, 34), rr(0, 3), 0, Math.PI * 2);
-        l.fill();
-      }
-    }, 160);
+    // rust eating through the coat, in two oxides
+    mottle(ctx, s, 40, 'rgba(138,80,40,0.62)', 6, 42);
+    mottle(ctx, s, 34, 'rgba(92,54,30,0.55)', 6, 36);
     splotches(ctx, s, 60, 'rgba(168,112,58,0.30)', 3, 18);
     splotches(ctx, s, 40, 'rgba(38,26,18,0.45)', 3, 16);
 
@@ -684,15 +768,9 @@ export function rustMetal(variant = 0) {
       }
     }
 
-    // dents, which is what stops a flat sheet reading as a flat sheet
-    softLayer(ctx, s, (l) => {
-      for (let i = 0; i < 12; i++) {
-        l.fillStyle = `rgba(0,0,0,${rr(0.10, 0.24)})`;
-        l.beginPath();
-        l.ellipse(rr(0, s), rr(0, s), rr(10, 34), rr(8, 26), rr(0, 3), 0, Math.PI * 2);
-        l.fill();
-      }
-    }, 128);
+    // dents and grime, which is what stops a flat sheet reading as a flat
+    // sheet — shading, not spots
+    mottle(ctx, s, 12, 'rgba(0,0,0,0.18)', 10, 34);
 
     noise(ctx, s, 20);
     return c;
@@ -1072,14 +1150,7 @@ export function roadPaint() {
     }
 
     // stretches rubbed off entirely, soft-edged because wear has no border
-    softLayer(ctx, s, (l) => {
-      for (let i = 0; i < 10; i++) {
-        l.fillStyle = `rgba(${BARE},${rr(0.45, 0.85)})`;
-        l.beginPath();
-        l.ellipse(rr(0, s), rr(0, s), rr(14, 62), rr(10, 40), rr(0, 3), 0, Math.PI * 2);
-        l.fill();
-      }
-    }, 128);
+    mottle(ctx, s, 10, `rgba(${BARE},0.72)`, 14, 62);
 
     // chips and the cracks the road's own movement opens through the film
     splotches(ctx, s, 120, `rgba(${BARE},0.5)`, 1, 5);

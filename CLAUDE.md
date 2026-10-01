@@ -61,6 +61,7 @@ builds, never to play.
 | `src/post.js` | Ambient occlusion, bloom, tone mapping, grade, vignette, grain |
 | `src/atmosphere.js` | The sky, the sun and the fog — one model, so they agree |
 | `src/shadows.js` | The sun's two shadow cascades, snapped to their texels |
+| `src/windows.js` | Window openings traced in the facade shader: reveal, glass, room |
 | `src/audio.js` | Every sound, synthesised via Web Audio |
 | `src/hud.js` | DOM readouts, killfeed, radar, capture banner |
 | `src/nav.js` | Walkable grid over `world.boxes`, and a route field to the player |
@@ -257,6 +258,27 @@ These each cost real debugging time. Changing them needs a reason.
   disc, the glow and the fog all read it. The old sky was a painted sunset
   over a mid-afternoon sun, and that disagreement was most of why the city
   read as a set.
+- **A window is traced in the facade shader, and the painter is what tells
+  it where.** `WINDOW` in `textures.js` is the one definition of where an
+  opening sits in its bay and storey: the painter lays windows out by it and
+  `windows.js` cuts openings by it, and `wallUV` snapping walls to whole bays
+  and storeys is what makes a wall's UVs a grid of window cells. Change the
+  facade layout and both follow; snap a wall differently and the openings
+  stop lining up with the paint. What is in each opening — glass, boards or a
+  broken pane — is rolled while the texture is painted, so the painter
+  records the twelve rolls (`facadeWindows`) and each facade material carries
+  them as a uniform. The opening is gated to faces whose normal is
+  horizontal, because the facade tile is unwrapped onto every face of a
+  building and the tops of the roofless ruins wear it in plain view of the
+  perches: without the gate each of those strips gets windows cut into it,
+  a third of the frame looking down onto one. Nothing about it is geometry,
+  which is the point and the limit: the shadow map, the occlusion pass and
+  `hitscan` all still see a flat wall, so a bullet stops 22 cm short of the
+  glass, the same as it did at a painted window. And the room behind a
+  broken pane is invented, so it is wrong in exactly one place, a ruin's
+  0.7 m shell wall, where the real space behind it is the open courtyard.
+  The sun is read from `directionalLights[0]`, which is the sun for the same
+  reason the cascade patch depends on it — see the next item.
 - **The sun's shadow lookup reads two maps, and it depends on light order.**
   `shadows.js` rewrites three's directional-light loop so light 0 reads the
   tight map (shadow 1) where it covers and the wide one (shadow 0) beyond,
@@ -328,6 +350,22 @@ These each cost real debugging time. Changing them needs a reason.
   low-frequency shapes into a 96px canvas and lets the upscale smooth them,
   which is the same picture for about a thousandth of the cost. Nothing in
   `textures.js` should set `ctx.filter` again.
+- **Weathering is a thresholded fractal, never a filled shape.** Every large
+  stain goes through `mottle`, which used to fill ellipses into a low-res
+  layer. Upscaled, they came out soft-edged and still round, and a surface
+  of soft round stains is polka dots — the plaza, every barrier, the
+  containers' "rust eating through" and their "dents". `mottle` now
+  thresholds a domain-warped, tile-wrapping fractal (`wrapFbm`) at the
+  quantile that stains as much of the tile as the discs used to, and shades
+  the inside with a second field; it keeps its old arguments, so every call
+  site is unchanged. A filled `ellipse` for anything larger than a fleck is
+  the thing not to write again — the shell crater is the one place round is
+  right. `weathering is ragged, not round` measures perimeter² / (4π·area)
+  against a disc on the same canvas: the old discs 1.04x, the fractal
+  1.6x. The field is a pixel loop, so it costs boot time where ellipses did
+  not; the layer is a fifth of the tile's resolution (64-160 px) and the
+  noise is written flat, which brought the cost from +2.9 s to +0.7 s of
+  boot under software rendering, and that is CPU, so it is real.
 - **Anything that is not a box comes out of `shapes.js`, and its winding is
   computed, not written.** `chamferGeo` builds a box with its edges broken: 20
   extra triangles that put a moving highlight along each edge, which is most
@@ -441,7 +479,10 @@ frames. Three things make results repeatable, and all three were bugs first:
 
 `--seed=N` replays an exact city. When something looks wrong, reach for
 `tests/probe.js` before reasoning about it — every real bug here was found by
-looking at state, and guessing first cost hours.
+looking at state, and guessing first cost hours. A probe body may return a
+promise, and it is awaited, so `return (async () => { const T = await
+import('/src/textures.js'); ... })()` reaches any module directly — the
+same import a check can make inside `page.evaluate`.
 
 Test setups have historically been buggier than the game. Common traps:
 hardcoded aim heights (use the actual part's world position), unvalidated
@@ -594,6 +635,44 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The stains pass is the third, and it was the next thing a close look found:
+every large stain in every texture was a filled ellipse, so the plaza, the
+barriers and the containers were covered in soft polka dots. `mottle` is a
+thresholded warped fractal now (invariant above), and the five other places
+that painted discs by hand — the containers' rust and dents, oil on the
+asphalt, failed stucco, rubbed-off road paint — go through it too. Small
+flecks (`splotches`) are clusters of uneven offset blobs rather than one
+ellipse each. Layout untouched (378/420/12): painting runs on each texture's
+own generator. Boot went 14.8 s → 15.5 s, measured over three boots each.
+
+The windows pass is the second realism pass, and it went after the largest
+thing left that read as a picture: the windows. Every building is most of
+the frame and every window on it was paint flush with the brick — glass a
+grey card, a broken pane a black square with white triangles on it. Now each
+opening is traced in the facade's fragment shader (`windows.js`, invariant
+above): a 22 cm reveal with its own normals, so the sun lights one jamb and
+the lintel soffit stays in shade; glass and boards on the back plane, sampled
+from the painted map where the view ray reaches it, so the frame and boards
+move with real parallax; and a room behind each broken pane, two and a half
+to five metres deep, with a ray toward the sun through the opening so a low
+sun lays a patch across the floor. Shards still in a frame are kept, read off
+a blurred lookup — thresholding the grainy painted pane directly gave every
+shard a jagged edge.
+
+Measured on seed 1, back to back: no change in frame cost that survives
+noise (high 1930/1886 ms on, 1888/1930 off), the same 98 calls and 361k
+triangles, and the layout untouched (378/420/12), because it is a material
+property. `a window is a hole in a wall, and only in a wall` compares frames
+with the effect on and off: close to a tall wall 6.3% of the frame changes,
+and straight down onto a ruin wall top nothing does. It was confirmed to fail
+both ways — with the patch not applied the wall view changes 0%, and with the
+horizontal-face gate removed the ruin-top band changes 33%. The second break
+first *passed*, because the check compared only the middle 30% of the frame
+and that was mostly plain wall between two windows; it compares the full
+width of the band the wall top runs across now. The check also renders both
+frames from one placement, because stepping between them moved the film
+grain, which is noise in exactly the thing being measured.
 
 The perch pass came out of play, as a staircase you climb and then a box
 beside it that you fall through. Both readings were right: terrace crates
@@ -1230,6 +1309,14 @@ Suggested next work, in the order I would do it:
    occupied or the decoration is skipped near a perch; `decor` costs the
    stream nothing either way. `what stands on a perch holds you up` stops at
    the deck's footprint on purpose and would need widening to cover it.
+9. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+   shell wall opens onto an invented room 2.6-5 m deep, where the real space
+   behind it is the courtyard. Ruin walls share the facade materials. Giving
+   the ruins their own copies that `discard` the opening instead would make
+   it a real hole, because a box's far faces are back-facing and culled —
+   the courtyard would show through. The shadow map would still see a solid
+   wall, and so would `hitscan`, which is the bigger question: a hole you can
+   see through and not shoot through reads as a bug.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403

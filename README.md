@@ -262,8 +262,20 @@ a decade without maintenance looks like. It costs the layout nothing: like
 the rest of the decorative pass it draws from its own generator, so a seed
 lays out exactly the city it did before.
 
+A window is a hole in the wall, not a picture of one. The facade's own
+shader knows where every opening is — the same four-by-three grid the walls
+are snapped to — and traces each one: a reveal a quarter of a metre deep that
+catches the sun on one side and shades the glass on the other, intact glass
+set back in it mirroring the sky, boards nailed across the back of the
+opening, and behind a blown-out pane a room — floor, ceiling, walls — dim and
+darker the further in, with a low sun laying a patch of light across the
+floor. It is all parallax in the material, so it moves the way a recess moves
+as you walk past, and none of it is geometry: it costs no draw calls, no
+triangles and nothing on the seeded stream, and a bullet still stops at the
+wall face.
+
 Surfaces carry a normal map derived from their own texture — the painted
-window reveals, mortar lines and pitted concrete become relief that catches
+mortar lines and pitted concrete become relief that catches
 the key light instead of reading as a decal. They carry a roughness map from
 the same luminance, so soot and grime answer the light flatly while glass and
 bare metal stay sharp enough to reflect. Facades are built with broken,
@@ -275,6 +287,12 @@ variants, scrap steel comes in four paints failing to the same oxide, and
 every building is given a colour drift and a tile offset of its own, so two
 neighbours never read as the same prefab. Tall blocks step back
 near the top, which is most of what gives a skyline its shape.
+
+Weathering is fractal rather than drawn. Every stain, wash and bloom of rust
+is a warped noise field thresholded to a ragged edge, uneven inside and
+present at every size at once, because the soft round blotches it replaced
+read as polka dots on every surface they covered. It wraps at the tile edge
+like everything else, so the eye has no seam to find.
 
 Where surfaces meet, the light does not reach, and a shadow map will not tell
 you that. Every solid in the city deposits into a coarse occlusion grid, and
@@ -400,6 +418,7 @@ src/shapes.js       chamfers, lofted profiles, geometry merging
 src/post.js         ambient occlusion, bloom, tone mapping, grade, vignette, grain
 src/atmosphere.js   the sky, the sun and the fog, as one model
 src/shadows.js      the sun's two shadow cascades
+src/windows.js      window openings traced in the facade shader: reveals, glass, rooms
 src/audio.js        synthesised gunfire and feedback via Web Audio
 src/hud.js          HUD readouts, killfeed, radar, damage indicators
 vendor/             Three.js r169 build

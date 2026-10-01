@@ -1554,6 +1554,178 @@ check('the sky, the fog and the light are one atmosphere', async (page) => {
   return r;
 });
 
+check('a window is a hole in a wall, and only in a wall', async (page) => {
+  // The windows are cut into the facade by its fragment shader (`windows.js`):
+  // reveals, glass set back, a room behind a broken pane. Two ways for that to
+  // go wrong, and both are silent. It can stop doing anything — the patch not
+  // compiled, or the states not reaching it — and the city goes back to
+  // painted windows. Or it can cut windows into faces that are not walls: the
+  // facade tile is unwrapped onto every face of a building, and the tops of
+  // the roofless ruins wear it in plain view of the perches.
+  //
+  // So it compares frames with the effect on and off. Close to a tall wall,
+  // a good share of the frame must change. Straight down onto the top of a
+  // ruin wall, nothing may.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.applyQuality('high');
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    if (g.viewScene) g.viewScene.visible = false;
+    const gl = g.renderer.getContext();
+    const mats = [];
+    g.city.traverse((m) => { if (m.material?.userData?.windows && !mats.includes(m.material)) mats.push(m.material); });
+    const set = (on) => { for (const m of mats) m.userData.windowsOn.value = on ? 1 : 0; };
+    const kinds = new Set();
+    for (const m of mats) for (const s of m.userData.windows.value) kinds.add(s);
+
+    const frame = (place) => {
+      place();
+      g.render();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return px;
+    };
+    // One placement, two renders: stepping between them would move the
+    // film grain, which is noise in exactly the measure being taken. `keepX`
+    // and `keepY` are the central fractions of the frame compared.
+    const changed = (place, keepX = 1, keepY = 1) => {
+      place();
+      set(true); const a = frame(() => {});
+      set(false); const b = frame(() => {});
+      set(true);
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const x0 = Math.floor(w * (1 - keepX) / 2), y0 = Math.floor(h * (1 - keepY) / 2);
+      let n = 0, all = 0;
+      for (let y = y0; y < h - y0; y++) {
+        for (let x = x0; x < w - x0; x++) {
+          const i = (y * w + x) * 4;
+          const la = a[i] * 0.3 + a[i + 1] * 0.5 + a[i + 2] * 0.2;
+          const lb = b[i] * 0.3 + b[i + 1] * 0.5 + b[i + 2] * 0.2;
+          if (Math.abs(la - lb) > 8) n++;
+          all++;
+        }
+      }
+      return n / all;
+    };
+    const settle = () => { for (let i = 0; i < 5; i++) { g.time += 1 / 60; g.step(1 / 60); } };
+
+    // a tall wall with clear street in front of it
+    let wall = null;
+    for (const b of g.world.boxes) {
+      if (b.top < 9 || Math.abs(b.cos) < 0.999 || wall) continue;
+      for (const [nx, nz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const cx = nx ? (nx > 0 ? b.maxX : b.minX) : (b.minX + b.maxX) / 2;
+        const cz = nz ? (nz > 0 ? b.maxZ : b.minZ) : (b.minZ + b.maxZ) / 2;
+        const px = cx + nx * 4, pz = cz + nz * 4;
+        if (g.world.groundHeight(px, pz, 0.42, 99) > 0.3 || g.world.occupied(px, pz, 1.2, 0.3)) continue;
+        wall = { nx, nz, px, pz };
+        break;
+      }
+    }
+    const onWall = wall && changed(() => {
+      g.player.reset(wall.px, wall.pz);
+      g.player.yaw = Math.atan2(wall.nx, wall.nz) + 0.5;   // face it, turned along it
+      g.player.pitch = 0.45;
+      settle();
+    });
+
+    // the top of a roofless ruin's wall, from straight above
+    const ruin = g.world.boxes.find((b) => b.top > 3.4 && b.top < 6.6 &&
+      Math.min(b.maxX - b.minX, b.maxZ - b.minZ) < 0.8 && Math.max(b.maxX - b.minX, b.maxZ - b.minZ) > 6);
+    const onTop = ruin && changed(() => {
+      settle();
+      const cx = (ruin.minX + ruin.maxX) / 2, cz = (ruin.minZ + ruin.maxZ) / 2;
+      g.camera.position.set(cx, ruin.top + 1.2, cz);
+      g.camera.lookAt(cx, ruin.top, cz + 1e-3);
+      g.camera.updateMatrixWorld();
+    }, 1, 0.3);   // the wall top runs across the middle; a corner can catch a real facade
+
+    const compiled = g.renderer.info.programs.some((p) =>
+      p.fragmentShader && (gl.getShaderSource(p.fragmentShader) || '').includes('W_DEPTH'));
+    if (g.viewScene) g.viewScene.visible = true;
+    return { facades: mats.length, kinds: [...kinds].sort(), compiled, wall: !!wall, ruin: !!ruin,
+      onWall: onWall === null ? null : +(onWall * 100).toFixed(2), onTop: onTop === null ? null : +(onTop * 100).toFixed(3) };
+  });
+  expect(r.facades >= 10, `only ${r.facades} facade materials have windows`);
+  expect(r.kinds.join() === '0,1,2', `the facades' windows are only of kinds ${r.kinds} — glass, broken and boarded expected`);
+  expect(r.compiled, 'no compiled shader cuts windows');
+  expect(r.wall && r.ruin, `nothing to look at: wall ${r.wall}, ruin ${r.ruin}`);
+  expect(r.onWall > 3, `windows changed only ${r.onWall}% of a frame close to a wall`);
+  expect(r.onTop < 0.05, `windows changed ${r.onTop}% of a frame looking down onto the top of a wall`);
+  return r;
+});
+
+check('weathering is ragged, not round', async (page) => {
+  // Every texture's large-scale grime goes through `mottle`, which used to
+  // fill ellipses. Upscaled, they came out soft-edged and still round, and a
+  // surface of soft round stains is polka dots — the plaza, every barrier,
+  // every container. It thresholds a warped fractal field now.
+  //
+  // Roundness is measurable: for its area a disc has the shortest boundary of
+  // any shape, so perimeter² / (4π·area) is 1 for a disc and grows with a
+  // ragged edge. On a pixel grid a disc reads about 1.6, so the measure is
+  // taken against one painted on the same canvas, and the old discs came out
+  // at 1.04-1.11 of it. The bar sits well clear of that.
+  const r = await page.evaluate(async () => {
+    const T = await import('/src/textures.js');
+    const { makeRandom } = await import('/src/rng.js');
+    const size = 512;
+    const measure = (paint) => {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      paint(ctx);
+      const d = ctx.getImageData(0, 0, size, size).data;
+      let max = 0; for (let i = 3; i < d.length; i += 4) max = Math.max(max, d[i]);
+      const on = new Uint8Array(size * size);
+      for (let i = 0; i < on.length; i++) on[i] = d[i * 4 + 3] > max * 0.5 ? 1 : 0;
+      const seen = new Uint8Array(on.length), q = [];
+      for (let i = 0; i < on.length; i++) {
+        if (!on[i] || seen[i]) continue;
+        const st = [i]; seen[i] = 1;
+        let area = 0, per = 0, edge = false;
+        while (st.length) {
+          const j = st.pop(); area++;
+          const x = j % size, y = (j / size) | 0;
+          if (x === 0 || y === 0 || x === size - 1 || y === size - 1) edge = true;
+          for (const k of [x > 0 ? j - 1 : -1, x < size - 1 ? j + 1 : -1, j - size, j + size]) {
+            if (k < 0 || k >= on.length) continue;
+            if (!on[k]) { per++; continue; }
+            if (!seen[k]) { seen[k] = 1; st.push(k); }
+          }
+        }
+        // whole patches only: one cut by the canvas edge has a straight side
+        if (area > 300 && !edge) q.push((per * per) / (4 * Math.PI * area));
+      }
+      q.sort((a, b) => a - b);
+      return { q, median: q[q.length >> 1] || 0 };
+    };
+    const disc = measure((ctx) => { ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(256, 256, 60, 0, 7); ctx.fill(); });
+    const rows = {};
+    for (const [name, args] of [['grime', [16, 'rgba(0,0,0,0.5)', 12, 40]], ['bloom', [8, 'rgba(140,96,54,0.5)', 8, 34]]]) {
+      // pooled over three generators, so no one roll decides it; each is the
+      // painter's way, a generator of its own, which also leaves the game's
+      // seeded stream alone
+      const q = [];
+      for (const seed of [1, 2, 3]) {
+        const saved = Math.random;
+        Math.random = makeRandom(seed);
+        try { q.push(...measure((ctx) => T.mottle(ctx, size, ...args)).q); } finally { Math.random = saved; }
+      }
+      q.sort((a, b) => a - b);
+      rows[name] = { patches: q.length, ratio: +((q[q.length >> 1] || 0) / disc.median).toFixed(2) };
+    }
+    return { disc: +disc.median.toFixed(2), rows };
+  });
+  for (const [name, row] of Object.entries(r.rows)) {
+    expect(row.patches >= 6, `${name}: only ${row.patches} whole stain patches to measure`);
+    expect(row.ratio > 1.35, `${name}: stains are ${row.ratio}x as ragged as a disc — still round`);
+  }
+  return r;
+});
+
 check('every surface is textured at the world scale it declares', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

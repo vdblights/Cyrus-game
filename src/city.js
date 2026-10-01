@@ -4,6 +4,7 @@ import * as TEX from './textures.js';
 import { TILE, FACADE_BAYS, FACADE_FLOORS, FACADE_VARIANTS } from './textures.js';
 import { reserve, spend, makeRandom, UUID_COST } from './rng.js';
 import { chamferGeo, loftGeo, loftGeoZ, mergeIntoOne } from './shapes.js';
+import { cutWindows } from './windows.js';
 
 const BLOCK = 34;      // centre-to-centre distance between city lots
 const GRID = 6;        // lots per axis
@@ -538,12 +539,12 @@ export function buildCity(scene) {
       for (let v = 0; v < FACADE_VARIANTS; v++) {
         const key = 'facade' + style + '_' + v;
         const map = TEX.facade(style, v);
-        facades.push(new THREE.MeshStandardMaterial({
+        facades.push(cutWindows(new THREE.MeshStandardMaterial({
           map, normalMap: TEX.normalFrom(map, 1.1, key, 1, true),
           normalScale: new THREE.Vector2(0.55, 0.55),
           roughnessMap: TEX.surfaceFrom(map, { dark: 1, lite: 0.34, half: true }, key),
           roughness: 1, metalness: 0.05, envMapIntensity: 0.7, vertexColors: true,
-        }));
+        }), TEX.facadeWindows(style, v)));
       }
     }
 
