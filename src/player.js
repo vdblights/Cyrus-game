@@ -161,9 +161,11 @@ export class Player {
   }
 
   reset(x, z) {
-    this.position.set(x, EYE_STAND, z);
+    // on whatever floor is underfoot: most of the sector is pavement, and the
+    // plaza you start in is a slab, not the street
+    this.feetY = this.world.groundHeight(x, z, SUPPORT_RADIUS, STEP_HEIGHT);
+    this.position.set(x, this.feetY + EYE_STAND, z);
     this.velocity.set(0, 0, 0);
-    this.feetY = 0;
     this.eyeHeight = EYE_STAND;
     this.onGround = true;
     this.crouching = false;
@@ -321,6 +323,14 @@ export class Player {
       if (this.velocity.y < -FALL_SAFE && this.onFallDamage) {
         this.onFallDamage(Math.round((-this.velocity.y - FALL_SAFE) * 6));
       }
+      // Walking up a step moves the feet onto it at once, which is right, and
+      // used to move the view with them, which is not: every kerb in the city
+      // was a 28 cm jolt between two frames. The rise is taken out of the eye
+      // height instead, and the damp below hands it back over a few frames,
+      // the same way it eases a crouch. Below 5 cm is the frame's own gravity
+      // dip being caught, not a step.
+      const rise = support - this.feetY;
+      if (this.onGround && rise > 0.05) this.eyeHeight -= rise;
       this.feetY = support;
       this.velocity.y = 0;
       this.onGround = true;

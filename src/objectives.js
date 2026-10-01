@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { randRange } from './world.js';
+import { randRange, SUPPORT_RADIUS } from './world.js';
 import { audio } from './audio.js';
 
 /**
@@ -194,9 +194,12 @@ export class ObjectiveSystem {
         const x = p.x + Math.cos(a) * d;
         const z = p.z + Math.sin(a) * d;
         if (Math.abs(x) > lim || Math.abs(z) > lim) continue;
-        if (w.groundHeight(x, z, 1.4, 99) > 0.35) continue;      // street level only
+        // Street level only, measured from the floor underfoot: most of the
+        // sector is pavement, which is a floor and not a rooftop.
+        const floor = w.groundHeight(x, z, SUPPORT_RADIUS, 0.5);
+        if (w.groundHeight(x, z, 1.4, 99) > floor + 0.35) continue;
         if (w.occupied(x, z, def.radius * 0.8, 0.6)) continue;   // room to stand and fight
-        return { x, y: 0, z };
+        return { x, y: floor, z };
       }
     }
     return null;

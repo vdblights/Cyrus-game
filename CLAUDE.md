@@ -138,6 +138,27 @@ These each cost real debugging time. Changing them needs a reason.
   they used to, so the stream is unchanged. Measured on seeds 1, 7, 99991,
   20260101 and 20260813: every perch, every barrel, and every collider more
   than 14 m from a perch is identical before and after.
+- **A floor is a collider, and it is registered last.** Every slab drawn as
+  something to stand on — the 28 cm pavement apron on every lot, the plaza,
+  a rubble lot's slab (0.35 m), a ruin's courtyard (0.45 m) — goes through
+  `registerFloors` in `city.js`, which puts it in `world.boxes` via
+  `addFloor` and a plain box copy of it in `world.solids`. They were drawn
+  and registered nowhere: a lot is 28 m of apron in a 34 m block, so for
+  most of the sector the player walked 28 cm inside the kerb, hostiles stood
+  with their boots in it, and a shot at the pavement landed on the street
+  plane underneath. Three things keep it cheap. Every floor is under
+  `STEP_HEIGHT`, so `resolve` walks over it and footing lifts you onto it.
+  Every reader that asks about *obstacles* — `occupied`, `areaClear`, the
+  occlusion field, the nav bake — already skips anything that low, so a
+  floor is invisible to placement. And registering them after everything
+  else is placed makes that a guarantee rather than an argument: the old
+  fingerprint, taken over every box but the floors, reproduces exactly on
+  all three pinned seeds. The `floor` flag on those boxes is for a reader
+  that must tell ground from what stands on it, because a kerb and the first
+  tread of a stair are otherwise the same low step — the stairs check found
+  a perch's pavement before its stairs and walked into its deck. What still
+  assumes y=0 is wrong now: an effect that lands, a pickup, an objective
+  ring and a test that says "on the street" all ask the floor instead.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -586,8 +607,9 @@ the stripes only form at a grazing angle. That last one is the expensive
 kind, and the only thing that caught it was the rule that a check is
 confirmed to fail against what it guards before it is kept. Two related
 traps came out of the same check. "Open" by the box list is not open: the
-sidewalks are a 28 cm visual apron outside `world.boxes`, so a spot clear of
-every box still has kerbs either side, and kerbs are rightly occluded. The
+sidewalks are a 28 cm kerb that every obstacle query skips, so a spot clear
+of every obstacle still has kerbs either side, and kerbs are rightly
+occluded. The
 check now hides every city mesh but the merged ground plane, so the frame is
 flat by construction. And a look bench that hides the city for one view has
 to put it back before it measures frame cost, or it measures an empty
@@ -609,6 +631,31 @@ its setup had a trap of its own once the stairs moved: the walk started 4 m
 out from the first tread, which on one deck put a streetlight between the
 player and the stairs. Start a walk where the thing being walked onto
 begins, not where a margin happens to land.
+
+A ninth, from the floors pass, in two halves. "On the street" was written
+into setups as a height — `feetY < 0.2`, `groundHeight(...) > 0.2` — and
+meant two different things: *on the road* (`__place`, the route check, which
+want level ground at both ends) and *on the ground rather than on a prop*
+(the ledge, wall and pull-up setups). Once the pavement held you up at
+0.28 m the second kind started refusing every approach from a pavement. They
+read 0.5 m now, which is above every floor and below every prop; the first
+kind was left alone, because the road is still what they mean. When a
+floor's height changes, grep the suite for both.
+
+The other half is how to tell a bot-run regression from noise, and it is
+cheap. Any change that perturbs one runtime draw — here, objective siting
+rejecting a different number of candidates — sends every later spawn, wave
+composition and pick down another path, and the scripted run diverges
+completely: seed 1 went from wave 5 at 185 s with 55 kills to wave 5 at
+240 s with 40, because its wave 4 rolled eight marksmen on perches the bot
+can neither reach nor often see. Before reading anything into that, put one
+extra `Math.random()` at the top of `startRun` on the *unchanged* code and
+run the same seeds. On seven seeds it swung 20260101 from wave 5 and 54
+kills to wave 4 and 39, and seed 7 from 52 kills to 69 — the same size as
+the change being judged. That is the noise floor; a regression has to clear
+it. And trace what the bot spent the slow wave on before concluding either
+way: the trace is what found a real (if harmless) economy change hiding in
+the same diff.
 
 ## Performance
 
@@ -662,6 +709,40 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The floors pass is the sixth, and it was item 1 of the list: the
+sidewalks were drawn and not stood on. It turned out to be four slabs, not
+one — the pavement apron (0.28 m) on every lot, the plaza (0.30), the rubble
+lots' slab (0.35) and the ruins' courtyard floor (0.45) — and none was in
+`world.boxes` or `world.solids`. Seed 1 has 47 of them: 36 aprons, the plaza,
+4 rubble slabs and 6 courtyards. `registerFloors` puts them in both, last
+(invariant above). Rendered before and after from the kerb, the difference is
+the whole point: before, a hostile on the pavement is cut off at the shin;
+after, it has boots and they are on the pavement.
+
+Everything that had been quietly assuming the ground is at y=0 came with it.
+The player is reset onto whatever is underfoot (the run starts on the
+plaza's 0.30 m slab, not under it); a step up moves the feet at once and
+takes the rise out of the eye height for the damp to hand back, so the view
+moves 0.044 m in its worst frame onto a kerb against 0.278 m; casings, blast
+debris and scorch marks land on the floor under them (`effects.groundAt`,
+asked once at spawn, never per frame); a drop floats over the floor where
+its hostile fell — but never a roof, because a marksman's drop has always
+landed at street level and that is half of what killing one pays; and an
+objective is sited on, and measures "street level" from, the floor under it.
+
+`the pavement is a floor you stand on, step onto and shoot` reads the merged
+city — every level face low enough to walk onto with room for a body on it,
+13,751 m² on seed 1 — and asks the footing what holds each up, then walks a
+road onto the pavement and shoots straight down at it. It was confirmed to
+fail three ways, breaking one reader at a time: floors never registered
+(17,434 m² held up by nothing), in the box list but not the raycast list
+(the shot stops at 0), and the step taken all at once (0.278 m in a frame).
+The layout check was re-measured once, with the old fingerprints written
+into it and reproduced over every box but the floors. Four checks had "on
+the street" written as a height in their setups and were corrected — the
+ninth testing trap above has both halves of that, including how the
+scripted run's swing on seed 1 was shown to be noise.
 
 The motion pass is the fifth, and it started from item 6 of the list — the
 hostiles walked on a sine wave — and found something worse underneath:
@@ -1348,17 +1429,15 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Make the sidewalks something you stand on.** Every lot carries a
-   28 cm concrete apron (`buildCity`, "sidewalks"), and none of them is in
-   `world.boxes`. Measured on seed 1: at all 36 points sampled on the
-   pavement ring between the buildings and the road, `groundHeight` is 0 —
-   so the player walks 28 cm inside the kerb and every hostile on a sidewalk
-   stands with its boots buried in it. It hides well at dusk and gets less
-   hidden the better the lighting gets: contact shading now draws a line
-   exactly where boots meet a surface. Registering them is a layout change
-   (every seed's fingerprint moves), and the nav bake and the step height
-   both need to agree that a 28 cm kerb is a step rather than a wall —
-   `STEP` is 0.55, so it is, but measure it.
+1. **Seat the props that stand on a floor.** Barricades, drums, terrace
+   crates and the containers in a ruin are all built from y=0, so on a lot
+   they are sunk 0.28-0.45 m into the floor, and their colliders' tops are
+   measured from the street rather than from the slab. Nothing walks through
+   anything — the collider still matches the visible top — but a barricade
+   on the pavement stands 28 cm shorter than one in the road, and its
+   foot is buried. Lifting each by `groundHeight` at its footprint is a
+   layout change (every top moves), and the stairs that end at a terrace's
+   deck have to move with it.
 2. **Split the merged city per block.** The near shadow cascade covers 26 m
    and draws all 360k triangles of the sector into it, because a merged mesh
    spanning the city cannot be culled; so does the main camera. Per-block

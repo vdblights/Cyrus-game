@@ -207,6 +207,46 @@ function occlusionField(world, extent, cell = 1.6) {
 }
 
 /**
+ * Make every floor slab something you stand on and something a bullet stops at.
+ *
+ * The sidewalks, the plaza, a rubble lot's slab and a ruin's courtyard were
+ * drawn and registered nowhere, so the footing read the street under them:
+ * the player walked 28 cm inside every kerb and 45 cm inside a ruin's floor,
+ * every hostile on a pavement stood with its boots buried in it, and a shot
+ * at the pavement landed on the street plane below the paint, where nothing
+ * could see the impact. A whole lot is apron — the road between two lots is
+ * 6 m of a 34 m block — so that was most of the ground in the sector.
+ *
+ * Registered *after* everything else is placed, and nothing placed earlier
+ * would have noticed them anyway: every generation-time reader of the box
+ * list — `areaClear`, `occupied`, the occlusion field, the nav bake — skips
+ * anything this low, because each of them is asking about obstacles and a
+ * floor is not one. Appending them is what makes that a guarantee rather than
+ * an argument: every other collider in a seed is exactly where it was.
+ *
+ * The raycast copy is a plain box rather than the slab itself, for the reason
+ * the ground has two: the drawn slab is subdivided for the bake, and three
+ * walks every triangle of a mesh once a ray is inside its bounding sphere,
+ * which for a 28 m slab is most rays fired near it. Built inside `reserve`,
+ * so the UUIDs they mint cost the seeded stream nothing.
+ */
+function registerFloors(world, slabs) {
+  reserve(() => {
+    for (const slab of slabs) {
+      const { width, height, depth } = slab.geometry.parameters;
+      const p = slab.position;
+      world.addFloor(p.x - width / 2, p.z - depth / 2, p.x + width / 2, p.z + depth / 2, p.y + height / 2);
+
+      const hit = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), slab.material);
+      hit.position.copy(p);
+      hit.updateMatrixWorld(true);
+      hit.matrixAutoUpdate = false;
+      world.solids.push(hit);
+    }
+  });
+}
+
+/**
  * UV options for a wall wearing a facade: floors and window bays snapped to
  * the wall's own extent so nothing is cut at a corner, the tile slid along by
  * a whole bay or floor so two buildings do not show the same window in the
@@ -731,6 +771,11 @@ export function buildCity(scene) {
   groundHit.matrixAutoUpdate = false;
   world.solids.push(groundHit);   // so bullets that miss still kick up dust
 
+  // Every slab drawn as something to stand on — the sidewalks, the plaza, a
+  // rubble lot's broken floor, a ruin's courtyard — recorded as it is laid
+  // and registered once the rest of the city is (see `registerFloors`).
+  const floors = [];
+
   // sidewalks: a raised concrete apron around every lot
   const walkMat = concreteMat;
   for (let i = 0; i < GRID; i++) {
@@ -741,6 +786,7 @@ export function buildCity(scene) {
       walk.receiveShadow = true;
       walk.userData.tint = tintAt(lotCenter(i), lotCenter(j), 5, 0.07);
       group.add(walk);
+      floors.push(walk);
     }
   }
 
@@ -892,6 +938,8 @@ export function buildCity(scene) {
     }
   }
 
+  registerFloors(world, floors);
+
   const batches = bakeStatic(group, world);
 
   // The street grid, published rather than re-derived. `roadMarkings` lays
@@ -1034,6 +1082,7 @@ export function buildCity(scene) {
     slab.receiveShadow = true;
     slab.userData.tint = tintAt(cx, cz, 6, 0.07);
     g.add(slab);
+    floors.push(slab);
     for (let k = 0; k < 5; k++) rubblePile(g, cx + randRange(-8, 8), cz + randRange(-8, 8), conc);
     if (Math.random() < 0.5) container(g, w, cx + randRange(-6, 6), cz + randRange(-6, 6), Math.random() * Math.PI);
   }
@@ -1044,6 +1093,7 @@ export function buildCity(scene) {
     slab.receiveShadow = true;
     slab.userData.tint = tintAt(cx, cz, 6, 0.07);
     g.add(slab);
+    floors.push(slab);
     for (let k = 0; k < 14; k++) {
       rubblePile(g, cx + randRange(-9, 9), cz + randRange(-9, 9), conc, randRange(0.7, 1.9));
     }
@@ -1067,6 +1117,7 @@ export function buildCity(scene) {
     slab.receiveShadow = true;
     slab.userData.tint = tintAt(cx, cz, 6, 0.07);
     g.add(slab);
+    floors.push(slab);
 
     // dry fountain in the middle: cover to fight from
     const ring = new THREE.Mesh(cylGeo(3.2, 3.4, 1, TILE.concrete, 16, true), conc);

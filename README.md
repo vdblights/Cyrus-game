@@ -409,6 +409,13 @@ The same rules apply to everyone: hostiles climb, stand on, and fall off the
 same surfaces, and a melee rusher cannot reach you across a height gap. Drops
 of more than about four metres hurt, and a long enough fall will kill you.
 
+The ground you see is the ground you stand on. The pavement round every block
+is a 28 cm kerb above the road, and the plaza, the rubble lots and the ruins'
+courtyards are slabs of their own; you step up onto them, hostiles stand on
+them rather than in them, and a shot at the pavement stops at the pavement.
+Stepping up a kerb or a stair moves your feet at once and eases the view up
+after them, so a street crossing is not a jolt.
+
 ## How it is put together
 
 ```

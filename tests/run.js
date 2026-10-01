@@ -275,16 +275,29 @@ check('stairs carry the player onto a perch', async (page) => {
     // pinned seed the one container stack is the tenth.
     const deckOf = (p) => g.world.boxes.find((b) => Math.abs(b.top - p.y) < 0.02 &&
       p.x > b.minX && p.x < b.maxX && p.z > b.minZ && p.z < b.maxZ);
+    // The highest floor slab within `r` — what a step is a step up *from*.
+    const floorAt = (x, z, r) => {
+      let top = 0;
+      for (const b of g.world.boxes) {
+        if (b.floor && b.top > top && x > b.minX - r && x < b.maxX + r && z > b.minZ - r && z < b.maxZ + r) top = b.top;
+      }
+      return top;
+    };
     const report = [];
     for (const perch of g.perches) {
       const deck = deckOf(perch);
-      // a stair run reads as a low step a few metres out along one axis; the
-      // first tread is 0.85 m deep, so a 1 m stride can step clean over it
+      // A stair run reads as a low step a few metres out along one axis; the
+      // first tread is 0.85 m deep, so a 1 m stride can step clean over it.
+      // Low *above the floor there*: once the pavement was a collider, a
+      // perch with pavement beside it and its stairs round another side was
+      // approached across the pavement, which is a low step too, and walked
+      // into the side of its own deck.
       let approach = null;
       for (const [ax, az] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
         for (let d = 3; d < 18; d += 0.25) {
-          const h = g.world.groundHeight(perch.x + ax * d, perch.z + az * d, 0.42, 99);
-          if (h > 0.2 && h < 0.55) { approach = { ax, az, d }; break; }
+          const x = perch.x + ax * d, z = perch.z + az * d;
+          const rise = g.world.groundHeight(x, z, 0.42, 99) - floorAt(x, z, 0.42);
+          if (rise > 0.05 && rise < 0.55) { approach = { ax, az, d }; break; }
         }
         if (approach) break;
       }
@@ -402,7 +415,9 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
       for (const off of [0, -0.5, 0.5, -0.85, 0.85]) {
         if (Math.abs(off) > reach) continue;
         const px = mid + off;
-        if (g.world.groundHeight(px, pz, R, 99) > 0.2) continue;   // not on the street
+        // on the ground — the street or a floor laid on it, all under half a
+        // metre — rather than on top of something
+        if (g.world.groundHeight(px, pz, R, 99) > 0.5) continue;
         if (g.world.occupied(px, pz, R, 0.6)) continue;            // stuck inside something
         // room for a body on the deck, and a deck there to stand on
         if (g.world.groundHeight(px, lz, R, Infinity) > box.top + 0.05) continue;
@@ -447,7 +462,7 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
     `only ${up.length}/${r.ledges.length} ledges climbed: ${JSON.stringify(r.ledges)}`);
 
   expect(r.walls.length >= 2, `only ${r.walls.length} walls to try`);
-  const stuck = r.walls.filter((w) => !w.started && w.feet < 0.2);
+  const stuck = r.walls.filter((w) => !w.started && w.feet < 0.5);
   expect(stuck.length === r.walls.length,
     `a building face was climbable: ${JSON.stringify(r.walls)}`);
   return { ledges: r.ledges.length, walls: r.walls.length };
@@ -467,7 +482,7 @@ check('a pull-up carries the view, it does not jump it', async (page) => {
       if (climbs.length >= 6 || b.top < 0.8 || b.top > 1.75) continue;
       const px = (b.minX + b.maxX) / 2, pz = b.minZ - 0.62;
       const lz = pz + (R + 0.1) + R + 0.15;
-      if (g.world.groundHeight(px, pz, R, 99) > 0.2) continue;
+      if (g.world.groundHeight(px, pz, R, 99) > 0.5) continue;   // on the ground, not on a prop
       if (g.world.occupied(px, pz, R, 0.6)) continue;
       if (g.world.groundHeight(px, lz, R, Infinity) > b.top + 0.05) continue;
       if (g.world.groundHeight(px, lz, R, b.top + 0.05) < b.top - 0.25) continue;
@@ -637,10 +652,12 @@ check('the ground you stand on is the ground you can see', async (page) => {
     const BODY = g.player.radius;
 
     // Edges with nothing at all beyond them, or this measures the distance to
-    // the next prop rather than the overhang past this one.
+    // the next prop rather than the overhang past this one. A floor beyond the
+    // edge — pavement, a ruin's courtyard — is the ground being walked off
+    // onto, not a prop, and every floor is under a step high.
     const edges = W.boxes.filter((b) => {
       if (b.top < 0.8 || b.top > 4 || b.sin !== 0) return false;
-      return !W.boxes.some((o) => o !== b && o.top > 0.3
+      return !W.boxes.some((o) => o !== b && o.top > 0.55
         && o.maxX > b.maxX && o.minX < b.maxX + 2.5
         && o.maxZ > b.cz - 1 && o.minZ < b.cz + 1);
     });
@@ -676,7 +693,7 @@ check('the ground you stand on is the ground you can see', async (page) => {
     // and the same thing felt rather than computed: walk off a crate
     const crate = W.boxes.find((b) => {
       if (b.sin !== 0 || b.top < 0.9 || b.top > 1.6 || b.hx < 0.9) return false;
-      return !W.boxes.some((o) => o !== b && o.top > 0.3
+      return !W.boxes.some((o) => o !== b && o.top > 0.55
         && o.maxX > b.maxX && o.minX < b.maxX + 3 && o.maxZ > b.cz - 1 && o.minZ < b.cz + 1);
     });
     let walked = null;
@@ -694,10 +711,11 @@ check('the ground you stand on is the ground you can see', async (page) => {
         if (!g.player.onGround && walked === null) {
           walked = +(g.player.position.x - crate.maxX).toFixed(2);
         }
-        if (g.player.feetY < 0.2) break;
+        if (g.player.onGround && g.player.feetY < 0.5) break;
       }
       g.input.keys.clear();
-      walked = { past: walked, reachedStreet: g.player.feetY < 0.2 };
+      // the street, or the pavement or courtyard floor laid over it
+      walked = { past: walked, reachedStreet: g.player.onGround && g.player.feetY < 0.5 };
     }
 
     return {
@@ -719,6 +737,117 @@ check('the ground you stand on is the ground you can see', async (page) => {
   expect(r.walked && r.walked.past !== null && r.walked.past < 0.25,
     `walking off a crate kept you up ${r.walked && r.walked.past} m past the edge`);
   expect(r.walked.reachedStreet, 'walking off a crate did not put you on the street');
+  return r;
+});
+
+check('the pavement is a floor you stand on, step onto and shoot', async (page) => {
+  // Every lot sits on a 28 cm concrete apron, and the plaza, the rubble lots
+  // and the ruins' courtyards each lay a slab of their own; all of them were
+  // drawn and registered nowhere. The footing read the street under them, so
+  // you walked 28 cm inside every kerb and 45 cm inside a ruin's floor, every
+  // hostile on a pavement had its boots in it, and a shot at the pavement
+  // landed on the street plane underneath. A whole lot is apron, so that was
+  // most of the ground in the sector.
+  //
+  // Three halves of one thing. Every face of the drawn city that is level, low
+  // enough to walk onto without a jump and has room for a body on it asks the
+  // footing what holds it up. A walk from the middle of a road onto the
+  // pavement asks for the step, and for the view to take it smoothly: the feet
+  // land on a kerb in one frame, which is right, and the view used to go with
+  // them, a 28 cm jolt at every crossing. And a shot straight down at the
+  // pavement asks where it stops.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game;
+    const W = g.world;
+
+    let area = 0, unsupported = 0;
+    const sample = [];
+    for (const m of g.city.children) {
+      if (!m.isMesh) continue;
+      const pos = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : pos.count;
+      const v = (k) => { const i = idx ? idx.getX(k) : k; return [pos.getX(i), pos.getY(i), pos.getZ(i)]; };
+      for (let t = 0; t < n; t += 3) {
+        const a = v(t), b = v(t + 1), c = v(t + 2);
+        const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        const nx = e1[1] * e2[2] - e1[2] * e2[1], ny = e1[2] * e2[0] - e1[0] * e2[2], nz = e1[0] * e2[1] - e1[1] * e2[0];
+        const len = Math.hypot(nx, ny, nz);
+        // Level, as everything built from a box is. A rubble chunk is a
+        // tumbled icosahedron of walk-through decoration, and one of its
+        // faces lands within a few degrees of flat now and then.
+        if (len < 1e-6 || ny / len < 0.999) continue;
+        const x = (a[0] + b[0] + c[0]) / 3, y = (a[1] + b[1] + c[1]) / 3, z = (a[2] + b[2] + c[2]) / 3;
+        // above the road paint, and no higher than a step
+        if (y < 0.1 || y > 0.55) continue;
+        // room for a body: a plinth's top is a ledge on a wall, not a floor
+        if (W.groundHeight(x, z, g.player.radius, Infinity) > y + 0.05) continue;
+        area += len / 2;
+        const ground = W.groundHeight(x, z, 0.12, y + 0.05);
+        if (Math.abs(ground - y) > 0.05) {
+          unsupported += len / 2;
+          if (sample.length < 4) sample.push([+x.toFixed(1), +y.toFixed(2), +z.toFixed(1), +ground.toFixed(2)]);
+        }
+      }
+    }
+
+    // A road with a clear run onto the pavement east of it.
+    const { centres, half } = g.streets;
+    const tall = (x0, x1, z) => W.boxes.some((b) => b.top > 0.55
+      && b.maxX > x0 && b.minX < x1 && b.maxZ > z - 0.8 && b.minZ < z + 0.8);
+    let start = null;
+    for (const sx of centres) {
+      for (let j = 0; j < 6 && !start; j++) {
+        const z = (j - 2.5) * 34;
+        if (!tall(sx - 1, sx + half + 2.5, z)) start = { x: sx, z };
+      }
+      if (start) break;
+    }
+    let walk = null, shot = null;
+    if (start) {
+      g.startRun();
+      g.startWave = () => {};
+      g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+      g.input.locked = true;
+      g.player.reset(start.x, start.z);
+      g.player.yaw = -Math.PI / 2;                       // face +X, across the kerb
+      const kerb = W.groundHeight(start.x + half + 1.5, start.z, 0.12, 0.55);
+      const before = g.player.feetY;
+      g.input.keys.clear(); g.input.keys.add('KeyW');
+      let eye = g.player.position.y, feet = g.player.feetY, view = 0, step = 0;
+      for (let f = 0; f < 70; f++) {
+        g.time += 1 / 60; g.step(1 / 60);
+        view = Math.max(view, Math.abs(g.player.position.y - eye)); eye = g.player.position.y;
+        step = Math.max(step, Math.abs(g.player.feetY - feet)); feet = g.player.feetY;
+      }
+      g.input.keys.clear();
+      walk = { kerb, before, after: g.player.feetY, view: +view.toFixed(3), feet: +step.toFixed(3) };
+
+      const ray = new THREE.Raycaster(new THREE.Vector3(start.x + half + 1.5, 5, start.z), new THREE.Vector3(0, -1, 0));
+      const hit = ray.intersectObjects(W.solids, false)[0];
+      shot = hit ? +hit.point.y.toFixed(3) : null;
+    }
+
+    return { area: Math.round(area), unsupported: +unsupported.toFixed(1), sample, start, walk, shot };
+  });
+
+  // Measured on seed 1, breaking one reader at a time. With the floors never
+  // registered, 17,434 m² of drawn floor is held up by nothing (more than the
+  // 13,751 measured with them in, because a sidewalk buried under a rubble
+  // slab or a courtyard only has room for a body over it while the slab above
+  // does not exist). With the floors in the box list but not the raycast list,
+  // a shot at the pavement stops at 0. With the step taken all at once, the
+  // view moves 0.278 m in one frame; eased, 0.044 m.
+  expect(r.area > 5000, `only ${r.area} m² of floor to measure`);
+  expect(r.unsupported < 1,
+    `${r.unsupported} m² of floor is drawn but not stood on, e.g. ${JSON.stringify(r.sample)}`);
+  expect(r.walk, 'no road with a clear run onto the pavement');
+  expect(r.walk.kerb > 0.2 && Math.abs(r.walk.after - r.walk.kerb) < 0.01,
+    `walking onto a ${r.walk.kerb} m kerb left your feet at ${r.walk.after}`);
+  expect(r.walk.view < 0.1,
+    `the view moved ${r.walk.view} m in one frame stepping onto the kerb`);
+  expect(r.shot !== null && Math.abs(r.shot - r.walk.kerb) < 0.01,
+    `a shot at the ${r.walk.kerb} m pavement stopped at ${r.shot}`);
   return r;
 });
 
@@ -1994,10 +2123,18 @@ check('a seed still lays out the city it did', async (page) => {
   // one by one before and after on seeds 1, 7, 99991, 20260101 and 20260813
   // and are identical — what moved is the perches' own furniture. Before it:
   // 332/405/12 f0aa1240, 296/354/10 9a29033d, 332/410/12 efb56339.
+  //
+  // And once more, for the floors: the sidewalks, the plaza, the rubble lots'
+  // slabs and the ruins' courtyards became colliders and raycast targets. They
+  // are appended after everything else is placed, so this one is the cleanest
+  // of the three — the same fingerprint taken over every box but the floors
+  // reproduces the old value exactly on all three seeds, and the perches are
+  // untouched. Before it: 378/420/12 c8f04a70, 325/361/10 482fa9b1,
+  // 374/422/12 30770211.
   const want = {
-    1: { boxes: 378, solids: 420, perches: 12, fp: 'c8f04a70' },
-    7: { boxes: 325, solids: 361, perches: 10, fp: '482fa9b1' },
-    20260101: { boxes: 374, solids: 422, perches: 12, fp: '30770211' },
+    1: { boxes: 425, solids: 467, perches: 12, fp: 'cd6eb736' },
+    7: { boxes: 371, solids: 407, perches: 10, fp: '68d89f10' },
+    20260101: { boxes: 417, solids: 465, perches: 12, fp: 'f7c4a2df' },
   };
 
   const got = {};

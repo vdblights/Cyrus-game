@@ -12,7 +12,7 @@ import { audio } from './audio.js';
 import * as TEX from './textures.js';
 import { TILE } from './textures.js';
 import { chamferGeo, mergeIntoOne } from './shapes.js';
-import { randRange } from './world.js';
+import { randRange, SUPPORT_RADIUS } from './world.js';
 import { NavGrid } from './nav.js';
 import { installAtmosphere, skyMaterial, environmentFrom, SUN_DIR, SUN_COLOR } from './atmosphere.js';
 import { installShadowCascade, placeShadow, sizeShadow, SUN_DISTANCE } from './shadows.js';
@@ -104,6 +104,7 @@ class Game {
     this.nav = new NavGrid(this.world);
 
     this.effects = reserve(() => new Effects(this.scene));
+    this.effects.groundAt = (x, z, y) => this.world.groundHeight(x, z, SUPPORT_RADIUS, y);
     this.player = new Player(this.camera, this.world);
     this.weapons = reserve(() => new WeaponSystem(this.viewScene, this));
     this.input = new Input(this.canvas);
@@ -1060,18 +1061,23 @@ class Game {
     else if (this.player.health < 45 && r < 0.66) kind = 'health';
     if (!kind) return;
 
+    // It floats over the floor under where the hostile fell: the pavement or
+    // a ruin's courtyard, not the street beneath them. Never a roof, though —
+    // a marksman's drop has always landed at street level under its perch,
+    // and that is half of what makes killing one pay.
+    const floor = this.world.groundHeight(pos.x, pos.z, SUPPORT_RADIUS, 0.5);
     // a clone shares the geometry and the materials; only the nodes are new
     const mesh = this.pickupProto[kind].clone();
-    mesh.position.set(pos.x, 0.45, pos.z);
+    mesh.position.set(pos.x, floor + 0.45, pos.z);
     this.scene.add(mesh);
-    this.pickups.push({ kind, mesh, active: true, born: this.time });
+    this.pickups.push({ kind, mesh, active: true, born: this.time, floor });
   }
 
   updatePickups(dt) {
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const p = this.pickups[i];
       p.mesh.rotation.y += dt * 1.6;
-      p.mesh.position.y = 0.42 + Math.sin((this.time + p.born) * 2.4) * 0.07;
+      p.mesh.position.y = p.floor + 0.42 + Math.sin((this.time + p.born) * 2.4) * 0.07;
 
       const dx = p.mesh.position.x - this.player.position.x;
       const dz = p.mesh.position.z - this.player.position.z;
