@@ -346,7 +346,13 @@ These each cost real debugging time. Changing them needs a reason.
   bullet can hit — the solid set is deliberately not everything you can see
   (a parapet is decoration; the wall under it is not). Anything added to the
   city after the bake has to be registered in both or it is invisible to one
-  of them. The ground is the sharpest case: the one you see is subdivided to
+  of them. The merge is per material *per patch* — `BATCH_LOTS` lots square,
+  2 — so a cascade or the camera can cull what it cannot see, and anything
+  wider than a patch, the ground first, is a batch of its own that always
+  draws. The batches are built inside a `reserve` and pay `spend` for one
+  geometry and one mesh per *material*, which is what the bake cost before
+  it split, so the stream that picks spawns afterwards is unchanged —
+  measured as the same mark after the bake, 27 batches or 148. The ground is the sharpest case: the one you see is subdivided to
   about 2.5 m so it can carry baked shading, and the one you shoot is the same
   plane at two triangles, because three has no BVH and a raycast walks every
   triangle inside the bounding sphere — the ground's covers the sector.
@@ -543,6 +549,38 @@ These each cost real debugging time. Changing them needs a reason.
   settings is worse than either. `auto quality keeps watching, and gives
   back resolution before shaders` fakes the frame clock; it fails on the old
   calibration and when the tier is allowed to change mid-fight.
+  Because it only ever steps down, where it *starts* matters, and it used to
+  start on high on every machine and earn its way down in the first fight —
+  three seconds of slow frames per step, at the worst possible moment. A
+  boot stage (`chooseStartingTier`) now times a few frames of the city at
+  each tier, behind the loading screen, and starts on the best one that
+  holds 60. One rule keeps it honest: a frame over 250 ms is not a
+  measurement — it is software rendering, or a tab in the background — and
+  then it changes nothing and starts on high, which is also why the suite
+  never sees it pick anything else. `auto starts at the tier this machine
+  can hold` fakes the clock and fails when the function always says high.
+- **The post chain reads the scene through `sane()`, and bloom is why.**
+  One pixel that is not a finite number — a NaN from a normalise of zero, an
+  overflow in a half-float target — is invisible as one pixel. The bloom
+  takes it through a 9-tap blur at half resolution and another at a quarter,
+  and it comes out as a black box tens of pixels across that blinks as the
+  view moves: reported from play as boxes in a rough vertical line round the
+  gun. It never reproduced here — 200 swept frames under software rendering,
+  0 non-finite pixels — because what makes the bad pixel is the GPU's own
+  arithmetic. So the bright pass and the composite clean what they read
+  instead: anything whose exponent bits say NaN or infinity, or that is
+  brighter than 1024, becomes black before the blur sees it, and the bloom
+  input is capped at 64. The test is the exponent bits rather than `isnan`,
+  because a compiler is allowed to assume no NaN and fold `isnan` away. The
+  1024 bar is not arbitrary either: SwiftShader saturates an infinity to
+  65504 when it stores half float, and a bilinear half-resolution read
+  blends that down to about 16,000 — finite, and still a box. The sun disc,
+  the brightest honest thing in the frame, is about 40. Both bloom inputs
+  are bound to the scene itself when bloom is off, at strength 0, and NaN
+  times 0 is NaN, so the composite cleans them even then. `a bad pixel stays
+  one pixel, it does not bloom into a box` puts a speck of NaN and then of
+  infinity in front of the camera: 4 pixels changed each, against 6,589 with
+  `sane` returning its input.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -766,7 +804,8 @@ can be culled out of it — 109k more triangles a frame for a map that only
 needs the street in front of you. Splitting the merge per city block is the
 fix for both that and the main camera, and is the first thing to reach for
 if frame rate matters. Low pays nothing for any of it, and `auto` steps down
-to medium and then low on its own.
+to medium and then low on its own. (The per-block split has since landed;
+see the pixel-cap paragraph below the hardware note.)
 
 All frame-rate figures in this repo's history come from software rendering,
 which exaggerates shadow cost. Relative ordering holds; absolutes do not. On
@@ -784,6 +823,31 @@ frame becomes 7,066, with the same 555 draw calls and the same 1 ms of game
 step. To measure what a player actually gets, override it the same way
 (`Object.defineProperty(window, 'devicePixelRatio', ...)` before
 `applyQuality`).
+
+The pixel caps came down for that reason, in the pass after the table
+below: high to 1.25 and medium to 1.0. At a forced ratio of 2, seed 1, the
+same view, a software frame costs (ms):
+
+| tier @ ratio cap | ms |
+| --- | --- |
+| high @ 1.75 (old) | 5,968 |
+| high @ 1.25 | 3,287 |
+| medium @ 1.4 (old) | 3,659 |
+| medium @ 1.0 | 1,958 |
+| low @ 1.0 | 1,419 |
+
+Frame time tracks pixels almost exactly, and nothing else measured here
+moves it that much. The same pass split the city's batches per patch (see
+the invariant). On seed 1 at high, from a street, the plaza and the edge of
+the sector, that took triangles a frame from 370k to 179-253k and draw calls
+from 96 to 177-248; the near cascade takes in 49% of the city's casting
+triangles against 99%. Under software rendering the frame time did not move
+either way, within noise (2,283 against 2,420-2,445 ms), because there
+triangles are nearly free and pixels are not. On a GPU the shadow passes are
+vertex work and that is where the triangles came out. Measured before the
+split, at ratio 1 on high: switching the near cascade off saved about 15% of
+a software frame and all shadows about 28%. `BATCH_LOTS` 1 takes triangles
+lower again (135-175k) for 240-372 calls; 2 is the middle of that trade.
 
 What the frame costs on the CPU side, the same twelve hostiles across the
 last five passes (median game step, draw calls, median time to *issue* the
@@ -815,6 +879,36 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The frame-rate pass is the ninth, and it came from play as two sentences:
+performance is still bad, and black boxes blink in a rough vertical line
+round the gun while the view turns. Nothing about either could be measured
+on the machine that said it, so both were measured here at a forced pixel
+ratio of 2, which is what a laptop has and headless Chromium does not.
+
+The boxes never appeared — 200 frames swept round the view model, no
+non-finite pixel in the scene target, nothing in a sheet of turning frames —
+and their shape is the diagnosis: square, blinking, and grouped, which is a
+single bad pixel after two blur passes. The post chain now cleans what it
+reads (invariant above), and a check proves one pixel of NaN or infinity
+stays one pixel. If the report comes back after this, the next step is a
+screenshot and the GPU and tier it happened on; the likeliest remaining
+source is the view scene's own arithmetic on that GPU, and a probe that
+scans `post.sceneTarget()` for non-finite texels on the player's machine
+would settle it.
+
+The frame rate was pixels, as the Performance section had predicted: high
+drew 1.75x on a 2x screen, three times the pixels of every figure in this
+file. The caps are 1.25 and 1.0 now, which in software halves the frame at
+high (5,968 to 3,287 ms) and at medium (3,659 to 1,958). `auto` starts on a
+tier it has measured rather than on high (invariant above), and the city is
+batched per patch so the cascades and the camera can cull (invariant and
+Performance). Three checks came with it, each confirmed to fail against what
+it guards: `auto starts at the tier this machine can hold`, `a bad pixel
+stays one pixel, it does not bloom into a box`, and `the near shadow cascade
+draws the street it covers, not the city` (0.49 of the city's casting
+triangles; 0.99 with one batch per material put back). Layout and the spawn
+stream are untouched. Boot has one more stage, `Measuring this machine`.
 
 The loading pass is the eighth, and it came from play too: a better loading
 screen, or something to look at while the world builds. What there was to
@@ -1600,11 +1694,15 @@ Suggested next work, in the order I would do it:
    foot is buried. Lifting each by `groundHeight` at its footprint is a
    layout change (every top moves), and the stairs that end at a terrace's
    deck have to move with it.
-2. **Split the merged city per block.** The near shadow cascade covers 26 m
-   and draws all 360k triangles of the sector into it, because a merged mesh
-   spanning the city cannot be culled; so does the main camera. Per-block
-   batches cost more draw calls and buy culling for both. It is the first
-   thing to reach for if frame rate matters — see Performance.
+2. **Instance hostiles per archetype and part.** A hostile is twelve meshes
+   drawn in three passes, 36 calls each, and a full wave is most of the
+   frame's calls. Every raider's left shin is the same geometry and the same
+   material, so an `InstancedMesh` per archetype and part, written per frame
+   from the rig, takes a wave back to a few dozen calls. Hit detection would
+   need the raycast to stay on the per-hostile meshes, which can stay off the
+   scene graph the way the city's solids do. If frame rate is still reported
+   short after the pixel caps, this and the wide cascade's 2048 map on high
+   are what is left.
 3. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.

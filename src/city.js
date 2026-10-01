@@ -533,12 +533,21 @@ function bakeStatic(group, world) {
   // stream mints the same ones, so two materials built in two of them can
   // share one — and did, the moment the city's materials were painted in
   // steps, which merged 16 of the city's 27 materials into other ones.
+  //
+  // And per material *per patch of the city*, not per material across the
+  // sector. One mesh spanning the sector can never be culled, so the near
+  // shadow cascade — 26 m across — drew every triangle in the city into its
+  // map, and so did the camera behind your back. A patch is `BATCH_LOTS`
+  // lots square; anything wider than a patch (the ground, a cable run) goes
+  // in a batch of its own that is always drawn, as everything used to be.
   const buckets = new Map();
+  const perMaterial = new Map();
   for (const m of meshes) {
-    let b = buckets.get(m.material);
-    if (!b) buckets.set(m.material, b = { material: m.material, geos: [], cast: false, receive: false });
     const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
     shadeGeometry(geo, m.userData.tint || [1, 1, 1], occlusion, m.userData.mottle || 0);
+    const key = `${materialIndex(perMaterial, m.material)}:${patchOf(geo)}`;
+    let b = buckets.get(key);
+    if (!b) buckets.set(key, b = { material: m.material, geos: [], cast: false, receive: false });
     b.geos.push(geo);
     b.cast = b.cast || m.castShadow;
     b.receive = b.receive || m.receiveShadow;
@@ -554,15 +563,43 @@ function bakeStatic(group, world) {
     if (child.isGroup && child.children.length === 0) group.remove(child);
   }
 
-  for (const b of buckets.values()) {
-    const mesh = new THREE.Mesh(mergeIntoOne(b.geos), b.material);
-    mesh.castShadow = b.cast;
-    mesh.receiveShadow = b.receive;
-    mesh.matrixAutoUpdate = false;
-    group.add(mesh);
-    for (const g of b.geos) g.dispose();
-  }
+  // Every batch is a geometry and a mesh, eight draws of the seeded stream,
+  // and the stream after this is the one that picks spawns. So the batches
+  // are built in a `reserve` and the bill is what one batch per material
+  // used to cost: splitting the city into patches moves no hostile.
+  reserve(() => {
+    for (const b of buckets.values()) {
+      const mesh = new THREE.Mesh(mergeIntoOne(b.geos), b.material);
+      mesh.castShadow = b.cast;
+      mesh.receiveShadow = b.receive;
+      mesh.matrixAutoUpdate = false;
+      group.add(mesh);
+      for (const g of b.geos) g.dispose();
+    }
+  });
+  spend(perMaterial.size * 2 * UUID_COST);
   return buckets.size;
+}
+
+/** Lots per side of one batch patch (see `bakeStatic`). */
+const BATCH_LOTS = 2;
+const PATCH = BATCH_LOTS * BLOCK;
+const PATCHES = Math.ceil(GRID / BATCH_LOTS);
+const PATCH_ORIGIN = -(PATCHES * PATCH) / 2;
+
+/** Which patch a world-space geometry belongs to, or 'all' if it spans more. */
+function patchOf(geo) {
+  geo.computeBoundingBox();
+  const { min, max } = geo.boundingBox;
+  if (max.x - min.x > PATCH || max.z - min.z > PATCH) return 'all';
+  const cell = (v) => Math.min(PATCHES - 1, Math.max(0, Math.floor((v - PATCH_ORIGIN) / PATCH)));
+  return `${cell((min.x + max.x) / 2)},${cell((min.z + max.z) / 2)}`;
+}
+
+/** A stable small number per material, keyed on the object (never its UUID). */
+function materialIndex(seen, material) {
+  if (!seen.has(material)) seen.set(material, seen.size);
+  return seen.get(material);
 }
 
 /**
