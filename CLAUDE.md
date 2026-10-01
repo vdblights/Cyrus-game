@@ -108,11 +108,35 @@ These each cost real debugging time. Changing them needs a reason.
   are plainly separate, and a kerb lifted you before you had reached it. Seed
   1 measures 0.12 m of overhang across 82 clear edges against 0.42 m, and no
   walkable gap wider than a quarter metre against 17. The floor under the
-  constant is the construction seams between abutting boxes — a stacked
-  container is jittered up to 0.4 m, leaving joints of 0.05-0.15 m — which it
-  has to span or you fall down them. `mantleTarget` asks the same way for the
-  deck it promises, or a climb finishes onto ground the footing check will not
-  then find and drops you straight off it.
+  constant is the construction seams between abutting boxes, joints of
+  0.05-0.15 m, which it has to span or you fall down them. `mantleTarget` asks
+  the same way for the deck it promises, or a climb finishes onto ground the
+  footing check will not then find and drops you straight off it. The other
+  side of it: anything the generator left a real gap in, the old radius had
+  been quietly bridging, and this made it a hole — see the next invariant.
+- **A perch is furnished with colliders, and its stairs end at its deck.**
+  Two bugs from play, reported as climbing a staircase and then falling
+  through the box beside it, and both were true. A terrace's crate was drawn
+  and registered nowhere — not in `world.boxes`, not in `world.solids` — so
+  you walked into it and fell through it from a jump, and its knee-high lip
+  was a solid with no collider, so it stopped bullets and not boots. And
+  every stair run was laid *from its foot* by a run length worked out apart
+  from its step count, so it stopped up to 0.85 m short of a terrace and
+  1.6 m short of a container stack, and the top tread was 0.14-0.23 m off
+  the deck height by up to 0.23 m besides. Under the old body-radius footing a gap under
+  0.84 m was bridged invisibly, so the terraces only broke when footing was
+  fixed; the container stacks had always been a jump. `stairs()` now takes
+  the deck edge and the climbing direction and derives both ends from them,
+  and the rise is `height / count`, so the last tread is flush and level with
+  the deck. The lip across the head of the stairs is built either side of
+  the opening — registering a full one would put a step taller than
+  `STEP_HEIGHT` between the top tread and the deck — paid for with the same
+  `spend` the one lip cost. The crate is kept a body's width off the perch
+  point, because that is where a marksman is put down, and the top container
+  of a stack is no longer slid off its collider; both still draw the rolls
+  they used to, so the stream is unchanged. Measured on seeds 1, 7, 99991,
+  20260101 and 20260813: every perch, every barrel, and every collider more
+  than 14 m from a perch is identical before and after.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -505,6 +529,19 @@ For timing anything in the headless browser, `gl.finish()` is not a sync
 point — it returns early in the GPU process and made a 142k-triangle frame
 look like 2.6 ms. A one-pixel `readPixels` is.
 
+An eighth, from the perch pass, and it is the expensive kind again: a
+tolerance is a place for a bug to live. `stairs carry the player onto a
+perch` passed a perch once the feet came within 0.7 m of the deck, which the
+last tread always does, so it passed while half of seed 1's perches could
+not be stepped onto, and two earlier notes in this file filed the failures it
+did show as seed noise. It asks whether you stood on the deck now. The same
+check only tried the first eight perches, and the one container stack on the
+pinned seed is the tenth — sample everything when everything is a dozen. And
+its setup had a trap of its own once the stairs moved: the walk started 4 m
+out from the first tread, which on one deck put a streetlight between the
+player and the stairs. Start a walk where the thing being walked onto
+begins, not where a margin happens to land.
+
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
@@ -557,6 +594,24 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The perch pass came out of play, as a staircase you climb and then a box
+beside it that you fall through. Both readings were right: terrace crates
+and lips drawn with no collider, and stair runs ending short of their decks
+— the invariant above has both. On seed 1 the audit found 74 faces standing
+on a deck that the footing could not see; it finds none now, and all 12
+perches can be walked onto against 6 when the check asks properly. Jumping
+at any of the five crates on seed 1 lands on top of it; walking into one
+stops you at its face. Two checks guard it, both confirmed to fail on the
+old builders: the stairs check, made strict (6/12 walked onto), and `what
+stands on a perch holds you up`, which reads the merged city — what you
+see — and asks the footing about every face on a deck (72 of 72
+unsupported). The layout check's numbers were re-measured once for it, with
+the before-and-after written into the check. One neighbour of the bug is
+left: wall decoration is laid before the perches and can end up beside one —
+on seed 1 a fire escape's lowest platform is 1.4 m off a terrace and 1.15 m
+above it — which is a decoration rule meeting a placement rule, and is on
+the list below.
 
 The lighting pass came out of one sentence — make the graphics more
 realistic — and out of looking at the frame before touching it. What read
@@ -901,9 +956,10 @@ the game rather than the change.
 
 One seed-dependent failure was open before the graphics pass: on seed
 20251111, `stairs carry the player onto a perch` reported only 3 of 5 perches
-walkable. That seed no longer generates that city (see the `generateUUID`
-invariant), so it is unreproduced rather than fixed, and there is nothing
-left to reproduce it with. If it comes back it will come back somewhere else.
+walkable. It was not seed-dependent. It was the stair runs ending short of
+their decks, which is every perch on every seed by up to 0.85 m and every
+container stack by 1.6 m, and which the check's 0.7 m tolerance hid on the
+seeds where it passed. Fixed by the perch pass; see the invariant.
 
 **A wave could deadlock on a hostile that cannot path to you. This is
 fixed.** A hostile steers straight at the player and has no pathfinding; with
@@ -1033,10 +1089,11 @@ two triangles, because three has no BVH and the ground's bounding sphere
 covers the sector.
 
 The cities moved one last time with all this, and so did the incidental
-numbers below. On seed 1, one perch in six now has an unwalkable stair run,
-which the check tolerates at its 0.7 threshold. That is the seed-dependent
-failure already recorded further down, not a regression: the diff touches no
-`addBox`, `addSolid` or `solids.push` call and no `randRange` in any builder.
+numbers below. On seed 1, one perch in six had an unwalkable stair run,
+which the check tolerated at its 0.7 threshold and this note called the
+seed-dependent failure recorded further down. It was neither; it was every
+stair run stopping short of its deck, half the perches on seed 1 once the
+check asked properly, and the perch pass fixed it.
 
 The weapon pass after it is the same two ideas applied to the one surface
 always within arm's reach. The view models were untextured flat colour on
@@ -1165,6 +1222,14 @@ Suggested next work, in the order I would do it:
    bays all fall out of the same `roadMarkings` machinery and the same street
    grid. Drop them in the same merged mesh and they cost one more batch of
    nothing.
+8. **Keep wall decoration out of jumping reach of a perch.** Decoration is
+   built where you cannot stand, and a terrace can put you within a jump of
+   some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
+   1.15 m above it, which you would fall through. Perches are placed after
+   the buildings, so either perch placement treats wall decoration as
+   occupied or the decoration is skipped near a perch; `decor` costs the
+   stream nothing either way. `what stands on a perch holds you up` stops at
+   the deck's footprint on purpose and would need widening to cover it.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403

@@ -472,6 +472,9 @@ A few notes on the implementation:
   query — no separate navmesh or heightfield.
 - **Climbable structures are validated before they are built.** Both the
   platform footprint and the whole stair corridor must be clear ground, or the
-  structure is not placed; a buried staircase is an unclimbable one.
+  structure is not placed; a buried staircase is an unclimbable one. A stair
+  run is laid back from the deck edge it climbs to, so its last tread is
+  flush and level with the deck, and whatever stands on a deck — the crate,
+  the knee-high lip — is a collider as well as something you can see.
 - **Settings and records persist** in `localStorage` — sensitivity, FOV,
   volume, invert-look and mute, plus your best wave and score.

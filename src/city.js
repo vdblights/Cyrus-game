@@ -1092,16 +1092,24 @@ export function buildCity(scene) {
   /**
    * Stair run of half-metre steps — low enough that the step-up in the
    * movement code carries you and the hostiles up without jumping.
+   *
+   * `(x, z)` is the deck edge the run climbs to and `rot` the direction it
+   * climbs in, and both ends are derived from that: the last tread abuts the
+   * edge and tops out exactly at `height`. The run used to be laid from its
+   * foot by a run length worked out separately from the step count, so it
+   * stopped up to 0.85 m short of a terrace and 1.6 m short of a container
+   * stack, and you walked off the top step into the street.
    */
   function stairs(g, w, x, z, rot, height, width = 3) {
-    const rise = 0.46;
     const run = 0.85;
-    const count = Math.max(1, Math.round(height / rise));
+    const count = Math.max(1, Math.round(height / 0.46));
+    const rise = height / count;            // 0.37-0.49 m for every perch height
     const dirX = Math.sin(rot), dirZ = Math.cos(rot);
+    const x0 = x - dirX * run * (count - 0.5), z0 = z - dirZ * run * (count - 0.5);
     for (let k = 0; k < count; k++) {
       const top = rise * (k + 1);
-      const sx = x + dirX * (run * k);
-      const sz = z + dirZ * (run * k);
+      const sx = x0 + dirX * (run * k);
+      const sz = z0 + dirZ * (run * k);
       // each tread is a solid block from the ground up to its own height
       const m = new THREE.Mesh(boxGeo(
         Math.abs(dirX) > 0.5 ? run : width, top,
@@ -1115,8 +1123,6 @@ export function buildCity(scene) {
       const hd = (Math.abs(dirX) > 0.5 ? width : run) / 2;
       w.addBox(sx - hw, sz - hd, sx + hw, sz + hd, top);
     }
-    // where the run tops out
-    return { x: x + dirX * run * count, z: z + dirZ * run * count, y: rise * count };
   }
 
   /** Raised slab of collapsed floor: cover, a firing position, a perch. */
@@ -1130,28 +1136,58 @@ export function buildCity(scene) {
     w.addBox(x - sw / 2, z - sd / 2, x + sw / 2, z + sd / 2, h);
 
     // stairs climbing to it from the side the caller checked was clear
+    const STAIR_W = 3;
     const rot = fromSouth ? Math.PI : 0;
-    const startZ = fromSouth ? z + sd / 2 + h * 1.85 : z - sd / 2 - h * 1.85;
-    stairs(g, w, x, startZ, rot, h, 3);
+    stairs(g, w, x, fromSouth ? z + sd / 2 : z - sd / 2, rot, h, STAIR_W);
 
-    // knee-high lip so the top reads as a platform, not a plinth
-    for (const [ox, oz, lw, ld] of [
-      [0, -sd / 2 + 0.3, sw, 0.5], [0, sd / 2 - 0.3, sw, 0.5],
-      [-sw / 2 + 0.3, 0, 0.5, sd], [sw / 2 - 0.3, 0, 0.5, sd],
-    ]) {
-      if (Math.random() < 0.35) continue;                 // gaps to shoot through
+    // Knee-high lip so the top reads as a platform, not a plinth. A lip is a
+    // collider as well as a solid — it used to stop bullets and not boots, so
+    // you walked through a wall you could see. The one across the head of the
+    // stairs is built either side of the opening, or registering it would put
+    // a step taller than the step-up between the top tread and the deck.
+    const segment = (cx, cz, lw, ld) => {
       const lip = new THREE.Mesh(boxGeo(lw, 0.5, ld, TILE.concrete), conc);
-      lip.position.set(x + ox, h + 0.25, z + oz);
+      lip.position.set(cx, h + 0.25, cz);
       lip.castShadow = true;
       g.add(lip);
       w.solids.push(lip);
+      w.addBox(cx - lw / 2, cz - ld / 2, cx + lw / 2, cz + ld / 2, h + 0.5);
+      return lip;
+    };
+    for (const [ox, oz, lw, ld, side] of [
+      [0, -sd / 2 + 0.3, sw, 0.5, -1], [0, sd / 2 - 0.3, sw, 0.5, 1],
+      [-sw / 2 + 0.3, 0, 0.5, sd, 0], [sw / 2 - 0.3, 0, 0.5, sd, 0],
+    ]) {
+      if (Math.random() < 0.35) continue;                 // gaps to shoot through
+      if (side !== (fromSouth ? 1 : -1)) {
+        segment(x + ox, z + oz, lw, ld);
+        continue;
+      }
+      // the stair head: two pieces, paying what the one lip cost the stream
+      spend(2 * UUID_COST);
+      reserve(() => {
+        const piece = (sw - STAIR_W) / 2;
+        segment(x - sw / 2 + piece / 2, z + oz, piece, ld);
+        segment(x + sw / 2 - piece / 2, z + oz, piece, ld);
+      });
     }
     if (Math.random() < 0.4) {
+      // A crate you can climb onto, so it is a collider — it used to be drawn
+      // and nothing else, and you fell through it. It is kept a body's width
+      // off the perch point across the slab, because that is where a marksman
+      // is put down.
+      const rx = randRange(-sw / 4, sw / 4), rz = randRange(-sd / 4, sd / 4);
+      const clear = 0.6 + 0.42 + 0.05;                   // crate half + body radius
+      const room = Math.max(0, sw / 2 - 0.55 - 0.6 - clear);   // inside the lip
+      const cx = x + Math.sign(rx || 1) * (clear + (Math.abs(rx) / (sw / 4)) * room);
+      const cz = z + rz;
       const crate = new THREE.Mesh(boxGeo(1.2, 1.2, 1.2, TILE.rust), rustFor(x, z));
-      crate.position.set(x + randRange(-sw / 4, sw / 4), h + 0.6, z + randRange(-sd / 4, sd / 4));
+      crate.position.set(cx, h + 0.6, cz);
       crate.castShadow = true;
-      crate.userData.tint = tintAt(crate.position.x, crate.position.z, 2, 0.12);
+      crate.userData.tint = tintAt(cx, cz, 2, 0.12);
       g.add(crate);
+      w.solids.push(crate);
+      w.addBox(cx - 0.6, cz - 0.6, cx + 0.6, cz + 0.6, h + 1.2);
     }
     perchList.push({ x, y: h, z });
     return { x, y: h, z };
@@ -1163,7 +1199,12 @@ export function buildCity(scene) {
     for (let k = 0; k < 2; k++) {
       spend(2 * UUID_COST);                       // what the box used to cost
       const m = reserve(() => new THREE.Mesh(shapes.container, rustFor(x, z + k * 3)));
-      m.position.set(x + (k ? randRange(-0.4, 0.4) : 0), k * ch, z);
+      // The top one used to be slid up to 0.4 m off the one below, over a
+      // collider that stayed put — a deck you stood on air beside and fell
+      // through the edge of. The roll is still drawn, because the stream
+      // after it is the rest of the city; it just no longer moves anything.
+      if (k) randRange(-0.4, 0.4);
+      m.position.set(x, k * ch, z);
       m.rotation.y = rot;
       m.castShadow = m.receiveShadow = true;
       m.userData.tint = tintAt(x, z, 2 + k, 0.14);
@@ -1176,11 +1217,10 @@ export function buildCity(scene) {
     const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
     const halfW = (cw / 2) * cos + (cd / 2) * sin;
     const halfD = (cw / 2) * sin + (cd / 2) * cos;
-    const runLen = ch * 2 * 1.85;
     if (rot === 0) {
-      stairs(g, w, x + halfW + 1 + runLen, z, Math.PI / 2 * 3, ch * 2, 2.4);
+      stairs(g, w, x + halfW, z, Math.PI / 2 * 3, ch * 2, 2.4);
     } else {
-      stairs(g, w, x, z + halfD + 1 + runLen, Math.PI, ch * 2, 2.4);
+      stairs(g, w, x, z + halfD, Math.PI, ch * 2, 2.4);
     }
 
     perchList.push({ x, y: ch * 2, z });
