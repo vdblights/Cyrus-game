@@ -306,6 +306,15 @@ These each cost real debugging time. Changing them needs a reason.
   clamped.
 - **The view model renders in its own scene** over a cleared depth buffer, so
   the weapon never clips into geometry. It has its own camera and lights.
+  The hands are children of the weapon's model, so every pose — recoil,
+  reload, sprint, melee — carries them without being taught about them; an
+  elbow is placed off the bottom of the frame for both hip and aimed, and a
+  pose that swung the arms through the view camera would show the inside of
+  a sleeve (which is why the sleeve is double-sided). Each model is merged
+  by material at construction (`consolidate`), so anything that must stay an
+  object of its own — the muzzle point, the lens, the unlit dot — is
+  excluded there by kind. Every part records the tile it unwraps at in
+  `userData.tile`, and the check judges each material against its own.
 - **The city you see and the city you shoot are different objects.** Once
   generation finishes, `bakeStatic` merges every static mesh by material and
   puts those in the scene; the meshes they were built from leave the scene
@@ -635,6 +644,33 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The hands pass is the fourth, and it went after the thing on screen in
+every frame: the gun floated. Nothing held it, and each weapon was eight to
+twenty chamfered boxes with no trigger, port or charging handle. Now two
+gloved hands close round each gun's own grips (`hand` in `weapons.js`: each
+finger an arc round the grip's cross-section, so one function covers a
+pistol grip, a handguard, a vertical foregrip and a pump), with the trigger
+finger indexed along the frame and sleeved forearms running out of the
+bottom of the frame; and each gun gained the parts that say what it is.
+Merged by material, a weapon is 6-9 meshes and about 9,200 triangles,
+against 8-20 meshes and 372-856 triangles before (measured on `main`) —
+fewer draw calls for every weapon, carrying ten to twenty-five times the
+shape. The layout fingerprints are unchanged; the weapons are built inside
+`reserve`. The weave is the hostiles' `fatigues` tinted twice
+(glove near black, sleeve a worn drab); the first sleeve tint, a mid khaki,
+came out mustard under the view scene's warm key light, which is the
+`map`-multiplies-`color` lesson from the other side. Reload, sprint and
+melee were each rendered mid-pose to confirm no arm passes through the
+camera. `the gun in your hands is solid, held, and textured at its declared
+scale` replaced the old view-model check: it asks that every weapon carry a
+glove and a sleeve, and judges each material's texel density against the
+tile it declares (0.84-1.08 measured), where the old one compared a single
+median across all parts — which ten thousand finger triangles would have
+decided on their own. It fails with the pistol's hands removed and with the
+glove's UVs left unscaled (3x). Its old "more than 30 meshes" bar measured
+how the gun was stored rather than what it is, and merging made it
+meaningless, so it is gone.
 
 The stains pass is the third, and it was the next thing a close look found:
 every large stain in every texture was a filled ellipse, so the plaza, the

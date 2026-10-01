@@ -1789,25 +1789,36 @@ check('every surface is textured at the world scale it declares', async (page) =
   return { batches: r.length, worst: r.reduce((a, b) => (Math.abs(b.median - 1) > Math.abs(a.median - 1) ? b : a)) };
 });
 
-check('the gun in your hands is solid and textured at its declared scale', async (page) => {
+check('the gun in your hands is solid, held, and textured at its declared scale', async (page) => {
+  // Three things about the view model, each of which fails silently. A facet
+  // wound the wrong way vanishes, and reads as a notch bitten out of a part.
+  // A gun with nobody holding it floats — every weapon is held by two gloved
+  // hands now, built round its own grips. And every textured part declares
+  // the tile it unwraps at (`userData.tile`): gun polymer and steel at 0.3
+  // and 0.36 m, the glove at 0.25, the sleeve at the kit's 0.9. The density
+  // is judged per material, so the ten thousand triangles of fingers cannot
+  // outvote a mis-scaled receiver.
   const r = await page.evaluate(() => {
     const g = window.__game;
-    let tris = 0, inverted = 0, meshes = 0, textured = 0;
-    const density = [];
+    let tris = 0, inverted = 0, texturedTris = 0;
+    const perMat = {};
+    const held = {};
 
     for (const w of g.weapons.weapons) {
+      const names = new Set();
       w.model.traverse((o) => {
         if (!o.geometry || !o.geometry.attributes.position) return;
-        meshes++;
         const m = o.material;
-        if (m.map) textured++;
-
         const p = o.geometry.attributes.position;
         const n = o.geometry.attributes.normal;
         const uv = o.geometry.attributes.uv;
         const idx = o.geometry.index;
         const count = idx ? idx.count : p.count;
         const at = (k) => (idx ? idx.getX(k) : k);
+        const tile = o.userData.tile;
+        const key = m.map ? `${m.color.getHexString()}@${tile}` : null;
+        if (tile === 0.25) names.add('glove');
+        if (tile === 0.9) names.add('sleeve');
 
         for (let k = 0; k + 2 < count; k += 3) {
           const a = at(k), b = at(k + 1), c = at(k + 2);
@@ -1820,35 +1831,33 @@ check('the gun in your hands is solid and textured at its declared scale', async
           // the winding has to agree with the normal the shader lights by,
           // or the facet is inside out and simply vanishes
           if ((cx * n.getX(a) + cy * n.getY(a) + cz * n.getZ(a)) / len < -1e-6) inverted++;
-
-          // texels per metre, off the real triangle rather than the intent
-          if (!uv || !m.map) continue;
+          if (!m.map) continue;
+          texturedTris++;
+          if (!uv || !tile) continue;
+          // texels per metre off the real triangle, against what it declares
           const area = len / 2;
           const duA = uv.getX(b) - uv.getX(a), dvA = uv.getY(b) - uv.getY(a);
           const duB = uv.getX(c) - uv.getX(a), dvB = uv.getY(c) - uv.getY(a);
           const uvArea = Math.abs(duA * dvB - dvA * duB) / 2;
-          if (area > 1e-8 && uvArea > 1e-12) density.push(Math.sqrt(uvArea / area));
+          if (area > 1e-8 && uvArea > 1e-12) (perMat[key] ||= []).push(Math.sqrt(uvArea / area) * tile);
         }
       });
+      held[w.def.id] = [...names].sort().join('+');
     }
-
-    density.sort((a, b) => a - b);
-    return {
-      meshes, textured, tris, inverted,
-      // one tile over TILE metres means this ratio should sit at 1/TILE
-      medianPerMetre: density.length ? density[density.length >> 1] : 0,
-      tiles: { poly: 1 / 0.3, metal: 1 / 0.36 },
-    };
+    const ratios = {};
+    for (const [k, v] of Object.entries(perMat)) {
+      v.sort((x, y) => x - y);
+      ratios[k] = +v[v.length >> 1].toFixed(2);
+    }
+    return { tris, inverted, textured: +(texturedTris / tris).toFixed(3), held, ratios };
   });
 
-  expect(r.meshes > 30, `only ${r.meshes} meshes across four weapons`);
   expect(r.inverted === 0, `${r.inverted} of ${r.tris} facets are wound inside out`);
-  expect(r.textured / r.meshes > 0.85, `only ${r.textured}/${r.meshes} meshes carry a texture`);
-  // every textured part unwraps at one of the two declared gun tiles
-  const near = (v, t) => Math.abs(v - t) / t < 0.35;
-  expect(near(r.medianPerMetre, r.tiles.poly) || near(r.medianPerMetre, r.tiles.metal),
-    `the view model unwraps at ${r.medianPerMetre.toFixed(2)} tiles/m, not ${r.tiles.metal.toFixed(2)}–${r.tiles.poly.toFixed(2)}`);
-  return { meshes: r.meshes, tris: r.tris, inverted: r.inverted, perMetre: +r.medianPerMetre.toFixed(2) };
+  for (const [id, h] of Object.entries(r.held)) expect(h === 'glove+sleeve', `the ${id} is held by "${h}", not gloved hands and sleeves`);
+  expect(r.textured > 0.95, `only ${(r.textured * 100).toFixed(1)}% of the view model's triangles carry a texture`);
+  // a ratio of 1 is a part unwrapped at exactly the tile it declares
+  for (const [k, v] of Object.entries(r.ratios)) expect(Math.abs(v - 1) < 0.35, `${k} unwraps at ${v}x the scale it declares`);
+  return { ratios: r.ratios, tris: r.tris, inverted: r.inverted, held: r.held };
 });
 
 check('lane paint lies on the road and faces the sky', async (page) => {
