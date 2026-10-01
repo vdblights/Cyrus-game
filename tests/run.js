@@ -2427,6 +2427,113 @@ check('a slow frame is still real time, and the mouse moves once', async (page) 
   return r;
 });
 
+check('the low tier draws plainly: Lambert, no point lights, no canvas samples', async (page) => {
+  // Reported from play: 14 fps on an Intel HD, with auto already on low.
+  // Low dropped shadows and post and kept everything else, and everything
+  // else was most of it: every lit pixel ran the PBR model against the sky's
+  // environment and looped over twelve point lights, into a canvas with four
+  // samples. Measured on seed 1 under software rendering, 970 ms a frame;
+  // Lambert, no point lights and no canvas samples, 173. This asks that low
+  // really is all three — for the city, a hostile that arrives later and a
+  // drop — that the frame is still as bright as the PBR one (Lambert cannot
+  // see the environment, and shaded walls went black until the hemisphere
+  // stood in for it), and that going back up puts every material back.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const gl = g.renderer.getContext();
+    const tally = () => {
+      let pbr = 0, plain = 0, points = 0;
+      g.scene.traverse((o) => {
+        if (o.isPointLight && o.visible) points++;
+        if (!o.isMesh || !o.material) return;
+        if (o.material.isMeshStandardMaterial) pbr++;
+        else if (o.material.isMeshLambertMaterial && o.material.userData.pbr) plain++;
+      });
+      return { pbr, plain, points };
+    };
+    const W = g.renderer.domElement.width, H = g.renderer.domElement.height;
+    const buf = new Uint8Array(W * H * 4);
+    const bright = () => {
+      g.renderer.setRenderTarget(null); g.renderer.clear(); g.renderer.render(g.scene, g.camera);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      let sum = 0, n = 0;
+      for (let i = 0; i < buf.length; i += 16) { sum += 0.2126 * buf[i] + 0.7152 * buf[i + 1] + 0.0722 * buf[i + 2]; n++; }
+      return +(sum / n).toFixed(1);
+    };
+    g.settings.quality = 'low';
+    g.applyQuality('low');
+    g.player.reset(-17, 24); g.player.yaw = 2.2; g.player.pitch = 0;
+    g.step(1 / 60);
+    const e = g.spawnEnemy('raider');
+    const real = Math.random;
+    Math.random = () => 0.1;                           // an ammo drop
+    try { g.maybeDrop(g.player.position.clone().setY(0)); } finally { Math.random = real; }
+    const low = tally();
+    const arrivals = [...e.hitMeshes, g.pickups[g.pickups.length - 1].mesh.children[0] || g.pickups[g.pickups.length - 1].mesh]
+      .filter((m) => m.isMesh && m.material && (m.material.isMeshStandardMaterial || m.material.userData.pbr))
+      .map((m) => m.material.type);
+    const plainBright = bright();
+    // the same frame with the PBR materials back, nothing else changed
+    g.plainMaterials = false; g.dress(g.scene); g.hemi.intensity = 0.28;
+    const pbrBright = bright();
+    g.settings.quality = 'high';
+    g.applyQuality('high');
+    return { plainBright, pbrBright, low, arrivals, high: tally(),
+      samples: gl.getContextAttributes().antialias };
+  });
+  expect(r.low.pbr === 0 && r.low.plain > 100, `low still draws PBR: ${JSON.stringify(r.low)}`);
+  expect(r.arrivals.every((t) => t === 'MeshLambertMaterial'),
+    `a hostile or a drop arrived in PBR on low: ${r.arrivals.join(', ')}`);
+  expect(r.low.points === 0, `low still lights ${r.low.points} point lights`);
+  expect(!r.samples, 'the canvas is multisampled');
+  // Measured on seed 1: 80.2 against 80.9 from this view; 57.1 with the
+  // hemisphere left where the PBR tiers have it.
+  expect(Math.abs(r.plainBright - r.pbrBright) < r.pbrBright * 0.1,
+    `low reads ${r.plainBright} against ${r.pbrBright} for the same frame in PBR`);
+  expect(r.high.plain === 0 && r.high.pbr > 100, `going back up left twins behind: ${JSON.stringify(r.high)}`);
+  return r;
+});
+
+check('the fire nearest you is lit, and the light count never changes', async (page) => {
+  // Every barrel carried a point light and every lit pixel paid for all of
+  // them, however far away. Each tier lights a fixed number now, handed to
+  // whichever barrels are nearest — and the number is what matters, because
+  // the count of visible lights is part of every lit program's key: a count
+  // that changed as you walked would recompile the city mid-fight.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.settings.quality = 'high';
+    g.applyQuality('high');
+    const visible = () => { let n = 0; g.scene.traverse((o) => { if (o.isPointLight && o.visible) n++; }); return n; };
+    const counts = new Set(), misses = [];
+    let programs = null;
+    for (const b of g.fireBarrels) {
+      g.player.reset(b.light.position.x + 2, b.light.position.z + 2);
+      g.time += 1;                                     // past the quarter-second hand-over
+      g.step(1 / 60);
+      g.flickerFires(1 / 60);
+      g.render();
+      if (programs === null) programs = g.renderer.info.programs.length;
+      counts.add(visible());
+      if (!b.light.visible) misses.push([+b.light.position.x.toFixed(0), +b.light.position.z.toFixed(0)]);
+    }
+    return { barrels: g.fireBarrels.length, counts: [...counts], misses,
+      newPrograms: g.renderer.info.programs.length - programs };
+  });
+  expect(r.barrels >= 4, `only ${r.barrels} fire barrels to walk between`);
+  // three fires, the muzzle flash and the blast
+  expect(r.counts.length === 1 && r.counts[0] === 5, `visible point lights went ${r.counts.join(', ')}`);
+  expect(r.misses.length === 0, `standing beside a fire left it dark at ${JSON.stringify(r.misses)}`);
+  expect(r.newPrograms === 0, `walking between fires compiled ${r.newPrograms} programs`);
+  return r;
+});
+
 check('the frame-rate readout shows on a key, and names the GPU', async (page) => {
   // Lag is reported from machines nobody here can see, so the game carries
   // its own numbers: the key left of 1 shows them, and the pause menu has

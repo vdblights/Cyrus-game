@@ -385,14 +385,21 @@ float.
 Shadow mapping costs more than everything else in the scene put together, so
 it is the first thing the quality tiers drop:
 
-| Tier | Shadows | Normal maps | Post | Pixel ratio | Dust |
-| --- | --- | --- | --- | --- | --- |
-| High | 2048 wide + 2048 near, soft | yes | occlusion, bloom + grade, 4x MSAA | up to 1.25 | yes |
-| Medium | 1024 wide + 1024 near, hard | yes | occlusion, bloom + grade, 2x MSAA | up to 1.0 | yes |
-| Low | off | no | off, straight to the canvas | 1.0 | no |
+| Tier | Shadows | Lighting | Fire lights | Post | Pixel ratio | Dust |
+| --- | --- | --- | --- | --- | --- | --- |
+| High | 2048 wide + 2048 near, soft | PBR + sky, normal maps | nearest 3 | occlusion, bloom + grade, 4x MSAA | up to 1.25 | yes |
+| Medium | 1024 wide + 1024 near, hard | PBR + sky, normal maps | nearest 2 | occlusion, bloom + grade, 2x MSAA | up to 1.0 | yes |
+| Low | off | Lambert | none | off, straight to the canvas | 1.0 | no |
 
 A machine that cannot afford shadows cannot afford a bloom either, so Low
-drops the whole post chain and hands tone mapping back to the renderer.
+drops the whole post chain and hands tone mapping back to the renderer. It
+is meant for the integrated graphics in an older laptop, and it draws the
+city with plain Lambert lighting under a brighter sky light instead of the
+physically based model, with no point lights at all; the gun in your hands
+keeps its full materials. Under software rendering that is 176 ms a frame
+against 986 for what Low used to be. On every tier only the nearest few fire
+barrels cast real light — a fire's light reaches 14 m, and every barrel in
+the sector used to be paid for on every pixel.
 
 The pixel ratio is the column that matters most. Every pass the post chain
 adds is paid per pixel, and on a 2x screen High used to draw 3.06 times the
