@@ -67,6 +67,7 @@ builds, never to play.
 | `src/nav.js` | Walkable grid over `world.boxes`, and a route field to the player |
 | `src/rng.js` | Seeded `Math.random` for the page's lifetime, and `reserve`/`spend` |
 | `src/loading.js` | The loading screen: stages, progress, field notes, the sector survey |
+| `src/perf.js` | The frame-rate readout (`` ` ``), and the name of the GPU the browser draws with |
 
 The whole game hangs off `window.__game`, which is how tests and probes drive it.
 
@@ -324,8 +325,17 @@ These each cost real debugging time. Changing them needs a reason.
   floating hostiles.
 - **Game time, not wall clock.** Gameplay compares against `game.time`. Health
   regen once used `performance.now()` and silently never fired. The exception
-  is FPS calibration, which deliberately uses wall clock because `dt` is
-  clamped.
+  is FPS calibration, which deliberately uses wall clock because game time
+  drops whatever a frame takes past 0.2 s. Below that, a long frame is split
+  into steps of at most 50 ms (`MAX_STEP`, `MAX_FRAME`): the step used to be
+  clamped to 50 ms, so under 20 fps everything — walking, falling, hostiles,
+  every clock — ran in slow motion, and a slow machine felt sluggish twice
+  over. The mouse moves once per frame however many steps it took
+  (`input.endFrame` after each step), and `autoCalibrate` runs in `frame`,
+  once per frame, not in `step` — so a check that drives the watcher by
+  stepping has to call it itself. `a slow frame is still real time, and the
+  mouse moves once` walks one wall-clock second at 60 and at 10 fps: 1.000 s
+  of game time both ways, against 0.5 s with the clamp put back.
 - **The view model renders in its own scene** over a cleared depth buffer, so
   the weapon never clips into geometry. It has its own camera and lights.
   The hands are children of the weapon's model, so every pose — recoil,
@@ -538,7 +548,7 @@ These each cost real debugging time. Changing them needs a reason.
   a 2x screen draws 1.75x resolution, which costs 2.4x the frame under
   software rendering — so the fight is where a machine falls short, and the
   old calibration had stopped looking by then. Now any three seconds of
-  unbroken play under 45 fps gives something back: in a fight, 15% of
+  unbroken play under 55 fps (it was 45) gives something back: in a fight, 15% of
   resolution (`renderScale`, down to 70%), because a pixel ratio change moves
   no shader; with nothing alive, a tier, because a tier change recompiles
   every lit material and that stall belongs between waves. Wall clock, since
@@ -554,11 +564,17 @@ These each cost real debugging time. Changing them needs a reason.
   three seconds of slow frames per step, at the worst possible moment. A
   boot stage (`chooseStartingTier`) now times a few frames of the city at
   each tier, behind the loading screen, and starts on the best one that
-  holds 60. One rule keeps it honest: a frame over 250 ms is not a
+  draws the empty street in 12.5 ms (`START_BUDGET_MS`) — 60 fps with the
+  third a fight costs on top; it was 16.7, which started machines on a tier
+  they could hold only until the first hostile. And once resolution is
+  spent in a fight and it is still short, it drops a tier anyway: one stall
+  while shaders rebuild beats a wave at 40 fps. One rule keeps it honest: a frame over 250 ms is not a
   measurement — it is software rendering, or a tab in the background — and
   then it changes nothing and starts on high, which is also why the suite
   never sees it pick anything else. `auto starts at the tier this machine
-  can hold` fakes the clock and fails when the function always says high.
+  can hold` fakes the clock and fails when the function always says high,
+  and with the old 16.7 ms budget; `auto quality keeps watching` fails with
+  the bar at 45 and with the in-fight tier drop taken out.
 - **The post chain reads the scene through `sane()`, and bloom is why.**
   One pixel that is not a finite number — a NaN from a normalise of zero, an
   overflow in a half-float target — is invisible as one pixel. The bloom
@@ -879,6 +895,45 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The lag pass is the tenth, and it came from play the day the ninth merged:
+no black boxes on a second machine, but the game still slow and laggy —
+the mouse not as quick as it once was, and the same for moving. Two
+machines, neither visible from here, so it starts by ruling things out.
+
+The CPU is not it. Twelve hostiles of a real fight on seed 1: the game step
+is 0.5 ms a frame (0.9 at the 95th percentile), the HUD nothing, and the
+frame allocates 191 KB, almost all of it inside three's renderer — a minor
+collection every second or so, not a stutter. Mouse look is applied raw
+the frame it arrives, as it always was, and the sensitivity constant has
+not changed since the first commit. What is left is the GPU frame rate,
+which is what every realism pass has been spending, and two things in the
+game that made a short frame rate feel worse than it was. `auto` held to
+45 fps, so a machine at 46 played the whole run there; it is 55 now, a fight
+short of it gives up a tier once resolution is spent, and the starting tier
+needs a third of headroom (invariant above). And under 20 fps the game ran
+in slow motion — which is exactly "moving the player is not as quick" — so a
+long frame is split into steps now (the game-time invariant).
+
+None of that can be confirmed on the machines that reported it, so the
+other half of the pass is the readout (`src/perf.js`, the key left of 1):
+frames a second, frame time and the worst, CPU time, tier and resolution,
+draw calls, whether the mouse is captured, and the GPU's name, which also
+catches a browser drawing without the graphics card and says so on the
+menu. The next report should carry those numbers. If it shows a GPU
+holding 55+ and the lag is still there, the remaining suspect is latency
+rather than frame rate — frames queued behind a busy GPU — and the
+experiment is to keep one frame in flight (a fence per frame, skipping a
+frame's submit while the last is unsignalled). Two things the readout will
+settle that nothing here can: whether the mouse is ever left steering
+rather than captured, which feels exactly like lag, and whether the
+browser is on the integrated GPU of a two-GPU laptop.
+
+Four checks, each confirmed to fail against what it guards: `a slow frame
+is still real time, and the mouse moves once` (0.5 s of game time a second
+with the clamp back), `the frame-rate readout shows on a key, and names the
+GPU` (nothing shown with the key unbound), and the two `auto` checks, both
+made stricter (above).
 
 The frame-rate pass is the ninth, and it came from play as two sentences:
 performance is still bad, and black boxes blink in a rough vertical line

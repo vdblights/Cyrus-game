@@ -134,6 +134,7 @@ scale had no initial value.
 | `G` | Frag grenade — **hold to cook**, release to throw |
 | `F` / `V` | Melee bash |
 | `M` | Mute |
+| `` ` `` | Frame-rate readout |
 | `Esc` | Pause |
 
 Click the canvas to capture the mouse — with pointer lock held, the cursor
@@ -399,15 +400,31 @@ ms at High's old cap and 3,287 at 1.25. Above 1.25 the picture is sharper
 by an amount nobody notices while a hostile is shooting at them.
 
 The default is **Auto**. It starts by timing a few frames of the city at
-each tier behind the loading screen and picks the best one that holds 60, so
-a laptop that cannot afford High starts on Medium rather than earning it in
-its first fight. Then it keeps watching for as long as you play. Over
-any three seconds under 45 frames a second it gives something back and tells
-you what: in a fight, resolution, 15% at a time down to 70% of the tier's,
-because that costs no stall; between waves, a whole tier, because changing
-tier rebuilds the shaders and that would hitch mid-fight. It never steps back
-up. Picking a tier yourself in the pause menu turns all of it off — an
-explicit choice is never overridden.
+each tier behind the loading screen and picks the best one that draws an
+empty street in 12.5 ms — 60 frames a second with a third to spare, because
+a fight costs about that much more — so a laptop that cannot afford High
+starts below it rather than earning its way down in the first fight. Then
+it keeps watching for as long as you play. Over any three seconds under 55
+frames a second it gives something back and tells you what: in a fight,
+resolution, 15% at a time down to 70% of the tier's, because that costs no
+stall; between waves, a whole tier, because changing tier rebuilds the
+shaders and that hitches. If a fight is still short once the resolution is
+spent, it takes the hitch and drops the tier anyway. It never steps back up.
+Picking a tier yourself in the pause menu turns all of it off — an explicit
+choice is never overridden.
+
+Press `` ` `` (the key left of 1), or tick **Show frame rate** in the pause
+menu, to see what your machine is doing: frames a second, the frame time
+and the worst one, how much of it the CPU took, the tier and resolution in
+use, draw calls, whether the mouse is captured, and the name of the GPU the
+browser is drawing with. If that last line says SwiftShader, llvmpipe or
+Basic Render, the browser is not using your graphics card at all — turn on
+hardware acceleration in its settings. The menu says so too.
+
+A slow frame no longer slows the game down. Below 20 frames a second the
+simulation used to take one 50 ms step per frame whatever the frame took, so
+walking, falling and every hostile ran in slow motion; a long frame is now
+split into steps, up to a fifth of a second.
 
 Every shader a run needs is built, and every texture uploaded, behind the
 loading screen, so the first hostile you see and the first shot you fire do

@@ -1986,15 +1986,20 @@ check('auto starts at the tier this machine can hold', async (page) => {
       return g.startingTier;
     };
     return {
-      // high misses 60 fps, medium makes it
-      midrange: trial({ high: 31, medium: 13, low: 7 }),
+      // high misses 60 fps, medium makes it with a fight's worth to spare
+      midrange: trial({ high: 31, medium: 11, low: 7 }),
+      // medium holds 60 on an empty street and nothing more: 14 ms is a
+      // fight at 53 fps, which the old 16.7 ms bar let it start in
+      tight: trial({ high: 31, medium: 14, low: 7 }),
       fast: trial({ high: 9, medium: 6, low: 4 }),
       // a frame this slow is software rendering, not a frame rate
       software: trial({ high: 1900, medium: 1600, low: 1200 }),
     };
   });
   expect(r.midrange?.tier === 'medium' && r.midrange.measured,
-    `a machine that runs high at 32 fps and medium at 77 starts on ${JSON.stringify(r.midrange)}`);
+    `a machine that runs high at 32 fps and medium at 91 starts on ${JSON.stringify(r.midrange)}`);
+  expect(r.tight?.tier === 'low',
+    `a machine with no room for a fight on medium starts on ${JSON.stringify(r.tight)}`);
   expect(r.fast?.tier === 'high', `a fast machine starts on ${JSON.stringify(r.fast)}`);
   expect(r.software?.tier === 'high' && !r.software.measured,
     `a machine too slow to measure was moved to ${JSON.stringify(r.software)}`);
@@ -2357,11 +2362,108 @@ check('nothing compiles at first contact', async (page) => {
   return r;
 });
 
+check('a slow frame is still real time, and the mouse moves once', async (page) => {
+  // The step was clamped to 50 ms, so below 20 fps the game ran in slow
+  // motion — walking, falling, hostiles and every clock — and a slow machine
+  // felt sluggish twice over. A long frame is split into steps now. This
+  // walks the same street for one second of wall clock at 60 fps and at
+  // 10, with the renderer stubbed out and the frame clock faked.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.settings.quality = 'high';                      // nothing else may move
+    g.render = () => {};
+    g.input.locked = true;
+    // a run of road with nothing in it for the length of the walk
+    let start = null;
+    for (let tries = 0; tries < 20 && !start; tries++) {
+      const { target, px, pz } = window.__place(12);
+      const dx = target.x - px, dz = target.z - pz, len = Math.hypot(dx, dz);
+      let clear = true;
+      for (let d = 0; d <= 7 && clear; d += 0.25) {
+        const x = px + (dx / len) * d, z = pz + (dz / len) * d;
+        if (g.world.groundHeight(x, z, 0.5, 99) > 0.2 || g.world.occupied(x, z, 0.6, 0.15)) clear = false;
+      }
+      if (clear) start = { px, pz, yaw: Math.atan2(-dx, -dz) };
+    }
+    if (!start) return { error: 'no clear road found' };
+    const walk = (fps) => {
+      g.player.reset(start.px, start.pz);
+      g.player.yaw = start.yaw; g.player.pitch = 0;
+      g.player.velocity.set(0, 0, 0);
+      g.clock.getDelta = () => 1 / fps;
+      g.input.keys.add('KeyW');
+      const t0 = g.time, x0 = g.player.position.x, z0 = g.player.position.z;
+      for (let f = 0; f < fps; f++) { g.player.health = 100; g.frame(); }
+      g.input.keys.clear();
+      return { game: +(g.time - t0).toFixed(3),
+        walked: +Math.hypot(g.player.position.x - x0, g.player.position.z - z0).toFixed(2) };
+    };
+    const smooth = walk(60), slow = walk(10);
+    // one frame of 100 ms is two steps; the mouse moved once
+    g.clock.getDelta = () => 0.1;
+    const yaw0 = g.player.yaw;
+    g.input.lookDelta.x = 0.2;
+    g.frame();
+    return { smooth, slow, turned: +(yaw0 - g.player.yaw).toFixed(3) };
+  });
+  expect(!r.error, r.error);
+  // Measured on seed 1: 1.000 s and 1.000 s of game time; with the old clamp
+  // the slow walk covers 0.5 s of game and half the ground.
+  expect(Math.abs(r.slow.game - 1) < 0.01, `a second at 10 fps was ${r.slow.game} s of game time`);
+  expect(Math.abs(r.slow.walked - r.smooth.walked) < 0.25,
+    `a second of walking covers ${r.slow.walked} m at 10 fps against ${r.smooth.walked} m at 60`);
+  expect(Math.abs(r.turned - 0.2) < 1e-6, `a mouse movement of 0.2 turned the view ${r.turned}`);
+  return r;
+});
+
+check('the frame-rate readout shows on a key, and names the GPU', async (page) => {
+  // Lag is reported from machines nobody here can see, so the game carries
+  // its own numbers: the key left of 1 shows them, and the pause menu has
+  // the same switch. Under the suite there is no GPU at all, which is the
+  // other thing it is for: saying so, on the readout and on the menu.
+  await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.render = () => {};
+  });
+  await page.keyboard.press('Backquote');
+  const shown = await page.evaluate(() => {
+    const g = window.__game;
+    for (let i = 0; i < 5; i++) { g.perf.drawnAt = 0; g.frame(); }
+    const el = document.getElementById('perf');
+    return { visible: !!el && getComputedStyle(el).display !== 'none', text: el ? el.textContent : '',
+      saved: g.settings.showPerf, box: document.getElementById('show-perf').checked };
+  });
+  await page.keyboard.press('Backquote');
+  const hidden = await page.evaluate(() => {
+    const el = document.getElementById('perf');
+    const note = document.getElementById('gpu-note');
+    return { visible: getComputedStyle(el).display !== 'none', saved: window.__game.settings.showPerf,
+      note: getComputedStyle(note).display !== 'none' };
+  });
+  expect(shown.visible && /\d+ fps/.test(shown.text), `the readout did not show: ${JSON.stringify(shown)}`);
+  expect(/swiftshader/i.test(shown.text) && /NO GPU/.test(shown.text),
+    `the readout did not name the renderer: ${shown.text}`);
+  expect(shown.saved && shown.box, 'the key did not reach the setting or the pause menu');
+  expect(!hidden.visible && !hidden.saved, 'a second press did not hide it');
+  expect(hidden.note, 'the menu did not say there is no GPU');
+  return { text: shown.text.slice(0, 90), note: hidden.note };
+});
+
 check('auto quality keeps watching, and gives back resolution before shaders', async (page) => {
   // It used to judge the first three seconds of a run — an empty street
   // before wave one, the cheapest the game ever is to draw — and then stop
   // for good, so a machine that was fine there and short in a fight was
   // never asked again. The frame clock is faked so the verdicts are exact.
+  //
+  // Two more things it asks since play reported lag on machines that were
+  // holding the old bar: 50 fps is short (the bar is 55, it was 45), and a
+  // fight that is still short once resolution is spent gives a tier rather
+  // than playing out the wave.
   const r = await page.evaluate(() => {
     const g = window.__game;
     const real = performance.now.bind(performance);
@@ -2380,6 +2482,7 @@ check('auto quality keeps watching, and gives back resolution before shaders', a
           g.time += 1 / 60;
           g.player.health = 100;
           g.step(1 / 60);
+          g.autoCalibrate();
         }
       };
       const read = () => ({ tier: g.activeTier, scale: +g.renderScale.toFixed(2) });
@@ -2387,20 +2490,23 @@ check('auto quality keeps watching, and gives back resolution before shaders', a
       run(7, 60);                                       // a quiet street, smooth
       const calm = read();
       for (let i = 0; i < 4; i++) g.spawnEnemy('raider').alert(g.time, 0);
-      run(7, 30);                                       // the fight is not
+      // the fight is not: 50 fps, which the old bar of 45 called fine
+      run(7, 50);
       const fight = read();
       clock += 8000;                                    // paused for eight seconds
       run(1, 60);
       const paused = read();
+      run(3, 50);                                       // resolution spent, still short
+      const spent = read();
       for (const e of g.enemies) { e.group.visible = false; g._recycle(e); }
       g.enemies.length = 0;
-      run(4, 30);                                       // between waves, still short
+      run(4, 50);                                       // between waves, still short
       const quiet = read();
       g.settings.quality = 'high';
       g.applyQuality();
       run(7, 20);                                       // chosen, never overridden
       const chosen = read();
-      return { calm, fight, paused, quiet, chosen };
+      return { calm, fight, paused, spent, quiet, chosen };
     } finally {
       performance.now = real;
     }
@@ -2409,7 +2515,9 @@ check('auto quality keeps watching, and gives back resolution before shaders', a
   expect(r.fight.tier === 'high' && r.fight.scale < 1,
     `a slow fight after a smooth start left ${JSON.stringify(r.fight)}; it should cost resolution, not the tier`);
   expect(r.paused.scale === r.fight.scale, `a pause read as a slow frame: ${JSON.stringify(r.paused)}`);
-  expect(r.quiet.tier === 'medium', `a slow stretch between waves left the tier at ${r.quiet.tier}`);
+  expect(r.spent.tier === 'medium' && r.spent.scale === r.fight.scale,
+    `a fight still short at the lowest resolution left ${JSON.stringify(r.spent)}; it should give a tier`);
+  expect(r.quiet.tier === 'low', `a slow stretch between waves left the tier at ${r.quiet.tier}`);
   expect(r.chosen.tier === 'high' && r.chosen.scale === 1,
     `an explicit choice was overridden: ${JSON.stringify(r.chosen)}`);
   return r;

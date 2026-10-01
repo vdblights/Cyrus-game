@@ -15,6 +15,7 @@ import { TILE } from './textures.js';
 import { chamferGeo, mergeIntoOne } from './shapes.js';
 import { randRange, SUPPORT_RADIUS } from './world.js';
 import { NavGrid } from './nav.js';
+import { PerfMeter } from './perf.js';
 import { installAtmosphere, skyMaterial, environmentFrom, SUN_DIR, SUN_COLOR } from './atmosphere.js';
 import { installShadowCascade, placeShadow, sizeShadow, SUN_DISTANCE } from './shadows.js';
 import { initRandom, getSeed, reserve } from './rng.js';
@@ -32,13 +33,26 @@ const TEXTURE_SLOTS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emis
 
 /** `auto` quality: judged over windows of this many seconds of play… */
 const AUTO_WINDOW = 3;
-/** …against this frame rate… */
-const AUTO_FPS = 45;
+/**
+ * …against this frame rate… It was 45, which let a machine sit at 46 fps
+ * for a whole run: playable on paper, and exactly what "laggy" means in the
+ * hand, because every frame under the display's own rate is another frame
+ * between moving the mouse and seeing the view move.
+ */
+const AUTO_FPS = 55;
 /** …and never drawing at less than this fraction of the tier's resolution. */
 const AUTO_MIN_SCALE = 0.7;
-// the frame rate a starting tier must hold on an empty street, with room
-// left over for a fight
-const START_FPS = 60;
+/**
+ * The frame a starting tier must draw an empty street in, in ms. A dozen
+ * hostiles is about a third more work than the empty street the boot stage
+ * can measure, so a tier that only just holds 60 there (16.7 ms) is short of
+ * it in the first fight; 12.5 leaves that third.
+ */
+const START_BUDGET_MS = 12.5;
+/** The longest single step the simulation takes, in seconds… */
+const MAX_STEP = 0.05;
+/** …and the longest frame it will catch up on rather than drop. */
+const MAX_FRAME = 0.2;
 const RAY = new THREE.Raycaster();
 const SHADOW_AT = new THREE.Vector3();
 const SHADOW_AHEAD = new THREE.Vector3();
@@ -54,6 +68,7 @@ class Game {
     this.canvas = document.getElementById('scene');
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    this.perf = new PerfMeter(this.renderer);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.autoClear = false;
@@ -511,7 +526,7 @@ class Game {
   loadSettings() {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem('ashfall.settings') || '{}'); } catch { saved = {}; }
-    return { sens: 100, fov: 78, volume: 70, muted: false, invertY: false, quality: 'auto', ...saved };
+    return { sens: 100, fov: 78, volume: 70, muted: false, invertY: false, quality: 'auto', showPerf: false, ...saved };
   }
 
   /** Every unique material, so a quality change can flag them all at once. */
@@ -586,13 +601,15 @@ class Game {
    * Two levers, in order. Resolution first: it moves no shader, so it can be
    * pulled mid-fight without a stall, and fill is what the expensive passes —
    * occlusion, bloom, the window tracing, soft shadows over two cascades —
-   * scale with. The tier only while nothing is alive, because a tier change
+   * scale with. The tier while nothing is alive, because a tier change
    * recompiles every lit material and that is a stall you would feel in a
-   * fight. Never back up: a picture that see-saws between two settings is
-   * worse than either. An explicit choice is never overridden.
+   * fight — or in a fight once resolution is spent, because a whole wave
+   * short of the frame rate is worse than one stall. Never back up: a
+   * picture that see-saws between two settings is worse than either. An explicit choice is never overridden.
    *
-   * Wall clock, not game time: the loop's dt is clamped, so a machine at
-   * 15 fps would otherwise look like 30. And only over unbroken play: a gap —
+   * Wall clock, not game time: game time drops whatever a frame takes past
+   * a fifth of a second, so a very slow machine would otherwise look faster
+   * than it is. And only over unbroken play: a gap —
    * a pause, a hidden tab, a hitch — starts the window again rather than
    * reading as one very long frame.
    */
@@ -624,6 +641,13 @@ class Game {
       this.renderScale = Math.max(AUTO_MIN_SCALE, this.renderScale - 0.15);
       this.applyPixelRatio();
       this.hud.toast(`GRAPHICS: RESOLUTION ${Math.round(this.renderScale * 100)}% (${Math.round(fps)} FPS)`);
+    } else if (at < order.length - 1) {
+      // Out of resolution to give and still short, in a fight. Waiting for
+      // the wave to end used to mean the rest of it at this frame rate; one
+      // stall while the shaders rebuild is the smaller cost.
+      this.autoTier = order[at + 1];
+      this.applyQuality();
+      this.hud.toast('GRAPHICS: ' + this.autoTier.toUpperCase() + ` (${Math.round(fps)} FPS)`);
     }
   }
 
@@ -663,7 +687,7 @@ class Game {
       const times = [frame(), frame(), frame()].sort((a, b) => a - b);
       const median = times[1];
       if (times[0] >= 250) { chosen = null; break; }     // not measurable
-      if (median <= 1000 / START_FPS || tier === 'low') { chosen = tier; break; }
+      if (median <= START_BUDGET_MS || tier === 'low') { chosen = tier; break; }
     }
     this.autoTier = chosen || 'high';
     this.startingTier = { tier: this.autoTier, measured: chosen !== null };
@@ -716,6 +740,9 @@ class Game {
     if (inv) inv.checked = st.invertY;
     const mute = document.getElementById('mute');
     if (mute) mute.checked = st.muted;
+    const perf = document.getElementById('show-perf');
+    if (perf) perf.checked = st.showPerf;
+    this.perf.show(st.showPerf);
   }
 
   bindUI() {
@@ -736,6 +763,28 @@ class Game {
     bind('mute', 'muted', (el) => el.checked);
     bind('quality', 'quality', (el) => el.value);
     this.applySettings();
+
+    // The key left of 1 shows the frame-rate readout, in play or paused.
+    // Not through `applySettings`: that re-applies the tier, which flags
+    // every material for a recompile, and a readout for measuring stalls
+    // must not cause one.
+    const showPerf = (on) => {
+      this.settings.showPerf = on;
+      document.getElementById('show-perf').checked = on;
+      this.perf.show(on);
+      this.saveSettings();
+    };
+    document.getElementById('show-perf').oninput = (e) => showPerf(e.target.checked);
+    addEventListener('keydown', (e) => {
+      if (e.code === 'Backquote' && !e.repeat) showPerf(!this.settings.showPerf);
+    });
+    // no graphics card behind the canvas: say so where it will be read,
+    // because nothing in the game can make up for it
+    const note = document.getElementById('gpu-note');
+    if (note && this.perf.software) {
+      note.textContent = 'Your browser is drawing without the graphics card — turn on hardware acceleration, or the game will run slowly.';
+      note.classList.remove('hidden');
+    }
     this.showRecords();
 
     // any click inside the play area is another chance to capture the mouse
@@ -1368,20 +1417,38 @@ class Game {
 
   // ------------------------------------------------------------------ loop
   frame() {
-    const dt = Math.min(this.clock.getDelta(), 0.05);
-    this.time += dt;
+    const began = performance.now();
+    // Real time, not slow motion. The step used to be clamped to 50 ms, so
+    // under 20 fps the whole game slowed down with the frame rate — walking,
+    // falling, hostiles, clocks — and a slow machine felt sluggish twice
+    // over. A long frame is now split into steps no longer than that. Past a
+    // fifth of a second it is a hitch or a hidden tab rather than a frame
+    // rate, and the rest is dropped as it always was.
+    const elapsed = Math.min(this.clock.getDelta(), MAX_FRAME);
+    const steps = Math.max(1, Math.ceil(elapsed / MAX_STEP - 1e-6));
+    const dt = elapsed / steps;
 
-    if (this.state === 'playing') this.step(dt);
-    else if (this.state === 'dead') {
-      this.player.update(dt, this.time, this.input);
-      for (const e of this.enemies) e.update(dt, this.time, this.player, this.world);
-      this.effects.update(dt);
+    for (let i = 0; i < steps; i++) {
+      this.time += dt;
+      if (this.state === 'playing') this.step(dt);
+      else if (this.state === 'dead') {
+        this.player.update(dt, this.time, this.input);
+        for (const e of this.enemies) e.update(dt, this.time, this.player, this.world);
+        this.effects.update(dt);
+      }
+      // the mouse moved once, however many steps the frame took
+      this.input.endFrame();
     }
+    const stepped = performance.now();
+    if (this.state === 'playing') this.autoCalibrate();
 
-    this.hud.tick(dt);
-    this.flickerFires(dt);
+    this.hud.tick(elapsed);
+    this.flickerFires(elapsed);
+    this.perf.beforeRender();
     this.render();
-    this.input.endFrame();
+    const ended = performance.now();
+    this.perf.frame(began, stepped, ended);
+    this.perf.draw(this, ended);
   }
 
   step(dt) {
@@ -1427,7 +1494,6 @@ class Game {
     this.updateWaves(dt);
     this.updatePickups(dt);
     this.updateAmbience(dt);
-    this.autoCalibrate();
     this.effects.update(dt);
     this.hud.update(this);
 
