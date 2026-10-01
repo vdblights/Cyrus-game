@@ -11,6 +11,8 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
 npm test                       # the headless suite (needs npm install first)
+npm test -- --shard=2/4        # every fourth check from the second, as CI runs it
+npm test -- --only=auto        # just the checks whose name contains "auto"
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -1425,6 +1427,16 @@ climb was right. `World.mantleTarget` is unchanged.
 
 CI runs the suite and the one-file build on every push to `main` and every PR
 (`.github/workflows/ci.yml`), and attaches the built `ashfall.html` to the run.
+The suite runs as four parallel shards (`--shard=i/4`, dealt round-robin),
+and the build only after all four pass. It was one job with a twenty-minute
+limit until every run from #21 onward was cancelled at exactly twenty
+minutes: every check reboots the game, a boot is most of a check under
+software rendering, and two passes in a row added boot stages that draw
+(the shader warm-up, then the starting-tier timing, which spent five
+software frames deciding it could not measure one). **Anything added to
+boot is paid once per check**, and the suite prints each check's seconds so
+the bill is visible; a boot stage that draws should give up early when the
+frames say software.
 Chromium is cached on the resolved Playwright version, so a run is a couple of
 minutes rather than the download. If the browser install ever starts failing,
 the harness falls back to `PLAYWRIGHT_BROWSERS_PATH` and `ASHFALL_CHROME`.

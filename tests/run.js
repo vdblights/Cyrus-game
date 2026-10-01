@@ -15,7 +15,6 @@ import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { openGame } from './harness.js';
 
-const PORT = 8177;
 // Pinned so runs repeat. It moved from 20260813 when the graphics pass
 // reshuffled every seed's city: that seed now lays out one where a hostile
 // can wall-slide out of reach and deadlock a wave, which is an open game bug
@@ -23,6 +22,15 @@ const PORT = 8177;
 const SEED = Number((process.argv.find((a) => a.startsWith('--seed=')) || '').split('=')[1]) || 1;
 const SHOTS = process.argv.includes('--shots');
 const HEADED = process.argv.includes('--headed');
+// `--shard=2/4` runs every fourth check starting at the second. Every check
+// boots the game afresh, and a boot is most of a check under software
+// rendering, so the suite outgrew one CI job's time limit; CI runs it as
+// parallel shards. Dealt round-robin, so slow neighbours are spread out.
+const SHARD = ((process.argv.find((a) => a.startsWith('--shard=')) || '').split('=')[1] || '')
+  .split('/').map(Number);
+const inShard = (i) => SHARD.length !== 2 || i % SHARD[1] === SHARD[0] - 1;
+// a port per shard, so shards can run side by side on one machine too
+const PORT = 8177 + (SHARD.length === 2 ? SHARD[0] : 0);
 const SHOT_DIR = fileURLToPath(new URL('./shots/', import.meta.url));
 
 const checks = [];
@@ -2973,7 +2981,7 @@ async function screenshots(page) {
   console.log('  wrote tests/shots/plaza.png');
 }
 
-console.log(`seed ${SEED}\n`);
+console.log(`seed ${SEED}${SHARD.length === 2 ? ` · shard ${SHARD.join('/')}` : ''}\n`);
 const game = await openGame({ seed: SEED, port: PORT, headed: HEADED });
 const { page, errors: pageErrors } = game;
 // checks that need a mid-check reload go through the harness, so the seed,
@@ -2986,7 +2994,11 @@ let failed = 0;
 // twenty-one checks and several minutes; when one of them is what you are
 // working on, waiting for the other twenty is how you stop running it.
 const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').split('=')[1];
-const selected = ONLY ? checks.filter((c) => c.name.includes(ONLY)) : checks;
+const selected = (ONLY ? checks.filter((c) => c.name.includes(ONLY)) : checks).filter((c, i) => inShard(i));
+if (SHARD.length === 2 && !(SHARD[0] >= 1 && SHARD[0] <= SHARD[1])) {
+  console.log(`--shard wants i/n with 1 <= i <= n, got ${SHARD.join('/')}`);
+  process.exit(1);
+}
 if (ONLY && !selected.length) {
   console.log(`no check matches "${ONLY}"`);
   process.exit(1);
@@ -2995,13 +3007,15 @@ if (ONLY && !selected.length) {
 for (const { name, fn } of selected) {
   // Every check gets a freshly booted game on the same seed. Sharing one
   // instance made results depend on what the previous check left behind.
+  const began = Date.now();
   await game.reload();
   const before = pageErrors.length;
   try {
     const detail = await fn(page);
     const errs = pageErrors.slice(before);
     if (errs.length) throw new Failure(`page errors: ${[...new Set(errs)].join(' | ')}`);
-    console.log(`  ok   ${name}${detail ? '  ' + JSON.stringify(detail).slice(0, 120) : ''}`);
+    const took = `${((Date.now() - began) / 1000).toFixed(0)}s`.padStart(4);
+    console.log(`  ok   ${took} ${name}${detail ? '  ' + JSON.stringify(detail).slice(0, 120) : ''}`);
   } catch (err) {
     failed++;
     console.log(`  FAIL ${name}\n       ${err.message}`);

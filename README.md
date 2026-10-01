@@ -59,6 +59,7 @@ second.
 | --- | --- |
 | `--seed=N` | Replay an exact city (default is pinned, so runs are repeatable) |
 | `--only=text` | Run only the checks whose name contains `text` |
+| `--shard=i/n` | Run every nth check starting at the ith — CI runs four shards side by side |
 | `--headed` | Watch it play |
 | `--shots` | Also write screenshots to `tests/shots/` |
 

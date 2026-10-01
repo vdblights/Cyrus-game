@@ -683,10 +683,14 @@ class Game {
     for (const tier of ['high', 'medium', 'low']) {
       this.autoTier = tier;
       this.applyQuality();
-      frame(); frame();                         // compiles and first draws
+      frame();                                  // compiles and first draws
+      // Two slow frames in a row are enough to know a machine cannot be
+      // measured (one could be a late upload on a real GPU). Waiting for
+      // three more as well cost every boot under software rendering several
+      // seconds, and that is what took the suite past CI's time limit.
+      if (frame() >= 250 && frame() >= 250) { chosen = null; break; }
       const times = [frame(), frame(), frame()].sort((a, b) => a - b);
       const median = times[1];
-      if (times[0] >= 250) { chosen = null; break; }     // not measurable
       if (median <= START_BUDGET_MS || tier === 'low') { chosen = tier; break; }
     }
     this.autoTier = chosen || 'high';
