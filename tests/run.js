@@ -120,6 +120,46 @@ check('every city material survives the bake', async (page) => {
   return r;
 });
 
+check('the near shadow cascade draws the street it covers, not the city', async (page) => {
+  // The bake used to merge the city into one mesh per material, each one
+  // spanning the sector, so nothing in it could be culled: the near cascade
+  // is 26 m across and drew every triangle of the city into its map, and the
+  // camera drew everything behind you. Batches are per material per patch
+  // now. This asks what share of the merged city's triangles a frustum test
+  // lets into the near cascade, from a street in the middle of the sector.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0;
+    g.applyQuality('high');
+    g.player.reset(-17, 24); g.player.yaw = 2.2;
+    for (let i = 0; i < 3; i++) { g.time += 1 / 60; g.step(1 / 60); }
+    g.render();
+    const cam = g.sunNear.shadow.camera;
+    cam.updateMatrixWorld();
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(
+      new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    const sphere = new THREE.Sphere();
+    let total = 0, drawn = 0, batches = 0;
+    g.city.traverse((o) => {
+      if (!o.isMesh || !o.castShadow) return;
+      batches++;
+      const tris = (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
+      total += tris;
+      if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+      sphere.copy(o.geometry.boundingSphere).applyMatrix4(o.matrixWorld);
+      if (frustum.intersectsSphere(sphere)) drawn += tris;
+    });
+    return { batches, total, drawn, share: +(drawn / total).toFixed(3) };
+  });
+  // Measured on seed 1: 0.49 of the city's shadow-casting triangles, against
+  // 0.99 with one batch per material put back.
+  expect(r.share < 0.6, `the near cascade takes in ${(r.share * 100).toFixed(0)}% of the city`);
+  return r;
+});
+
 check('bullets damage hostiles, headshots hurt more', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -1923,6 +1963,100 @@ check('weathering is ragged, not round', async (page) => {
     expect(row.patches >= 6, `${name}: only ${row.patches} whole stain patches to measure`);
     expect(row.ratio > 1.35, `${name}: stains are ${row.ratio}x as ragged as a disc — still round`);
   }
+  return r;
+});
+
+check('auto starts at the tier this machine can hold', async (page) => {
+  // `auto` only ever steps down, three seconds at a time and a whole tier
+  // only between waves, so a machine that could not hold the high tier used
+  // to play its first wave at its worst. Boot now times a few real frames
+  // per tier and starts at the first with room for a fight. The frame clock
+  // is faked here, as the auto check fakes it: each render advances it by a
+  // cost per tier.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const realNow = performance.now.bind(performance);
+    const realRender = g.render;
+    const trial = (cost) => {
+      let clock = 0;
+      performance.now = () => clock;
+      g.render = () => { clock += cost[g.activeTier]; };
+      g.settings.quality = 'auto';
+      try { g.chooseStartingTier(); } finally { performance.now = realNow; g.render = realRender; }
+      return g.startingTier;
+    };
+    return {
+      // high misses 60 fps, medium makes it
+      midrange: trial({ high: 31, medium: 13, low: 7 }),
+      fast: trial({ high: 9, medium: 6, low: 4 }),
+      // a frame this slow is software rendering, not a frame rate
+      software: trial({ high: 1900, medium: 1600, low: 1200 }),
+    };
+  });
+  expect(r.midrange?.tier === 'medium' && r.midrange.measured,
+    `a machine that runs high at 32 fps and medium at 77 starts on ${JSON.stringify(r.midrange)}`);
+  expect(r.fast?.tier === 'high', `a fast machine starts on ${JSON.stringify(r.fast)}`);
+  expect(r.software?.tier === 'high' && !r.software.measured,
+    `a machine too slow to measure was moved to ${JSON.stringify(r.software)}`);
+  return r;
+});
+
+check('a bad pixel stays one pixel, it does not bloom into a box', async (page) => {
+  // Reported from play as black boxes blinking in a line around the gun when
+  // turning. It never reproduced here — no pixel in the chain went NaN or
+  // past 1,000 over hundreds of swept frames under software rendering — but
+  // the shape is the signature of one: a single NaN or infinite pixel in the
+  // half-float scene target goes through nine taps of blur at half and
+  // quarter resolution, poisons every tap that touches it, and comes out a
+  // black square. Whatever makes the pixel on someone's GPU, the bloom is
+  // what makes it a box, so the post chain now sanitises what it reads.
+  //
+  // This puts a few pixels of NaN, then of infinity, into the scene on
+  // purpose and counts how much of the final frame they change.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.applyQuality('high');
+    g.player.reset(-17, 24); g.player.yaw = 2.2; g.player.pitch = 0;
+    for (let i = 0; i < 3; i++) { g.time += 1 / 60; g.step(1 / 60); }
+    const gl = g.renderer.getContext();
+    const grab = () => {
+      g.render();
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return px;
+    };
+    // the grain moves with time, so time stands still across the frames
+    const base = grab();
+    const poison = (expr) => {
+      const m = new THREE.ShaderMaterial({
+        uniforms: { z: { value: 0 } },
+        vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: `uniform float z; void main(){ gl_FragColor = vec4(${expr}); }`,
+        depthWrite: false,
+      });
+      // a speck a few pixels across, five metres in front of the eye
+      const q = new THREE.Mesh(new THREE.PlaneGeometry(0.02, 0.02), m);
+      q.position.copy(g.camera.position).addScaledVector(g.camera.getWorldDirection(new THREE.Vector3()), 5);
+      q.quaternion.copy(g.camera.quaternion);
+      g.scene.add(q);
+      const px = grab();
+      g.scene.remove(q);
+      let changed = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        if (Math.abs(px[i] - base[i]) + Math.abs(px[i + 1] - base[i + 1]) + Math.abs(px[i + 2] - base[i + 2]) > 60) changed++;
+      }
+      return changed;
+    };
+    return { nan: poison('z / z'), inf: poison('1.0 / z') };
+  });
+  // the speck itself is a few pixels; a bloomed one is hundreds
+  expect(r.nan < 40, `a NaN speck changed ${r.nan} pixels of the frame`);
+  expect(r.inf < 40, `an infinite speck changed ${r.inf} pixels of the frame`);
   return r;
 });
 

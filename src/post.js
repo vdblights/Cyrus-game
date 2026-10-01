@@ -45,8 +45,28 @@ const BRIGHT_FRAG = /* glsl */`
   uniform float threshold;
   uniform float knee;
   varying vec2 vUv;
+
+  // A pixel that is not a number, or not finite, becomes black here, and
+  // nothing past this point can spread it. Tested on the exponent bits, not
+  // with isnan(), which a compiler is allowed to fold to false. Without this,
+  // one bad pixel — a driver's NaN, a glint past half-float's 65504 — went
+  // through nine taps of blur at half and quarter resolution and came out a
+  // black box, blinking with whatever made it.
+  // So is anything past 1024: the sun disc is the brightest real thing in
+  // the sector at about 40, and some drivers store an overflow as half
+  // float's largest finite value, 65504, rather than as infinity — which a
+  // bilinear read at half resolution then blends down to a quarter of that,
+  // and a sixteenth at a corner, both still far past anything real.
+  vec3 sane(vec3 c, float hi) {
+    uvec3 e = (floatBitsToUint(c) >> 23u) & 255u;
+    bvec3 bad = bvec3(e.x == 255u || c.x > 1024.0, e.y == 255u || c.y > 1024.0, e.z == 255u || c.z > 1024.0);
+    return clamp(vec3(bad.x ? 0.0 : c.x, bad.y ? 0.0 : c.y, bad.z ? 0.0 : c.z), 0.0, hi);
+  }
+
   void main() {
-    vec3 c = texture2D(tDiffuse, vUv).rgb;
+    // and capped: the sun disc is the brightest thing in the sector at about
+    // 40, so the cap costs it nothing and stops any lone spike from blooming
+    vec3 c = sane(texture2D(tDiffuse, vUv).rgb, 64.0);
     float peak = max(max(c.r, c.g), c.b);
     float w = clamp((peak - threshold) / max(knee, 1e-4), 0.0, 1.0);
     gl_FragColor = vec4(c * w * w, 1.0);
@@ -80,6 +100,23 @@ const FINAL_FRAG = /* glsl */`
   uniform float time;
   varying vec2 vUv;
 
+  // A pixel that is not a number, or not finite, becomes black here, and
+  // nothing past this point can spread it. Tested on the exponent bits, not
+  // with isnan(), which a compiler is allowed to fold to false. Without this,
+  // one bad pixel — a driver's NaN, a glint past half-float's 65504 — went
+  // through nine taps of blur at half and quarter resolution and came out a
+  // black box, blinking with whatever made it.
+  // So is anything past 1024: the sun disc is the brightest real thing in
+  // the sector at about 40, and some drivers store an overflow as half
+  // float's largest finite value, 65504, rather than as infinity — which a
+  // bilinear read at half resolution then blends down to a quarter of that,
+  // and a sixteenth at a corner, both still far past anything real.
+  vec3 sane(vec3 c, float hi) {
+    uvec3 e = (floatBitsToUint(c) >> 23u) & 255u;
+    bvec3 bad = bvec3(e.x == 255u || c.x > 1024.0, e.y == 255u || c.y > 1024.0, e.z == 255u || c.z > 1024.0);
+    return clamp(vec3(bad.x ? 0.0 : c.x, bad.y ? 0.0 : c.y, bad.z ? 0.0 : c.z), 0.0, hi);
+  }
+
   // the same ACES fit three's ACESFilmicToneMapping uses, so the picture does
   // not shift when post is turned off
   vec3 rrtAndOdtFit(vec3 v) {
@@ -110,13 +147,15 @@ const FINAL_FRAG = /* glsl */`
     // out near 0.5 in the corners, so this is a few pixels there and nothing
     // at the crosshair, which is the only place it would read as a fault.
     vec2 off = centred * r2 * aberration;
-    vec3 color = vec3(
+    vec3 color = sane(vec3(
       texture2D(tDiffuse, vUv + off).r,
       texture2D(tDiffuse, vUv).g,
       texture2D(tDiffuse, vUv - off).b
-    );
+    ), 65000.0);
 
-    color += (texture2D(tBloom, vUv).rgb + texture2D(tBloomWide, vUv).rgb * 1.25) * bloomStrength;
+    // sanitised again even though the bright pass already was: with the bloom
+    // off these are bound to the scene itself at strength 0, and NaN * 0 is NaN
+    color += (sane(texture2D(tBloom, vUv).rgb, 64.0) + sane(texture2D(tBloomWide, vUv).rgb, 64.0) * 1.25) * bloomStrength;
     color = acesFilmic(color * (exposure / 0.6));
 
     // Grade. Under the dust everything is a little less coloured than it

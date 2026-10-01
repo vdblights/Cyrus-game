@@ -36,6 +36,9 @@ const AUTO_WINDOW = 3;
 const AUTO_FPS = 45;
 /** …and never drawing at less than this fraction of the tier's resolution. */
 const AUTO_MIN_SCALE = 0.7;
+// the frame rate a starting tier must hold on an empty street, with room
+// left over for a fight
+const START_FPS = 60;
 const RAY = new THREE.Raycaster();
 const SHADOW_AT = new THREE.Vector3();
 const SHADOW_AHEAD = new THREE.Vector3();
@@ -180,6 +183,7 @@ class Game {
         });
         this.settle();
       }],
+      ['Measuring this machine', 3, () => this.chooseStartingTier()],
       ...this.precompileStages(),
     ];
 
@@ -531,8 +535,13 @@ class Game {
   applyQuality(tier = this.settings.quality) {
     const level = tier === 'auto' ? (this.autoTier || 'high') : tier;
     const cfg = {
-      high: { shadows: true, soft: true, shadowSize: 2048, span: 55, nearSize: 2048, nearSpan: 13, normals: true, pixel: 1.75, dust: true, post: true, bloom: true, samples: 4, ao: true },
-      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, nearSize: 1024, nearSpan: 11, normals: true, pixel: 1.4, dust: true, post: true, bloom: true, samples: 2, ao: true },
+      // Resolution is most of the bill: every pass added since the graphics
+      // pass — occlusion, bloom, two soft cascades, the window tracing — is
+      // paid per pixel, and 4x MSAA multiplies the scene pass again. On a 2x
+      // screen 1.75 drew 3.06x the pixels of 1.0; 1.25 draws half what 1.75
+      // did and, under 4x MSAA, still reads clean.
+      high: { shadows: true, soft: true, shadowSize: 2048, span: 55, nearSize: 2048, nearSpan: 13, normals: true, pixel: 1.25, dust: true, post: true, bloom: true, samples: 4, ao: true },
+      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, nearSize: 1024, nearSpan: 11, normals: true, pixel: 1.0, dust: true, post: true, bloom: true, samples: 2, ao: true },
       low: { shadows: false, soft: false, shadowSize: 512, span: 40, nearSize: 0, nearSpan: 11, normals: false, pixel: 1, dust: false, post: false, bloom: false, samples: 0, ao: false },
     }[level];
 
@@ -616,6 +625,49 @@ class Game {
       this.applyPixelRatio();
       this.hud.toast(`GRAPHICS: RESOLUTION ${Math.round(this.renderScale * 100)}% (${Math.round(fps)} FPS)`);
     }
+  }
+
+  /**
+   * On 'auto', start at the tier this machine can hold, rather than at the
+   * top and walking down.
+   *
+   * `autoCalibrate` only ever steps down, three seconds at a time, and a
+   * whole tier only between waves — so a machine that cannot hold the high
+   * tier used to spend the opening of every run, first wave included, at
+   * its worst. This times a few real frames of the city at each tier, best
+   * first, and starts at the first one with room left for a fight (a dozen
+   * hostiles is about a third more draw calls than an empty street). It
+   * runs before the shader stages, so the programs built there are the
+   * ones this tier draws with and nothing compiles at first contact.
+   *
+   * A frame of a quarter of a second or more is not a frame rate, it is a
+   * machine this cannot measure — software rendering, the suite — and the
+   * tier is left where it was, exactly as `autoCalibrate` treats a gap.
+   */
+  chooseStartingTier() {
+    if (this.settings.quality !== 'auto') return;
+    const gl = this.renderer.getContext(), px = new Uint8Array(4);
+    // one pixel read back is the only honest wait for the GPU here
+    const frame = () => {
+      const t0 = performance.now();
+      this.render();
+      this.renderer.setRenderTarget(null);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return performance.now() - t0;
+    };
+    let chosen = null;
+    for (const tier of ['high', 'medium', 'low']) {
+      this.autoTier = tier;
+      this.applyQuality();
+      frame(); frame();                         // compiles and first draws
+      const times = [frame(), frame(), frame()].sort((a, b) => a - b);
+      const median = times[1];
+      if (times[0] >= 250) { chosen = null; break; }     // not measurable
+      if (median <= 1000 / START_FPS || tier === 'low') { chosen = tier; break; }
+    }
+    this.autoTier = chosen || 'high';
+    this.startingTier = { tier: this.autoTier, measured: chosen !== null };
+    this.applyQuality();
   }
 
   /** The tier's pixel ratio, capped by the screen's, scaled by `auto`. */

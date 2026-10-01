@@ -385,14 +385,23 @@ it is the first thing the quality tiers drop:
 
 | Tier | Shadows | Normal maps | Post | Pixel ratio | Dust |
 | --- | --- | --- | --- | --- | --- |
-| High | 2048 wide + 2048 near, soft | yes | occlusion, bloom + grade, 4x MSAA | up to 1.75 | yes |
-| Medium | 1024 wide + 1024 near, hard | yes | occlusion, bloom + grade, 2x MSAA | up to 1.4 | yes |
+| High | 2048 wide + 2048 near, soft | yes | occlusion, bloom + grade, 4x MSAA | up to 1.25 | yes |
+| Medium | 1024 wide + 1024 near, hard | yes | occlusion, bloom + grade, 2x MSAA | up to 1.0 | yes |
 | Low | off | no | off, straight to the canvas | 1.0 | no |
 
 A machine that cannot afford shadows cannot afford a bloom either, so Low
 drops the whole post chain and hands tone mapping back to the renderer.
 
-The default is **Auto**, and it keeps watching for as long as you play. Over
+The pixel ratio is the column that matters most. Every pass the post chain
+adds is paid per pixel, and on a 2x screen High used to draw 3.06 times the
+pixels of a 1x one — measured in software at that ratio, a frame cost 5,968
+ms at High's old cap and 3,287 at 1.25. Above 1.25 the picture is sharper
+by an amount nobody notices while a hostile is shooting at them.
+
+The default is **Auto**. It starts by timing a few frames of the city at
+each tier behind the loading screen and picks the best one that holds 60, so
+a laptop that cannot afford High starts on Medium rather than earning it in
+its first fight. Then it keeps watching for as long as you play. Over
 any three seconds under 45 frames a second it gives something back and tells
 you what: in a fight, resolution, 15% at a time down to 70% of the tier's,
 because that costs no stall; between waves, a whole tier, because changing
