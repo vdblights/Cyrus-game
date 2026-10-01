@@ -38,7 +38,7 @@ copy without the repo.
 ```bash
 npm install        # playwright + esbuild, only needed for tests and builds
 npx playwright install chromium
-npm test           # 34 checks, headless
+npm test           # the whole suite, headless
 ```
 
 The suite drives the real game in a headless browser through `window.__game`,
@@ -64,7 +64,10 @@ ambient darkening baked under the city, the view model being solid and
 unwrapped at its own scale, the route field covering the whole
 sector, a hostile walking around a building rather than into it, a turned prop
 stopping you where you can see it, the ground you stand on being the ground
-you can see, the best-score line sitting clear of the deploy button, aiming
+you can see, the best-score line sitting clear of the deploy button, ambient
+occlusion darkening contact and leaving open ground alone, the sun reading
+its near shadow map in the right light order, the sky and fog agreeing about
+where the sun is, aiming
 without pointer lock, settings and record persistence, every archetype being
 kitted and keeping its hit zones, nothing in the city or on a hostile being
 wound inside out, three seeds laying out exactly the cities they laid out
@@ -281,17 +284,36 @@ darken, and walls fade toward their own footing. It is baked once, costs
 nothing per frame, and is most of what stops a city of right angles looking
 like a city of boxes.
 
-The sky is not just a backdrop: the same dusk gradient painted for the dome is
-convolved into an environment map and hung on the scene, so every surface
-reflects the actual sky above it — orange low in the west, blue overhead —
-rather than answering one flat ambient tint. The gun in your hands catches it
-too, from its own scene.
+The sky, the sun and the air between them are one model, so they agree about
+what time it is. The sun stands 24 degrees up at the long end of the
+afternoon; the sky is computed rather than painted — blue overhead, a warm
+horizon on the sun's side and a cool one opposite, a bright haze around the
+sun from forward scattering, and a small, very bright disc whose glare is
+the bloom's doing. The same function is rendered into an environment map
+that lights every surface, so a wall turned to the sun is warm and a wall
+turned away is lit by blue sky. And the air is not one flat colour: dust
+hangs thicker at street level than at roof height, and it takes the colour
+of the horizon in whichever direction you look — warm toward the sun, grey
+away from it — so a building far down a street fades into exactly the sky
+behind it.
+
+Where things meet, they darken. A screen-space ambient occlusion pass works
+out, for every pixel, how much of the sky above it is blocked by something
+within a metre: the foot of a barrier, the gap under a car, an inside
+corner, a hostile's boots. Contact shading is the first thing the eye uses
+to decide whether an object is standing on the ground or pasted over it.
+
+The sun casts two shadow maps, not one. A wide map covers the sector, and a
+tight one — about a centimetre a texel — covers the street in front of you,
+where you are actually looking, blended into the wide one at its edge. Both
+are snapped to whole texels, so shadow edges hold still while you walk
+instead of crawling along the walls.
 
 The frame is then finished rather than shown raw. It is drawn into a floating
 point buffer, everything brighter than white is blurred into a bloom (the sun,
 the barrel fires, a muzzle flash), and one final pass tone-maps, grades the
-shade cold against warm highlights, vignettes, and lays a fine grain over the
-top.
+image a little *less* saturated than life — dust takes colour out of
+everything — vignettes, and lays a fine grain over the top.
 
 Nothing in the sector is a plain box any more, and that is mostly about
 shape rather than pixels. A wrecked car is a profile: the rocker tucks under
@@ -327,8 +349,8 @@ it is the first thing the quality tiers drop:
 
 | Tier | Shadows | Normal maps | Post | Pixel ratio | Dust |
 | --- | --- | --- | --- | --- | --- |
-| High | 2048, soft | yes | bloom + grade, 4x MSAA | up to 1.75 | yes |
-| Medium | 1024, hard | yes | bloom + grade, 2x MSAA | up to 1.4 | yes |
+| High | 2048 wide + 2048 near, soft | yes | occlusion, bloom + grade, 4x MSAA | up to 1.75 | yes |
+| Medium | 1024 wide + 1024 near, hard | yes | occlusion, bloom + grade, 2x MSAA | up to 1.4 | yes |
 | Low | off | no | off, straight to the canvas | 1.0 | no |
 
 A machine that cannot afford shadows cannot afford a bloom either, so Low
@@ -375,7 +397,9 @@ src/grenades.js     thrown frags: fuse, bounce physics, detonation
 src/effects.js      pooled tracers, impacts, blood, casings, explosions
 src/textures.js     canvas-painted textures (asphalt, facades, rust, cloth, sky)
 src/shapes.js       chamfers, lofted profiles, geometry merging
-src/post.js         bloom, tone mapping, grade, vignette and grain
+src/post.js         ambient occlusion, bloom, tone mapping, grade, vignette, grain
+src/atmosphere.js   the sky, the sun and the fog, as one model
+src/shadows.js      the sun's two shadow cascades
 src/audio.js        synthesised gunfire and feedback via Web Audio
 src/hud.js          HUD readouts, killfeed, radar, damage indicators
 vendor/             Three.js r169 build
@@ -448,6 +472,9 @@ A few notes on the implementation:
   query — no separate navmesh or heightfield.
 - **Climbable structures are validated before they are built.** Both the
   platform footprint and the whole stair corridor must be clear ground, or the
-  structure is not placed; a buried staircase is an unclimbable one.
+  structure is not placed; a buried staircase is an unclimbable one. A stair
+  run is laid back from the deck edge it climbs to, so its last tread is
+  flush and level with the deck, and whatever stands on a deck — the crate,
+  the knee-high lip — is a collider as well as something you can see.
 - **Settings and records persist** in `localStorage` — sensitivity, FOV,
   volume, invert-look and mute, plus your best wave and score.

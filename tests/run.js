@@ -266,12 +266,23 @@ check('stairs carry the player onto a perch', async (page) => {
     g.input.locked = true;
     g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
 
+    // "Climbed" means standing on the deck, not getting near its height. The
+    // check used to pass a perch once the feet came within 0.7 m of the top,
+    // which the last tread always does — so it passed while every container
+    // stack's run stopped 1.6 m short of the stack, and up to a third of the
+    // terraces' runs stopped short of theirs, and you walked off the top step
+    // into the street. It also only tried the first eight perches, and on the
+    // pinned seed the one container stack is the tenth.
+    const deckOf = (p) => g.world.boxes.find((b) => Math.abs(b.top - p.y) < 0.02 &&
+      p.x > b.minX && p.x < b.maxX && p.z > b.minZ && p.z < b.maxZ);
     const report = [];
-    for (const perch of g.perches.slice(0, 8)) {
-      // a stair run reads as a low step a few metres out along one axis
+    for (const perch of g.perches) {
+      const deck = deckOf(perch);
+      // a stair run reads as a low step a few metres out along one axis; the
+      // first tread is 0.85 m deep, so a 1 m stride can step clean over it
       let approach = null;
       for (const [ax, az] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
-        for (let d = 5; d < 16; d++) {
+        for (let d = 3; d < 18; d += 0.25) {
           const h = g.world.groundHeight(perch.x + ax * d, perch.z + az * d, 0.42, 99);
           if (h > 0.2 && h < 0.55) { approach = { ax, az, d }; break; }
         }
@@ -279,24 +290,85 @@ check('stairs carry the player onto a perch', async (page) => {
       }
       if (!approach) continue;
 
-      const start = approach.d + 4;
+      // Start just off the first tread. Starting further out put a
+      // streetlight between the player and the stairs on one seed-1 deck,
+      // which tests walking into a pole rather than up a stair.
+      const start = approach.d + 1.5;
       g.player.reset(perch.x + approach.ax * start, perch.z + approach.az * start);
       g.player.yaw = Math.atan2(-(perch.x - g.player.position.x), -(perch.z - g.player.position.z));
       g.input.keys.clear(); g.input.keys.add('KeyW');
-      let maxY = 0;
-      for (let f = 0; f < 60 * 10; f++) {
+      let maxY = 0, onDeck = false;
+      for (let f = 0; f < 60 * 10 && !onDeck; f++) {
         g.time += 1 / 60; g.step(1 / 60);
+        const q = g.player.position;
         maxY = Math.max(maxY, g.player.feetY);
+        onDeck = !!deck && Math.abs(g.player.feetY - perch.y) < 0.05 &&
+          q.x > deck.minX && q.x < deck.maxX && q.z > deck.minZ && q.z < deck.maxZ;
       }
       g.input.keys.clear();
-      report.push({ top: +perch.y.toFixed(2), reached: +maxY.toFixed(2), ok: maxY >= perch.y - 0.7 });
+      report.push({ at: [Math.round(perch.x), Math.round(perch.z)], top: +perch.y.toFixed(2),
+        reached: +maxY.toFixed(2), ok: onDeck });
     }
-    return { tested: report.length, climbed: report.filter((x) => x.ok).length, report };
+    return { perches: g.perches.length, tested: report.length,
+      climbed: report.filter((x) => x.ok).length, report };
   });
-  expect(r.tested >= 3, `only ${r.tested} perches had a findable stair run`);
-  expect(r.climbed / r.tested >= 0.7,
-    `only ${r.climbed}/${r.tested} perches were walkable: ${JSON.stringify(r.report)}`);
+  expect(r.tested === r.perches, `only ${r.tested} of ${r.perches} perches had a findable stair run`);
+  expect(r.climbed === r.tested,
+    `only ${r.climbed}/${r.tested} perches could be walked onto: ` +
+    JSON.stringify(r.report.filter((x) => !x.ok)));
   return { tested: r.tested, climbed: r.climbed };
+});
+
+check('what stands on a perch holds you up', async (page) => {
+  // Every terrace may carry a crate and a knee-high lip round its edge, and
+  // both used to be drawn and nothing else: the crate was in neither
+  // `world.boxes` nor `world.solids`, so you walked into it and fell through
+  // it from a jump, and the lip was a solid without a collider, so it stopped
+  // bullets and not boots. Seed 1 had 74 such faces on its decks. This reads
+  // the merged city — what you see — and asks the footing about every face
+  // that points up from a deck within jumping reach of it and is wide enough
+  // to land on.
+  //
+  // It stops at the deck's own footprint on purpose. Wall decoration is laid
+  // before the perches exist and is allowed to stand next to one: on seed 1 a
+  // fire escape's lowest platform is 1.4 m off one terrace and 1.15 m above
+  // it, which is a decoration rule meeting a placement rule, not this bug.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const decks = g.perches.map((p) => ({ p, b: g.world.boxes.find((b) => Math.abs(b.top - p.y) < 0.02 &&
+      p.x > b.minX && p.x < b.maxX && p.z > b.minZ && p.z < b.maxZ) })).filter((d) => d.b);
+    let faces = 0, raised = 0;
+    const unsupported = [];
+    for (const m of g.city.children) {
+      if (!m.isMesh) continue;
+      const pos = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : pos.count;
+      const v = (k) => { const i = idx ? idx.getX(k) : k; return [pos.getX(i), pos.getY(i), pos.getZ(i)]; };
+      for (let t = 0; t < n; t += 3) {
+        const a = v(t), b = v(t + 1), c = v(t + 2);
+        const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        const nx = e1[1] * e2[2] - e1[2] * e2[1], ny = e1[2] * e2[0] - e1[0] * e2[2], nz = e1[0] * e2[1] - e1[1] * e2[0];
+        const len = Math.hypot(nx, ny, nz);
+        if (len < 1e-6 || ny / len < 0.95) continue;
+        const e3 = Math.hypot(c[0] - b[0], c[1] - b[1], c[2] - b[2]);
+        if (len / Math.max(Math.hypot(...e1), Math.hypot(...e2), e3) < 0.3) continue;   // a sliver
+        const x = (a[0] + b[0] + c[0]) / 3, y = (a[1] + b[1] + c[1]) / 3, z = (a[2] + b[2] + c[2]) / 3;
+        const d = decks.find(({ p, b: k }) => y > p.y + 0.2 && y < p.y + 2.6 &&
+          x > k.minX && x < k.maxX && z > k.minZ && z < k.maxZ);
+        if (!d) continue;
+        faces++;
+        if (y > d.p.y + 1) raised++;
+        const ground = g.world.groundHeight(x, z, 0.12, y + 0.05);
+        if (ground < y - 0.15) unsupported.push([+x.toFixed(1), +y.toFixed(2), +z.toFixed(1), +ground.toFixed(2)]);
+      }
+    }
+    return { decks: decks.length, faces, raised, unsupported: unsupported.length, sample: unsupported.slice(0, 4) };
+  });
+  expect(r.decks > 0 && r.faces > 0, `${r.decks} decks with ${r.faces} faces on them to measure`);
+  expect(r.raised > 0, 'no crate on any deck — this seed no longer tests the crates');
+  expect(r.unsupported === 0,
+    `${r.unsupported} of ${r.faces} faces on a deck are drawn but not stood on, e.g. ${JSON.stringify(r.sample)}`);
+  return r;
 });
 
 check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page) => {
@@ -1246,6 +1318,242 @@ check('a marksman is moved to a perch that overlooks you', async (page) => {
   return r;
 });
 
+check('ambient occlusion darkens where things meet and leaves open ground alone', async (page) => {
+  // Occlusion is only right if it does both. The pass is written once and
+  // read twice: at the foot of a barrier there should be a pool of shade,
+  // and on open pavement there should be nothing at all. The second half is
+  // the one that broke — run at half resolution, every pixel's centre sat on
+  // the edge between two depth texels, a nearest lookup picked one by float
+  // rounding, and flat ground came out ruled with evenly spaced dark lines.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false; g.startWave = () => {};
+    g.input.locked = true;
+    g.applyQuality('high');
+    const post = g.post, W = g.world;
+
+    // the AO buffer's red channel, read back through a float target; `rows`
+    // limits the statistics to the bottom fraction of the frame
+    const readAO = (rows = 1) => {
+      g.render();
+      const t = post.targets;
+      if (!t || !t.ao) return null;
+      const w = t.half.w, h = t.half.h;
+      const out = new t.bright.constructor(w, h, { type: 1015 /* FloatType */ });
+      const mat = new post.blurMat.constructor({
+        uniforms: { t: { value: t.ao.texture } },
+        vertexShader: post.blurMat.vertexShader,
+        fragmentShader: 'uniform sampler2D t; varying vec2 vUv; void main(){ gl_FragColor = vec4(texture2D(t, vUv).r, 0.0, 0.0, 1.0); }',
+        depthTest: false, depthWrite: false,
+      });
+      post._draw(mat, out);
+      const buf = new Float32Array(w * h * 4);
+      g.renderer.readRenderTargetPixels(out, 0, 0, w, h, buf);
+      out.dispose(); mat.dispose();
+      let sum = 0, below60 = 0, below90 = 0;
+      const n = w * Math.floor(h * rows);           // row 0 is the bottom
+      for (let k = 0; k < n; k++) {
+        const a = buf[k * 4];
+        sum += a;
+        if (a < 0.6) below60++;
+        if (a < 0.9) below90++;
+      }
+      return { mean: +(sum / n).toFixed(4), below60: +(below60 / n).toFixed(4), below90: +(below90 / n).toFixed(4) };
+    };
+    const settle = () => { for (let i = 0; i < 20; i++) { g.time += 1 / 60; g.step(1 / 60); } };
+
+    // crouched by the foot of the low prop nearest the plaza
+    const prop = W.boxes
+      .filter((b) => b.top > 0.6 && b.top < 1.3 && (b.maxX - b.minX) < 4 && (b.maxZ - b.minZ) < 4)
+      .map((b) => ({ b, d: Math.hypot((b.minX + b.maxX) / 2 + 17, (b.minZ + b.maxZ) / 2 - 24) }))
+      .sort((a, c) => a.d - c.d)[0].b;
+    const cx = (prop.minX + prop.maxX) / 2, cz = (prop.minZ + prop.maxZ) / 2;
+    g.player.reset(cx + 2.6, cz + 1.2);
+    g.player.yaw = Math.atan2(2.6, 1.2);
+    g.player.pitch = -0.28;
+    g.input.keys.add('ControlLeft');
+    settle();
+    const contact = readAO();
+    g.input.keys.clear();
+
+    // Flat pavement seen at a grazing angle, which is the only way the
+    // striping ever showed: looking straight down, each pixel's depth step is
+    // large enough that the rounding never collapses a normal, and an earlier
+    // version of this check, framed that way, passed with the bug restored.
+    // Nor can the street be trusted to be flat — the sidewalks are a visual
+    // apron outside \`world.boxes\`, so a spot that is clear by every box query
+    // still has a 28 cm kerb either side, and kerbs are rightly occluded. So
+    // every city mesh but the merged ground plane is hidden, and whatever the
+    // frame shows below the horizon is flat by construction.
+    const hidden = [];
+    let ground = null;
+    g.city.traverse((m) => {
+      if (!m.isMesh) return;
+      m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox;
+      if (!ground && b.max.y - b.min.y < 1e-3 && b.max.x - b.min.x > 300) { ground = m; return; }
+      if (m.visible) { m.visible = false; hidden.push(m); }
+    });
+    let flat = null;
+    const open = !!ground;
+    if (ground) {
+      g.player.reset(-17, 24);
+      g.player.yaw = 0.6;
+      g.player.pitch = -0.3;
+      settle();
+      flat = readAO(0.4);
+    }
+    for (const m of hidden) m.visible = true;
+    return { contact, flat, open };
+  });
+  expect(r.contact, 'the high tier rendered no AO buffer');
+  expect(r.contact.below60 > 0.01,
+    `nothing is darkened where the barrier meets the pavement: only ${(r.contact.below60 * 100).toFixed(2)}% of pixels below 0.6`);
+  expect(r.open, 'found no flat ground plane in the merged city to look along');
+  expect(r.flat.below90 < 0.005 && r.flat.mean > 0.98,
+    `open pavement is being occluded: ${(r.flat.below90 * 100).toFixed(2)}% of pixels below 0.9, mean ${r.flat.mean}`);
+  return r;
+});
+
+check('the sun reads a sharp shadow map near you, and it agrees with the wide one', async (page) => {
+  // The cascade is a rewrite of three's light loop that assumes the sun is
+  // the first shadow-casting directional light and the cascade the second.
+  // Nothing errors when that stops being true: the sun reads the wrong map,
+  // and a broken cascade looks exactly like a plaza standing in shade —
+  // which is what it was first mistaken for. So this asserts the wiring, the
+  // compiled shader, and that switching the cascade off changes the frame
+  // without changing how much of it is lit.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false; g.startWave = () => {};
+    g.input.locked = true;
+    g.applyQuality('high');
+
+    const casters = [];
+    g.scene.traverse((o) => { if (o.isDirectionalLight && o.castShadow) casters.push(o); });
+    const order = casters.length === 2 && casters[0] === g.sun && casters[1] === g.sunNear;
+
+    // a prop in sunlight, seen side-on to the shadow it throws
+    const W = g.world, S = g.sunDir;
+    const sh = Math.hypot(S.x, S.z), sx = S.x / sh, sz = S.z / sh;
+    const lit = (x, z) => W.lineOfSight(x, 0.3, z, x + S.x * 160, 0.3 + S.y * 160, z + S.z * 160);
+    let best = null;
+    for (const b of W.boxes) {
+      if (b.top < 0.6 || b.top > 2.2 || b.maxX - b.minX > 7 || b.maxZ - b.minZ > 7) continue;
+      const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2;
+      if (!lit(cx + sx * 3, cz + sz * 3)) continue;
+      let n = 0;
+      for (let k = 0; k < 8; k++) if (lit(cx + Math.cos(k * Math.PI / 4) * 4, cz + Math.sin(k * Math.PI / 4) * 4)) n++;
+      const score = n * 10 - Math.hypot(cx + 17, cz - 24);
+      if (!best || score > best.score) best = { cx, cz, score };
+    }
+    const px = best.cx - sz * 4.2 - sx * 1.2, pz = best.cz + sx * 4.2 - sz * 1.2;
+    const tx = best.cx - sx * 1.6, tz = best.cz - sz * 1.6;
+    g.player.reset(px, pz);
+    g.player.yaw = Math.atan2(-(tx - px), -(tz - pz));
+    g.player.pitch = -0.38;
+    for (let i = 0; i < 20; i++) { g.time += 1 / 60; g.step(1 / 60); }
+
+    const gl = g.renderer.getContext();
+    const grab = () => {
+      g.render();
+      g.renderer.setRenderTarget(null);
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px8 = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px8);
+      return { w, h, px8 };
+    };
+    const lum = (a, k) => 0.2126 * a[k] + 0.7152 * a[k + 1] + 0.0722 * a[k + 2];
+
+    const on = grab();
+    // the shader that was actually compiled, not the chunk it was built from
+    const cascadeCompiled = g.renderer.info.programs.some((p) =>
+      p.fragmentShader && (gl.getShaderSource(p.fragmentShader) || '').includes('nearW'));
+
+    g.sunNear.castShadow = false;
+    for (const m of g.materials) m.needsUpdate = true;
+    const off = grab();
+    g.sunNear.castShadow = true;
+    for (const m of g.materials) m.needsUpdate = true;
+
+    // The whole frame. Only shadow edges should move — the sunlit pavement in
+    // the foreground is lit the same by either map — so what is measured is
+    // how many pixels changed materially, not the average change.
+    let sOn = 0, sOff = 0, changed = 0, n = 0;
+    for (let k = 0; k < on.px8.length; k += 4) {
+      const a = lum(on.px8, k), b = lum(off.px8, k);
+      sOn += a; sOff += b; n++;
+      if (Math.abs(a - b) > 6) changed++;
+    }
+    return {
+      installed: g.shadowCascade, order, casters: casters.length, cascadeCompiled,
+      meanOn: +(sOn / n).toFixed(2), meanOff: +(sOff / n).toFixed(2), changed: +(changed / n).toFixed(4),
+    };
+  });
+  expect(r.installed === true, 'the cascade was not installed into three\'s light loop');
+  expect(r.order, `the sun and the cascade are not the first two shadow casters, in that order (${r.casters} found)`);
+  expect(r.cascadeCompiled, 'no compiled fragment shader contains the cascade lookup');
+  expect(r.changed > 0.002,
+    `switching the cascade off moved only ${(r.changed * 100).toFixed(2)}% of the frame — it is not being read`);
+  const ratio = r.meanOn / r.meanOff;
+  expect(ratio > 0.94 && ratio < 1.06,
+    `the cascade disagrees with the wide map about how much is lit: ${r.meanOn} against ${r.meanOff}`);
+  return r;
+});
+
+check('the sky, the fog and the light are one atmosphere', async (page) => {
+  // One function draws the dome, lights the city through the environment
+  // map and colours the fog. If the fog chunk is not compiled in, distance
+  // goes back to one flat brown; if the sky loses its bearing, the light on
+  // the walls and the sky above them disagree about where the sun is.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.applyQuality('high');
+    g.city.visible = false;                 // just the sky
+    const gl = g.renderer.getContext();
+    const S = g.sunDir;
+    // Read the scene's own linear light, before tone mapping. ACES rolls a
+    // bright sky toward white, so the sky by the sun comes out of the final
+    // frame nearly as neutral as the sky opposite it, and the comparison
+    // would measure the tone curve rather than the atmosphere.
+    const centre = (yaw) => {
+      g.player.reset(-17, 24);
+      g.player.yaw = yaw;
+      g.player.pitch = 0.04;               // just above the horizon
+      for (let i = 0; i < 5; i++) { g.time += 1 / 60; g.step(1 / 60); }
+      g.render();
+      const post = g.post, t = post.targets;
+      const out = new t.bright.constructor(1, 1, { type: 1015 /* FloatType */ });
+      const mat = new post.blurMat.constructor({
+        uniforms: { t: { value: t.scene.texture } },
+        vertexShader: post.blurMat.vertexShader,
+        fragmentShader: 'uniform sampler2D t; varying vec2 vUv; void main(){ gl_FragColor = vec4(texture2D(t, vec2(0.5)).rgb, 1.0); }',
+        depthTest: false, depthWrite: false,
+      });
+      post._draw(mat, out);
+      const b = new Float32Array(4);
+      g.renderer.readRenderTargetPixels(out, 0, 0, 1, 1, b);
+      out.dispose(); mat.dispose();
+      return [+b[0].toFixed(3), +b[1].toFixed(3), +b[2].toFixed(3)];
+    };
+    // camera forward is (-sin yaw, -cos yaw)
+    const toward = Math.atan2(-S.x, -S.z);
+    const sun = centre(toward), away = centre(toward + Math.PI);
+    g.city.visible = true;
+    const fogCompiled = g.renderer.info.programs.some((p) =>
+      p.fragmentShader && (gl.getShaderSource(p.fragmentShader) || '').includes('ashFogDepth'));
+    const warmth = (c) => c[0] / Math.max(1e-4, c[2]);
+    return { sun, away, warmSun: +warmth(sun).toFixed(2), warmAway: +warmth(away).toFixed(2), fogCompiled };
+  });
+  expect(r.fogCompiled, 'no compiled shader contains the height fog');
+  expect(r.warmSun > r.warmAway * 1.6,
+    `the horizon is no warmer toward the sun (r/b ${r.warmSun}) than away from it (${r.warmAway})`);
+  return r;
+});
+
 check('every surface is textured at the world scale it declares', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -1498,10 +1806,17 @@ check('a seed still lays out the city it did', async (page) => {
   // layout change is being made, they are re-measured *once*, with the reason
   // written down — that is a different thing from a look change quietly
   // moving them, which is what this exists to catch.
+  //
+  // Re-measured once, for the perch fix: terrace lips and crates became
+  // colliders and every stair run was moved to end at its deck. The perches,
+  // the barrels and every collider more than 14 m from a perch were compared
+  // one by one before and after on seeds 1, 7, 99991, 20260101 and 20260813
+  // and are identical — what moved is the perches' own furniture. Before it:
+  // 332/405/12 f0aa1240, 296/354/10 9a29033d, 332/410/12 efb56339.
   const want = {
-    1: { boxes: 332, solids: 405, perches: 12, fp: 'f0aa1240' },
-    7: { boxes: 296, solids: 354, perches: 10, fp: '9a29033d' },
-    20260101: { boxes: 332, solids: 410, perches: 12, fp: 'efb56339' },
+    1: { boxes: 378, solids: 420, perches: 12, fp: 'c8f04a70' },
+    7: { boxes: 325, solids: 361, perches: 10, fp: '482fa9b1' },
+    20260101: { boxes: 374, solids: 422, perches: 12, fp: '30770211' },
   };
 
   const got = {};

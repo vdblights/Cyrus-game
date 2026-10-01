@@ -1257,54 +1257,6 @@ export function particleSprite(color = '#ffffff') {
   });
 }
 
-/**
- * Dusk sky. The vertical band does the work: deep blue overhead falling
- * through violet to a smoggy orange at the horizon, with a dust layer sitting
- * on the skyline. The sun itself is a sprite placed at the light's actual
- * direction, not painted here, so the two can never drift apart.
- */
-export function skyTexture() {
-  return make('sky', () => {
-    const s = 1024, c = canvas(s), ctx = c.getContext('2d');
-    const g = ctx.createLinearGradient(0, 0, 0, s);
-    g.addColorStop(0.00, '#0d1120');   // zenith
-    g.addColorStop(0.30, '#232a42');
-    g.addColorStop(0.50, '#4a3f55');
-    g.addColorStop(0.64, '#8a5c4c');
-    g.addColorStop(0.76, '#c2764a');
-    g.addColorStop(0.88, '#d08c4c');
-    g.addColorStop(0.96, '#96633a');
-    g.addColorStop(1.00, '#5d4630');   // below the horizon line, not glowing
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, s, s);
-
-    // torn cloud, soft and low contrast — hard bands read as painted stripes
-    softLayer(ctx, s, (l) => {
-      for (let i = 0; i < 46; i++) {
-        const y = s * (0.32 + Math.pow(Math.random(), 0.7) * 0.44);
-        const h = 6 + Math.random() * 22;
-        const w = s * (0.2 + Math.random() * 0.55);
-        const x = Math.random() * s;
-        const light = y / s;
-        l.fillStyle = Math.random() < 0.4
-          ? `rgba(255, ${170 + light * 60 | 0}, ${130 + light * 40 | 0}, ${0.03 + Math.random() * 0.06})`
-          : `rgba(${34 + light * 40 | 0}, ${28 + light * 26 | 0}, ${44 + light * 16 | 0}, ${0.05 + Math.random() * 0.10})`;
-        l.beginPath();
-        l.ellipse(x, y, w, h, 0, 0, Math.PI * 2);
-        l.fill();
-      }
-    }, 256);
-
-    // dust haze thickening onto the skyline
-    const haze = ctx.createLinearGradient(0, s * 0.68, 0, s);
-    haze.addColorStop(0, 'rgba(214, 150, 96, 0)');
-    haze.addColorStop(1, 'rgba(214, 150, 96, 0.38)');
-    ctx.fillStyle = haze;
-    ctx.fillRect(0, s * 0.68, s, s * 0.32);
-    return c;
-  });
-}
-
 /* ------------------------------------------------------- derived channels */
 
 /**
@@ -1417,23 +1369,6 @@ export function surfaceFrom(sourceTexture, { dark = 1, lite = 0.55, metalDark = 
     octx.putImageData(img, 0, 0);
     return out;
   }, [sourceTexture.repeat.x, sourceTexture.repeat.y], THREE.NoColorSpace);
-}
-
-/** Sun glow: a smooth falloff, unlike the hard-cored particle sprite. */
-export function sunSprite(inner = '#fff3d6', outer = '#ff9a3c') {
-  return make('sun' + inner + outer, () => {
-    const s = 256, c = canvas(s), ctx = c.getContext('2d');
-    const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
-    g.addColorStop(0.00, inner);
-    g.addColorStop(0.12, inner);
-    g.addColorStop(0.30, outer);
-    g.addColorStop(0.55, 'rgba(255,140,60,0.22)');
-    g.addColorStop(0.78, 'rgba(255,120,50,0.06)');
-    g.addColorStop(1.00, 'rgba(255,120,50,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, s, s);
-    return c;
-  });
 }
 
 /** Soft round blob for contact shadows under characters and props. */

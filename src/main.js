@@ -14,15 +14,23 @@ import { TILE } from './textures.js';
 import { chamferGeo, mergeIntoOne } from './shapes.js';
 import { randRange } from './world.js';
 import { NavGrid } from './nav.js';
+import { installAtmosphere, skyMaterial, environmentFrom, SUN_DIR, SUN_COLOR } from './atmosphere.js';
+import { installShadowCascade, placeShadow, sizeShadow, SUN_DISTANCE } from './shadows.js';
 import { initRandom, getSeed, reserve } from './rng.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
 const SIZE = new THREE.Vector2();
 const RAY = new THREE.Raycaster();
+const SHADOW_AT = new THREE.Vector3();
+const SHADOW_AHEAD = new THREE.Vector3();
 
 class Game {
   constructor() {
+    // the fog and shadow shader chunks are rewritten before anything can
+    // compile them
+    installAtmosphere();
+    this.shadowCascade = installShadowCascade();
     // seed first: everything below this line draws on Math.random()
     this.seed = initRandom();
     this.canvas = document.getElementById('scene');
@@ -37,8 +45,10 @@ class Game {
 
     // ---- world scene ----------------------------------------------------
     this.scene = new THREE.Scene();
-    // fog tinted to the sky's horizon, so distance drains colour toward it
-    this.scene.fog = new THREE.FogExp2(0x8a6748, 0.0100);
+    // Height fog: `fogDensity` is its density at street level, and it thins
+    // with height (see atmosphere.js). The colour is not this one — it is the
+    // sky's own horizon in whichever direction you are looking.
+    this.scene.fog = new THREE.FogExp2(0x8a6748, 0.0050);
     this.baseFov = 78;
     this.camera = new THREE.PerspectiveCamera(this.baseFov, innerWidth / innerHeight, 0.06, 600);
 
@@ -61,8 +71,20 @@ class Game {
     reserve(() => {
       this.setupSky();
       this.setupEnvironment();
+      // three builds the quad every Sprite shares the first time any Sprite is
+      // constructed, and pays for its UUIDs out of the seeded stream. That
+      // used to be the sun's glow, here, inside this reserve. With the sun now
+      // drawn by the sky, the first Sprite was a fire barrel's flame halfway
+      // through laying out the city, and its one-off bill moved every prop
+      // after it: seed 1 laid out 308 boxes instead of 332. So build the
+      // shared quad here, where it has always been built, and costs nothing.
+      new THREE.Sprite();
     });
     this.setupLights();
+    // The second cascade is a light the layout has never paid for: it is new,
+    // it is minted before the city, and outside a reserve its UUID would hand
+    // every seed a different city.
+    reserve(() => this.setupShadowCascade());
 
     const city = buildCity(this.scene);
     this.world = city.world;
@@ -149,60 +171,31 @@ class Game {
   }
 
   // ------------------------------------------------------------------ setup
+  /**
+   * The sky is computed, not painted (see atmosphere.js), and the sun is a
+   * disc in it at the light's own direction — so the shadows always point
+   * away from the thing casting them, and its glare is the bloom's doing
+   * rather than a 230-unit sprite's.
+   */
   setupSky() {
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(420, 32, 20),
-      new THREE.MeshBasicMaterial({ map: TEX.skyTexture(), side: THREE.BackSide, fog: false, depthWrite: false })
-    );
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(420, 48, 24), skyMaterial());
+    sky.frustumCulled = false;
     this.scene.add(sky);
     this.sky = sky;
-
-    // The sun is placed at the light's own direction rather than painted into
-    // the sky, so the shadows always point away from the thing casting them.
-    this.sunDir = new THREE.Vector3(-60, 40, -30).normalize();
-    const sunGroup = new THREE.Group();
-
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: TEX.sunSprite(), blending: THREE.AdditiveBlending,
-      depthWrite: false, transparent: true, opacity: 0.5, fog: false,
-    }));
-    glow.scale.set(230, 230, 1);
-    sunGroup.add(glow);
-
-    const disc = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: TEX.sunSprite('#fffaf0', '#ffcf8a'), blending: THREE.AdditiveBlending,
-      depthWrite: false, transparent: true, opacity: 0.9, fog: false,
-    }));
-    disc.scale.set(52, 52, 1);
-    sunGroup.add(disc);
-
-    sunGroup.position.copy(this.sunDir).multiplyScalar(380);
-    this.scene.add(sunGroup);
-    this.sunSprite = sunGroup;
+    this.sunDir = SUN_DIR.clone();
   }
 
   /**
    * Light the city with the sky it stands under.
    *
-   * The dusk gradient already painted for the dome is run through a PMREM so
-   * it can be used as an image-based light: every PBR surface then reflects
-   * the actual sky above it — orange low on the west faces, blue overhead —
-   * instead of answering a hemisphere light with one flat tint. It is the
-   * cheapest real gain available, since the texture is already in memory.
-   *
-   * The dome keeps its own copy: `mapping` has to change for the convolution,
-   * and the cached texture is shared.
+   * The dome is rendered into a PMREM so it can be used as an image-based
+   * light: every PBR surface then reflects the sky actually drawn above it —
+   * warm on the faces turned to the sun, blue from overhead, grey from the
+   * side away from it — instead of answering a hemisphere light with one flat
+   * tint. It is the same function the dome draws, so the two cannot drift.
    */
   setupEnvironment() {
-    const equirect = TEX.skyTexture().clone();
-    equirect.mapping = THREE.EquirectangularReflectionMapping;
-    equirect.needsUpdate = true;
-
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    pmrem.compileEquirectangularShader();
-    this.envMap = pmrem.fromEquirectangular(equirect).texture;
-    pmrem.dispose();
-    equirect.dispose();
+    this.envMap = environmentFrom(this.renderer, this.sky.material);
 
     this.scene.environment = this.envMap;
     this.scene.environmentIntensity = 1;
@@ -216,10 +209,13 @@ class Game {
     // low ambient, strong key: faces should separate by which way they point.
     // The sky itself now carries most of the ambient (see setupEnvironment),
     // so this is a fraction of what it was or the shadows wash out.
-    this.scene.add(new THREE.HemisphereLight(0x9db4d6, 0x6e6152, 0.55));
+    // The sky itself carries the ambient now (see setupEnvironment), so what
+    // is left of the hemisphere is the warm ground bounce the dome cannot
+    // supply — it has nothing below the horizon worth reflecting.
+    this.scene.add(new THREE.HemisphereLight(0xa9b4c2, 0x7d6650, 0.28));
 
-    const sun = new THREE.DirectionalLight(0xffc890, 3.0);
-    sun.position.set(-60, 40, -30);
+    const sun = new THREE.DirectionalLight(SUN_COLOR, 3.0);
+    sun.position.copy(SUN_DIR).multiplyScalar(SUN_DISTANCE);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     const s = 58;      // wide enough that nearby blocks cast onto the street
@@ -234,7 +230,7 @@ class Game {
 
     // cool bounce from the opposite side so shadowed faces stay readable —
     // lighter than it was, because the sky light now comes from that side too
-    const fill = new THREE.DirectionalLight(0x5f82b8, 0.65);
+    const fill = new THREE.DirectionalLight(0x7f95b4, 0.28);
     fill.position.set(40, 25, 50);
     this.scene.add(fill);
 
@@ -242,6 +238,25 @@ class Game {
     const bounce = new THREE.DirectionalLight(0x8c8072, 0.18);
     bounce.position.set(10, -20, 10);
     this.scene.add(bounce);
+  }
+
+  /**
+   * The tight shadow map: a light at the sun's angle with no intensity of its
+   * own, whose map the sun reads near the player (see shadows.js). Added
+   * after the sun, because the cascade lookup relies on the sun being the
+   * first shadow-casting directional light and this the second.
+   */
+  setupShadowCascade() {
+    const near = new THREE.DirectionalLight(0xffffff, 0);
+    near.castShadow = true;
+    near.shadow.camera.near = 1;
+    near.shadow.camera.far = 220;
+    // a texel a quarter the size of the wide map's needs a quarter the bias
+    near.shadow.bias = -0.0003;
+    near.shadow.normalBias = 0.012;
+    this.scene.add(near);
+    this.scene.add(near.target);
+    this.sunNear = near;
   }
 
   setupDust() {
@@ -372,27 +387,26 @@ class Game {
   applyQuality(tier = this.settings.quality) {
     const level = tier === 'auto' ? (this.autoTier || 'high') : tier;
     const cfg = {
-      high: { shadows: true, soft: true, shadowSize: 2048, span: 50, normals: true, pixel: 1.75, dust: true, post: true, bloom: true, samples: 4 },
-      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, normals: true, pixel: 1.4, dust: true, post: true, bloom: true, samples: 2 },
-      low: { shadows: false, soft: false, shadowSize: 512, span: 40, normals: false, pixel: 1, dust: false, post: false, bloom: false, samples: 0 },
+      high: { shadows: true, soft: true, shadowSize: 2048, span: 55, nearSize: 2048, nearSpan: 13, normals: true, pixel: 1.75, dust: true, post: true, bloom: true, samples: 4, ao: true },
+      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, nearSize: 1024, nearSpan: 11, normals: true, pixel: 1.4, dust: true, post: true, bloom: true, samples: 2, ao: true },
+      low: { shadows: false, soft: false, shadowSize: 512, span: 40, nearSize: 0, nearSpan: 11, normals: false, pixel: 1, dust: false, post: false, bloom: false, samples: 0, ao: false },
     }[level];
 
     // the low tier draws straight to the canvas, as it always did: a machine
     // that cannot afford shadows cannot afford a bloom either
-    this.post.configure({ enabled: cfg.post, bloom: cfg.bloom, samples: cfg.samples });
+    this.post.configure({ enabled: cfg.post, bloom: cfg.bloom, samples: cfg.samples, ao: cfg.ao });
 
     this.renderer.shadowMap.enabled = cfg.shadows;
     this.renderer.shadowMap.type = cfg.soft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, cfg.pixel));
 
-    if (this.sun.shadow.mapSize.x !== cfg.shadowSize) {
-      this.sun.shadow.mapSize.set(cfg.shadowSize, cfg.shadowSize);
-      this.sun.shadow.map?.dispose();
-      this.sun.shadow.map = null;          // three rebuilds it at the new size
-    }
-    const c = this.sun.shadow.camera;
-    c.left = -cfg.span; c.right = cfg.span; c.top = cfg.span; c.bottom = -cfg.span;
-    c.updateProjectionMatrix();
+    sizeShadow(this.sun, cfg.span, cfg.shadowSize);
+    this.shadowSpan = cfg.span;
+    // the cascade switches off with the shadows or on a tier without one;
+    // with a single shadowed light the ordinary lookup compiles instead
+    this.sunNear.castShadow = cfg.shadows && cfg.nearSize > 0;
+    if (this.sunNear.castShadow) sizeShadow(this.sunNear, cfg.nearSpan, cfg.nearSize);
+    this.nearSpan = cfg.nearSpan;
 
     for (const { m, map } of this.normalMapped) m.normalMap = cfg.normals ? map : null;
     for (const m of this.materials) m.needsUpdate = true;   // shadow state is compiled in
@@ -1188,13 +1202,17 @@ class Game {
       this.camera.updateProjectionMatrix();
     }
 
-    // keep the sun's shadow box on the player
-    this.sun.position.set(this.player.position.x - 60, 40, this.player.position.z - 30);
-    this.sun.target.position.set(this.player.position.x, 0, this.player.position.z);
-    this.sun.target.updateMatrixWorld();
+    // keep the wide shadow box on the player, and the tight one on the
+    // street in front of them: that is where its texels are looked at
+    const pp = this.player.position;
+    placeShadow(this.sun, SHADOW_AT.set(pp.x, 0, pp.z), this.shadowSpan, this.sun.shadow.mapSize.x);
+    if (this.sunNear.castShadow) {
+      SHADOW_AHEAD.set(-Math.sin(this.player.yaw), 0, -Math.cos(this.player.yaw));
+      SHADOW_AT.set(pp.x, 0, pp.z).addScaledVector(SHADOW_AHEAD, this.nearSpan * 0.55);
+      placeShadow(this.sunNear, SHADOW_AT, this.nearSpan, this.sunNear.shadow.mapSize.x);
+    }
 
     this.sky.position.copy(this.camera.position);
-    this.sunSprite.position.copy(this.camera.position).addScaledVector(this.sunDir, 380);
     this.dust.position.set(
       Math.round(this.player.position.x / 30) * 30, 0, Math.round(this.player.position.z / 30) * 30);
   }

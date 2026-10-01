@@ -10,7 +10,7 @@ Read `README.md` first for what the game *is*. This file is for changing it.
 
 ```bash
 npm start                      # serve at http://localhost:8000 (no deps needed)
-npm test                       # 30 headless checks (needs npm install first)
+npm test                       # the headless suite (needs npm install first)
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -27,6 +27,11 @@ builds, never to play.
   asked. Every PR in this repo's history came off that branch, which is
   restarted from `main` after each merge rather than stacked on finished
   history.
+- **Do not write the number of checks down either.** It was restated in
+  `CLAUDE.md` and `README.md`, and drifted twice: once when one file was
+  updated and the other was not, and once when neither was, across two whole
+  passes. `npm test` prints `N/N checks passed` on every run, which cannot be
+  wrong. Same reasoning as the next item, smaller scale.
 - **Do not record pull request status in this file.** Which PR is open, and
   what is merged, belongs to `git log origin/main..HEAD` and the repo's PR
   list. A status line here is wrong the moment anyone merges, and it was the
@@ -53,7 +58,9 @@ builds, never to play.
 | `src/effects.js` | Pooled tracers, impacts, blood, casings, explosions |
 | `src/textures.js` | Every texture, painted to canvas at boot |
 | `src/shapes.js` | Chamfers, lofted profiles, geometry merging — the shapes that are not boxes |
-| `src/post.js` | Bloom, tone mapping, grade, vignette, grain |
+| `src/post.js` | Ambient occlusion, bloom, tone mapping, grade, vignette, grain |
+| `src/atmosphere.js` | The sky, the sun and the fog — one model, so they agree |
+| `src/shadows.js` | The sun's two shadow cascades, snapped to their texels |
 | `src/audio.js` | Every sound, synthesised via Web Audio |
 | `src/hud.js` | DOM readouts, killfeed, radar, capture banner |
 | `src/nav.js` | Walkable grid over `world.boxes`, and a route field to the player |
@@ -101,11 +108,35 @@ These each cost real debugging time. Changing them needs a reason.
   are plainly separate, and a kerb lifted you before you had reached it. Seed
   1 measures 0.12 m of overhang across 82 clear edges against 0.42 m, and no
   walkable gap wider than a quarter metre against 17. The floor under the
-  constant is the construction seams between abutting boxes — a stacked
-  container is jittered up to 0.4 m, leaving joints of 0.05-0.15 m — which it
-  has to span or you fall down them. `mantleTarget` asks the same way for the
-  deck it promises, or a climb finishes onto ground the footing check will not
-  then find and drops you straight off it.
+  constant is the construction seams between abutting boxes, joints of
+  0.05-0.15 m, which it has to span or you fall down them. `mantleTarget` asks
+  the same way for the deck it promises, or a climb finishes onto ground the
+  footing check will not then find and drops you straight off it. The other
+  side of it: anything the generator left a real gap in, the old radius had
+  been quietly bridging, and this made it a hole — see the next invariant.
+- **A perch is furnished with colliders, and its stairs end at its deck.**
+  Two bugs from play, reported as climbing a staircase and then falling
+  through the box beside it, and both were true. A terrace's crate was drawn
+  and registered nowhere — not in `world.boxes`, not in `world.solids` — so
+  you walked into it and fell through it from a jump, and its knee-high lip
+  was a solid with no collider, so it stopped bullets and not boots. And
+  every stair run was laid *from its foot* by a run length worked out apart
+  from its step count, so it stopped up to 0.85 m short of a terrace and
+  1.6 m short of a container stack, and the top tread was 0.14-0.23 m off
+  the deck height by up to 0.23 m besides. Under the old body-radius footing a gap under
+  0.84 m was bridged invisibly, so the terraces only broke when footing was
+  fixed; the container stacks had always been a jump. `stairs()` now takes
+  the deck edge and the climbing direction and derives both ends from them,
+  and the rise is `height / count`, so the last tread is flush and level with
+  the deck. The lip across the head of the stairs is built either side of
+  the opening — registering a full one would put a step taller than
+  `STEP_HEIGHT` between the top tread and the deck — paid for with the same
+  `spend` the one lip cost. The crate is kept a body's width off the perch
+  point, because that is where a marksman is put down, and the top container
+  of a stack is no longer slid off its collider; both still draw the rolls
+  they used to, so the stream is unchanged. Measured on seeds 1, 7, 99991,
+  20260101 and 20260813: every perch, every barrel, and every collider more
+  than 14 m from a perch is identical before and after.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -176,6 +207,70 @@ These each cost real debugging time. Changing them needs a reason.
   And it builds no three objects at all, not even a Vector3, because every
   `Object3D` spends four numbers of the seeded stream on a UUID. Typed arrays
   only. That is why the file imports nothing.
+- **Nothing three builds lazily may be built for the first time in the
+  middle of the city.** `reserve` makes an object free by rewinding the
+  stream after it, but some objects build *shared* parts on first use: the
+  first `Sprite` ever constructed builds the quad every Sprite shares, and
+  pays for that geometry's UUIDs out of the seeded stream. For years that was
+  the sun's glow, inside the sky's `reserve`. The lighting pass drew the sun
+  in the sky shader instead, so the first Sprite became a fire barrel's flame
+  halfway through laying out the street junk, and seed 1 laid out 308 boxes
+  instead of 332. Nothing about generation had changed. It was found by
+  logging `Math.random.mark()` around each step of `buildCity` on both sides
+  of the change and walking forward to the first call that disagreed — which
+  is the method worth reusing, because it ends the search in minutes. The
+  constructor now builds a throwaway `Sprite` inside that same `reserve`. If
+  a later change removes the last Sprite built before the city, or adds a
+  first instance of some other lazily-shared three type inside it, the same
+  thing happens again, and `a seed still lays out the city it did` is what
+  will notice.
+- **The post chain is constructed before the city and outside any
+  `reserve`.** So `new Post()` must keep minting exactly the three materials
+  it always has; one more there moves every seed. Everything added since —
+  the occlusion materials, the depth texture, every render target — is built
+  on first use inside `reserve`, and `_allocate` is wrapped in one, which also
+  stops a resize or a tier change in the middle of a run from shifting the
+  stream that is deciding spawn points.
+- **Ambient occlusion reads the world's depth and is multiplied into the
+  world before the gun is drawn.** Three things about it are load-bearing.
+  It runs at half resolution, and a half-res pixel centre lands *exactly* on
+  the edge between two full-res depth texels, so a nearest lookup at `vUv`
+  picks one side by float rounding; where the centre and a neighbour picked
+  the same texel the reconstructed normal collapsed, and flat ground came out
+  ruled with evenly spaced dark lines. The pass addresses full-res texel
+  centres explicitly. It is only offered on a multisampled target, because
+  then the depth texture is a resolve copy rather than the attachment being
+  drawn into — without MSAA it would be a feedback loop. And taps that fall
+  off the edge of the frame are skipped, not clamped (a clamped tap reads a
+  surface that is not there and darkens a band round the border), with a
+  5 cm bias so the road paint, 2 cm proud and pulled forward again by its
+  polygon offset, does not draw a halo. The view model is excluded by order
+  rather than by mask: occlusion is applied, then depth is cleared, then the
+  gun is drawn.
+- **The sky, the sun, the environment and the fog are one function.**
+  `ashAtmosphere(direction)` in `atmosphere.js` draws the dome, is rendered
+  into the PMREM that lights every PBR surface, and colours the fog — which
+  replaces three's fog chunks for every built-in material, thickening toward
+  the ground and taking the sky's own horizon colour in whichever direction
+  you look. So a far wall fades into exactly the sky behind it. To move the
+  sun, change `SUN_DIR` and nothing else: the light, both shadow boxes, the
+  disc, the glow and the fog all read it. The old sky was a painted sunset
+  over a mid-afternoon sun, and that disagreement was most of why the city
+  read as a set.
+- **The sun's shadow lookup reads two maps, and it depends on light order.**
+  `shadows.js` rewrites three's directional-light loop so light 0 reads the
+  tight map (shadow 1) where it covers and the wide one (shadow 0) beyond,
+  blended over the tight map's outer tenth. Shadow-casting lights are sorted
+  first and keep scene order among themselves, so this only holds while the
+  sun is the first shadow-casting directional light added to the scene and
+  the cascade the second. Nothing errors when that stops being true: the sun
+  reads the wrong map. And a broken cascade looks exactly like a plaza
+  standing in shade — which is what the first render of it was taken for.
+  `the sun reads a sharp shadow map near you, and it agrees with the wide
+  one` checks the order, the compiled shader, and that switching the cascade
+  off moves shadow edges without moving how much of the frame is lit. Both
+  boxes are snapped to whole texels in the light's frame, so an edge only
+  moves when the thing casting it does.
 - **Hit detection raycasts before the renderer runs**, so `Enemy.update` calls
   `group.updateMatrixWorld(true)` itself. Anything else raycast against needs
   its transform current too — the aiming laser had to refresh it before using
@@ -410,6 +505,43 @@ copies of a bot with this much history is worse than one. `game.reload({ seed })
 reboots on a different city mid-suite, which is what a check needs when the
 bug it guards is a property of a layout the pinned seed does not have.
 
+A seventh, from the lighting pass, about checks on how something looks.
+Three of them were written there, and all three failed first on code that
+rendered correctly — and in all three the code was fine and the measurement
+was wrong. Averaging the cascade's effect over the bottom half of the frame
+measured sunlit foreground that either map lights the same, while the
+shadows sat mid-frame. Comparing the sky's warmth after tone mapping measured
+the ACES shoulder, which rolls the bright sky by the sun toward white; read
+the linear scene target instead. And the occlusion check, framed looking
+straight down at pavement, *passed with the striping bug restored*, because
+the stripes only form at a grazing angle. That last one is the expensive
+kind, and the only thing that caught it was the rule that a check is
+confirmed to fail against what it guards before it is kept. Two related
+traps came out of the same check. "Open" by the box list is not open: the
+sidewalks are a 28 cm visual apron outside `world.boxes`, so a spot clear of
+every box still has kerbs either side, and kerbs are rightly occluded. The
+check now hides every city mesh but the merged ground plane, so the frame is
+flat by construction. And a look bench that hides the city for one view has
+to put it back before it measures frame cost, or it measures an empty
+sector (the first perf numbers for this pass were 2,606 triangles a frame).
+
+For timing anything in the headless browser, `gl.finish()` is not a sync
+point — it returns early in the GPU process and made a 142k-triangle frame
+look like 2.6 ms. A one-pixel `readPixels` is.
+
+An eighth, from the perch pass, and it is the expensive kind again: a
+tolerance is a place for a bug to live. `stairs carry the player onto a
+perch` passed a perch once the feet came within 0.7 m of the deck, which the
+last tread always does, so it passed while half of seed 1's perches could
+not be stepped onto, and two earlier notes in this file filed the failures it
+did show as seed noise. It asks whether you stood on the deck now. The same
+check only tried the first eight perches, and the one container stack on the
+pinned seed is the tenth — sample everything when everything is a dozen. And
+its setup had a trap of its own once the stairs moved: the walk started 4 m
+out from the first tread, which on one deck put a streetlight between the
+player and the stairs. Start a walk where the thing being walked onto
+begins, not where a margin happens to land.
+
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
@@ -431,8 +563,24 @@ vertex AO and per-building tint (both nearly free now that the geometry is
 merged — the attribute rides along), and splitting the merge per city block
 so culling comes back.
 
+The lighting pass spent about a fifth of it. Measured back to back on seed 1
+from the same view, before and after: high went from 1534 to 1834 ms a frame
+(+20%), medium from 1468 to 1705 (+16%), low unchanged at 1142 against 1150,
+and draw calls on high from 70 to 98. Most of that is two things. The
+occlusion is four passes, three of them at half resolution, about +8%. And
+the near shadow cascade draws the whole city a second time: its box is 26 m
+across, but the city is merged into meshes that span the sector, so nothing
+can be culled out of it — 109k more triangles a frame for a map that only
+needs the street in front of you. Splitting the merge per city block is the
+fix for both that and the main camera, and is the first thing to reach for
+if frame rate matters. Low pays nothing for any of it, and `auto` steps down
+to medium and then low on its own.
+
 All frame-rate figures in this repo's history come from software rendering,
-which exaggerates shadow cost. Relative ordering holds; absolutes do not.
+which exaggerates shadow cost. Relative ordering holds; absolutes do not. On
+real hardware the extra shadow pass is vertex work a GPU barely notices, and
+the half-resolution passes are fractions of a millisecond; software
+rendering makes both look expensive.
 
 ## State
 
@@ -446,6 +594,62 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The perch pass came out of play, as a staircase you climb and then a box
+beside it that you fall through. Both readings were right: terrace crates
+and lips drawn with no collider, and stair runs ending short of their decks
+— the invariant above has both. On seed 1 the audit found 74 faces standing
+on a deck that the footing could not see; it finds none now, and all 12
+perches can be walked onto against 6 when the check asks properly. Jumping
+at any of the five crates on seed 1 lands on top of it; walking into one
+stops you at its face. Two checks guard it, both confirmed to fail on the
+old builders: the stairs check, made strict (6/12 walked onto), and `what
+stands on a perch holds you up`, which reads the merged city — what you
+see — and asks the footing about every face on a deck (72 of 72
+unsupported). The layout check's numbers were re-measured once for it, with
+the before-and-after written into the check. One neighbour of the bug is
+left: wall decoration is laid before the perches and can end up beside one —
+on seed 1 a fire escape's lowest platform is 1.4 m off a terrace and 1.15 m
+above it — which is a decoration rule meeting a placement rule, and is on
+the list below.
+
+The lighting pass came out of one sentence — make the graphics more
+realistic — and out of looking at the frame before touching it. What read
+as fake was light, not texture: nothing darkened where an object met the
+ground, shadows were six centimetres a texel across the sun and sixteen along
+it, the sky was a painted sunset over a sun standing 31 degrees up, distance
+had no haze, and the grade pushed saturation past neutral. Four changes, one
+for each, and they only work together — contact shading under blocky
+shadows still looks wrong:
+
+1. **Screen-space ambient occlusion** (`post.js`), applied before the gun is
+   drawn. Invariant above.
+2. **One atmosphere** (`atmosphere.js`): a computed sky with a small sun
+   whose glare is the bloom's, an environment map rendered from it, and
+   height fog that takes the horizon's colour in the direction you look.
+   The sun came down to 24 degrees, chosen by sampling every walkable point
+   for a line to the sun — 18 left a fifth of the plaza lit. The hemisphere
+   and cool fill lights were cut by half, because the sky now carries the
+   ambient they used to fake and the shade had gone moonlight blue.
+3. **Two shadow cascades** (`shadows.js`), the tight one placed on the
+   street in front of the player, both snapped to texels. Invariant above.
+4. **A grade below neutral saturation**, warm and cool by a nudge rather than
+   a tint.
+
+Two bugs that predated it surfaced on the way, both because the sun sprite
+went. The wide bloom blurred at radius 2 with taps placed for radius 1, which
+turns anything as bright as the sun into a square grid; it is two passes at
+radius 1 now. And the sun sprite had been the first `Sprite` in the page,
+which turned out to be load-bearing for the layout — see the invariant.
+
+Three checks guard it, each confirmed to fail against what it guards, six
+breaks in all: the occlusion check with the half-res addressing bug put back
+(23.8% of flat ground occluded against 0%) and with occlusion switched off;
+the cascade check with the sun and cascade swapped and with the lookup never
+patched; the atmosphere check with the horizon given no bearing and with the
+fog chunk never installed. All three needed their measurement fixed before
+they meant anything — the testing note above has the details, and the first
+of them passed with the bug restored.
 
 The props pass came out of play, and out of one sentence: the cars and the
 world obstacles are still too boxy, and the hostiles and their drops need
@@ -752,9 +956,10 @@ the game rather than the change.
 
 One seed-dependent failure was open before the graphics pass: on seed
 20251111, `stairs carry the player onto a perch` reported only 3 of 5 perches
-walkable. That seed no longer generates that city (see the `generateUUID`
-invariant), so it is unreproduced rather than fixed, and there is nothing
-left to reproduce it with. If it comes back it will come back somewhere else.
+walkable. It was not seed-dependent. It was the stair runs ending short of
+their decks, which is every perch on every seed by up to 0.85 m and every
+container stack by 1.6 m, and which the check's 0.7 m tolerance hid on the
+seeds where it passed. Fixed by the perch pass; see the invariant.
 
 **A wave could deadlock on a hostile that cannot path to you. This is
 fixed.** A hostile steers straight at the player and has no pathfinding; with
@@ -884,10 +1089,11 @@ two triangles, because three has no BVH and the ground's bounding sphere
 covers the sector.
 
 The cities moved one last time with all this, and so did the incidental
-numbers below. On seed 1, one perch in six now has an unwalkable stair run,
-which the check tolerates at its 0.7 threshold. That is the seed-dependent
-failure already recorded further down, not a regression: the diff touches no
-`addBox`, `addSolid` or `solids.push` call and no `randRange` in any builder.
+numbers below. On seed 1, one perch in six had an unwalkable stair run,
+which the check tolerated at its 0.7 threshold and this note called the
+seed-dependent failure recorded further down. It was neither; it was every
+stair run stopping short of its deck, half the perches on seed 1 once the
+check asked properly, and the perch pass fixed it.
 
 The weapon pass after it is the same two ideas applied to the one surface
 always within arm's reach. The view models were untextured flat colour on
@@ -981,25 +1187,49 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
+1. **Make the sidewalks something you stand on.** Every lot carries a
+   28 cm concrete apron (`buildCity`, "sidewalks"), and none of them is in
+   `world.boxes`. Measured on seed 1: at all 36 points sampled on the
+   pavement ring between the buildings and the road, `groundHeight` is 0 —
+   so the player walks 28 cm inside the kerb and every hostile on a sidewalk
+   stands with its boots buried in it. It hides well at dusk and gets less
+   hidden the better the lighting gets: contact shading now draws a line
+   exactly where boots meet a surface. Registering them is a layout change
+   (every seed's fingerprint moves), and the nav bake and the step height
+   both need to agree that a 28 cm kerb is a step rather than a wall —
+   `STEP` is 0.55, so it is, but measure it.
+2. **Split the merged city per block.** The near shadow cascade covers 26 m
+   and draws all 360k triangles of the sector into it, because a merged mesh
+   spanning the city cannot be culled; so does the main camera. Per-block
+   batches cost more draw calls and buy culling for both. It is the first
+   thing to reach for if frame rate matters — see Performance.
+3. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-2. **Positional audio** — sounds are mono, so you cannot hear which side fire
+4. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
-3. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
+5. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
    only the player calls it, so a car roof is still a place they cannot follow
    you to.
-4. **Animate what the kit made possible.** The hostiles now have arms, a
+6. **Animate what the kit made possible.** The hostiles now have arms, a
    weapon and a rig as separate parts wearing separate materials, and they
    still walk on a sine wave. A shoulder that swings with the gun, a reload
    that is visible from across the street, a stagger on a hit that is not just
    a colour flash — all of it is reachable from where the parts already are.
-5. **More on the ground now that paint is there.** The markings pass put a
+7. **More on the ground now that paint is there.** The markings pass put a
    geometry layer on the road and left the pavement alone: manhole covers,
    kerb drops at the crossings, hatched keep-clear boxes and painted parking
    bays all fall out of the same `roadMarkings` machinery and the same street
    grid. Drop them in the same merged mesh and they cost one more batch of
    nothing.
+8. **Keep wall decoration out of jumping reach of a perch.** Decoration is
+   built where you cannot stand, and a terrace can put you within a jump of
+   some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
+   1.15 m above it, which you would fall through. Perches are placed after
+   the buildings, so either perch placement treats wall decoration as
+   occupied or the decoration is skipped near a perch; `decor` costs the
+   stream nothing either way. `what stands on a perch holds you up` stops at
+   the deck's footprint on purpose and would need widening to cover it.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403
