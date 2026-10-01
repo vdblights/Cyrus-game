@@ -345,6 +345,25 @@ export function concrete(tint = '#6d6b6d', variant = 0) {
 
 /* ------------------------------------------------------------------ facade */
 
+/**
+ * Where a window sits inside its bay and storey, as fractions: width of the
+ * bay, height of the storey, and how far down from the top of the storey the
+ * opening starts. The painter lays windows out by these and the facade shader
+ * cuts the openings by them, so there is one definition of where a window is.
+ */
+export const WINDOW = { w: 0.58, h: 0.5, top: 0.30 };
+export const WINDOW_GLASS = 0, WINDOW_BROKEN = 1, WINDOW_BOARDED = 2;
+const WINDOW_STATES = new Map();
+
+/**
+ * What is in each of a facade's twelve windows, storey by storey from the
+ * top and bay by bay from the left, as the painter rolled them.
+ */
+export function facadeWindows(style = 0, variant = 0) {
+  facade(style, variant);
+  return WINDOW_STATES.get('facade' + style + '_' + variant);
+}
+
 const FACADE_STYLES = [
   { name: 'panel', base: '#5e584e', trim: '#6a6459' },
   { name: 'brick', base: '#6b4f42', trim: '#7d6a58' },
@@ -399,14 +418,16 @@ export function facade(style = 0, variant = 0) {
       ctx.fillRect(0, y + floor * 0.14, s, 7);
     }
 
-    const winW = bay * 0.58, winH = floor * 0.5;
+    const winW = bay * WINDOW.w, winH = floor * WINDOW.h;
+    const states = [];
     for (let r = 0; r < FACADE_FLOORS; r++) {
       for (let b = 0; b < FACADE_BAYS; b++) {
         const x = b * bay + (bay - winW) / 2;
-        const y = r * floor + floor * 0.30;
-        window_(ctx, x, y, winW, winH, variant);
+        const y = r * floor + floor * WINDOW.top;
+        states.push(window_(ctx, x, y, winW, winH, variant));
       }
     }
+    WINDOW_STATES.set('facade' + style + '_' + variant, states);
 
     // damage that crosses the whole face: shell scars and bullet swarms
     for (let i = 0; i < 2 + (variant % 2); i++) blast(ctx, s, rr(0, s), rr(0, s));
@@ -507,7 +528,12 @@ export function facade(style = 0, variant = 0) {
     }
   }
 
-  /** One opening: reveal, sill, lintel and whatever is left in the frame. */
+  /**
+   * One opening: reveal, sill, lintel and whatever is left in the frame.
+   * Returns what is in it — `WINDOW_GLASS`, `WINDOW_BROKEN` or
+   * `WINDOW_BOARDED` — which the facade shader needs to know what to draw
+   * behind the wall plane (`windows.js`).
+   */
   function window_(ctx, x, y, w, h, variant) {
     // the reveal — the wall is thick, so the opening sits back inside it
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -595,6 +621,7 @@ export function facade(style = 0, variant = 0) {
     ctx.fillRect(x - 6, y + h + 5, w + 12, 4);
     if (chance(0.72)) runoff(ctx, x + rr(-4, 4), y + h + 9, w + rr(-10, 8), rr(30, 110), '22,17,12', rr(0.18, 0.4));
     if (chance(0.25)) runoff(ctx, x + rr(0, w), y + h + 9, rr(3, 10), rr(40, 130), '96,52,22', rr(0.16, 0.34));
+    return broken ? WINDOW_BROKEN : boarded ? WINDOW_BOARDED : WINDOW_GLASS;
   }
 
   /** A shell hit: a crater of exposed structure, ringed with soot. */
