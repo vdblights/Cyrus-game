@@ -1246,6 +1246,242 @@ check('a marksman is moved to a perch that overlooks you', async (page) => {
   return r;
 });
 
+check('ambient occlusion darkens where things meet and leaves open ground alone', async (page) => {
+  // Occlusion is only right if it does both. The pass is written once and
+  // read twice: at the foot of a barrier there should be a pool of shade,
+  // and on open pavement there should be nothing at all. The second half is
+  // the one that broke — run at half resolution, every pixel's centre sat on
+  // the edge between two depth texels, a nearest lookup picked one by float
+  // rounding, and flat ground came out ruled with evenly spaced dark lines.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false; g.startWave = () => {};
+    g.input.locked = true;
+    g.applyQuality('high');
+    const post = g.post, W = g.world;
+
+    // the AO buffer's red channel, read back through a float target; `rows`
+    // limits the statistics to the bottom fraction of the frame
+    const readAO = (rows = 1) => {
+      g.render();
+      const t = post.targets;
+      if (!t || !t.ao) return null;
+      const w = t.half.w, h = t.half.h;
+      const out = new t.bright.constructor(w, h, { type: 1015 /* FloatType */ });
+      const mat = new post.blurMat.constructor({
+        uniforms: { t: { value: t.ao.texture } },
+        vertexShader: post.blurMat.vertexShader,
+        fragmentShader: 'uniform sampler2D t; varying vec2 vUv; void main(){ gl_FragColor = vec4(texture2D(t, vUv).r, 0.0, 0.0, 1.0); }',
+        depthTest: false, depthWrite: false,
+      });
+      post._draw(mat, out);
+      const buf = new Float32Array(w * h * 4);
+      g.renderer.readRenderTargetPixels(out, 0, 0, w, h, buf);
+      out.dispose(); mat.dispose();
+      let sum = 0, below60 = 0, below90 = 0;
+      const n = w * Math.floor(h * rows);           // row 0 is the bottom
+      for (let k = 0; k < n; k++) {
+        const a = buf[k * 4];
+        sum += a;
+        if (a < 0.6) below60++;
+        if (a < 0.9) below90++;
+      }
+      return { mean: +(sum / n).toFixed(4), below60: +(below60 / n).toFixed(4), below90: +(below90 / n).toFixed(4) };
+    };
+    const settle = () => { for (let i = 0; i < 20; i++) { g.time += 1 / 60; g.step(1 / 60); } };
+
+    // crouched by the foot of the low prop nearest the plaza
+    const prop = W.boxes
+      .filter((b) => b.top > 0.6 && b.top < 1.3 && (b.maxX - b.minX) < 4 && (b.maxZ - b.minZ) < 4)
+      .map((b) => ({ b, d: Math.hypot((b.minX + b.maxX) / 2 + 17, (b.minZ + b.maxZ) / 2 - 24) }))
+      .sort((a, c) => a.d - c.d)[0].b;
+    const cx = (prop.minX + prop.maxX) / 2, cz = (prop.minZ + prop.maxZ) / 2;
+    g.player.reset(cx + 2.6, cz + 1.2);
+    g.player.yaw = Math.atan2(2.6, 1.2);
+    g.player.pitch = -0.28;
+    g.input.keys.add('ControlLeft');
+    settle();
+    const contact = readAO();
+    g.input.keys.clear();
+
+    // Flat pavement seen at a grazing angle, which is the only way the
+    // striping ever showed: looking straight down, each pixel's depth step is
+    // large enough that the rounding never collapses a normal, and an earlier
+    // version of this check, framed that way, passed with the bug restored.
+    // Nor can the street be trusted to be flat — the sidewalks are a visual
+    // apron outside \`world.boxes\`, so a spot that is clear by every box query
+    // still has a 28 cm kerb either side, and kerbs are rightly occluded. So
+    // every city mesh but the merged ground plane is hidden, and whatever the
+    // frame shows below the horizon is flat by construction.
+    const hidden = [];
+    let ground = null;
+    g.city.traverse((m) => {
+      if (!m.isMesh) return;
+      m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox;
+      if (!ground && b.max.y - b.min.y < 1e-3 && b.max.x - b.min.x > 300) { ground = m; return; }
+      if (m.visible) { m.visible = false; hidden.push(m); }
+    });
+    let flat = null;
+    const open = !!ground;
+    if (ground) {
+      g.player.reset(-17, 24);
+      g.player.yaw = 0.6;
+      g.player.pitch = -0.3;
+      settle();
+      flat = readAO(0.4);
+    }
+    for (const m of hidden) m.visible = true;
+    return { contact, flat, open };
+  });
+  expect(r.contact, 'the high tier rendered no AO buffer');
+  expect(r.contact.below60 > 0.01,
+    `nothing is darkened where the barrier meets the pavement: only ${(r.contact.below60 * 100).toFixed(2)}% of pixels below 0.6`);
+  expect(r.open, 'found no flat ground plane in the merged city to look along');
+  expect(r.flat.below90 < 0.005 && r.flat.mean > 0.98,
+    `open pavement is being occluded: ${(r.flat.below90 * 100).toFixed(2)}% of pixels below 0.9, mean ${r.flat.mean}`);
+  return r;
+});
+
+check('the sun reads a sharp shadow map near you, and it agrees with the wide one', async (page) => {
+  // The cascade is a rewrite of three's light loop that assumes the sun is
+  // the first shadow-casting directional light and the cascade the second.
+  // Nothing errors when that stops being true: the sun reads the wrong map,
+  // and a broken cascade looks exactly like a plaza standing in shade —
+  // which is what it was first mistaken for. So this asserts the wiring, the
+  // compiled shader, and that switching the cascade off changes the frame
+  // without changing how much of it is lit.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false; g.startWave = () => {};
+    g.input.locked = true;
+    g.applyQuality('high');
+
+    const casters = [];
+    g.scene.traverse((o) => { if (o.isDirectionalLight && o.castShadow) casters.push(o); });
+    const order = casters.length === 2 && casters[0] === g.sun && casters[1] === g.sunNear;
+
+    // a prop in sunlight, seen side-on to the shadow it throws
+    const W = g.world, S = g.sunDir;
+    const sh = Math.hypot(S.x, S.z), sx = S.x / sh, sz = S.z / sh;
+    const lit = (x, z) => W.lineOfSight(x, 0.3, z, x + S.x * 160, 0.3 + S.y * 160, z + S.z * 160);
+    let best = null;
+    for (const b of W.boxes) {
+      if (b.top < 0.6 || b.top > 2.2 || b.maxX - b.minX > 7 || b.maxZ - b.minZ > 7) continue;
+      const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2;
+      if (!lit(cx + sx * 3, cz + sz * 3)) continue;
+      let n = 0;
+      for (let k = 0; k < 8; k++) if (lit(cx + Math.cos(k * Math.PI / 4) * 4, cz + Math.sin(k * Math.PI / 4) * 4)) n++;
+      const score = n * 10 - Math.hypot(cx + 17, cz - 24);
+      if (!best || score > best.score) best = { cx, cz, score };
+    }
+    const px = best.cx - sz * 4.2 - sx * 1.2, pz = best.cz + sx * 4.2 - sz * 1.2;
+    const tx = best.cx - sx * 1.6, tz = best.cz - sz * 1.6;
+    g.player.reset(px, pz);
+    g.player.yaw = Math.atan2(-(tx - px), -(tz - pz));
+    g.player.pitch = -0.38;
+    for (let i = 0; i < 20; i++) { g.time += 1 / 60; g.step(1 / 60); }
+
+    const gl = g.renderer.getContext();
+    const grab = () => {
+      g.render();
+      g.renderer.setRenderTarget(null);
+      const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+      const px8 = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px8);
+      return { w, h, px8 };
+    };
+    const lum = (a, k) => 0.2126 * a[k] + 0.7152 * a[k + 1] + 0.0722 * a[k + 2];
+
+    const on = grab();
+    // the shader that was actually compiled, not the chunk it was built from
+    const cascadeCompiled = g.renderer.info.programs.some((p) =>
+      p.fragmentShader && (gl.getShaderSource(p.fragmentShader) || '').includes('nearW'));
+
+    g.sunNear.castShadow = false;
+    for (const m of g.materials) m.needsUpdate = true;
+    const off = grab();
+    g.sunNear.castShadow = true;
+    for (const m of g.materials) m.needsUpdate = true;
+
+    // The whole frame. Only shadow edges should move — the sunlit pavement in
+    // the foreground is lit the same by either map — so what is measured is
+    // how many pixels changed materially, not the average change.
+    let sOn = 0, sOff = 0, changed = 0, n = 0;
+    for (let k = 0; k < on.px8.length; k += 4) {
+      const a = lum(on.px8, k), b = lum(off.px8, k);
+      sOn += a; sOff += b; n++;
+      if (Math.abs(a - b) > 6) changed++;
+    }
+    return {
+      installed: g.shadowCascade, order, casters: casters.length, cascadeCompiled,
+      meanOn: +(sOn / n).toFixed(2), meanOff: +(sOff / n).toFixed(2), changed: +(changed / n).toFixed(4),
+    };
+  });
+  expect(r.installed === true, 'the cascade was not installed into three\'s light loop');
+  expect(r.order, `the sun and the cascade are not the first two shadow casters, in that order (${r.casters} found)`);
+  expect(r.cascadeCompiled, 'no compiled fragment shader contains the cascade lookup');
+  expect(r.changed > 0.002,
+    `switching the cascade off moved only ${(r.changed * 100).toFixed(2)}% of the frame — it is not being read`);
+  const ratio = r.meanOn / r.meanOff;
+  expect(ratio > 0.94 && ratio < 1.06,
+    `the cascade disagrees with the wide map about how much is lit: ${r.meanOn} against ${r.meanOff}`);
+  return r;
+});
+
+check('the sky, the fog and the light are one atmosphere', async (page) => {
+  // One function draws the dome, lights the city through the environment
+  // map and colours the fog. If the fog chunk is not compiled in, distance
+  // goes back to one flat brown; if the sky loses its bearing, the light on
+  // the walls and the sky above them disagree about where the sun is.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.applyQuality('high');
+    g.city.visible = false;                 // just the sky
+    const gl = g.renderer.getContext();
+    const S = g.sunDir;
+    // Read the scene's own linear light, before tone mapping. ACES rolls a
+    // bright sky toward white, so the sky by the sun comes out of the final
+    // frame nearly as neutral as the sky opposite it, and the comparison
+    // would measure the tone curve rather than the atmosphere.
+    const centre = (yaw) => {
+      g.player.reset(-17, 24);
+      g.player.yaw = yaw;
+      g.player.pitch = 0.04;               // just above the horizon
+      for (let i = 0; i < 5; i++) { g.time += 1 / 60; g.step(1 / 60); }
+      g.render();
+      const post = g.post, t = post.targets;
+      const out = new t.bright.constructor(1, 1, { type: 1015 /* FloatType */ });
+      const mat = new post.blurMat.constructor({
+        uniforms: { t: { value: t.scene.texture } },
+        vertexShader: post.blurMat.vertexShader,
+        fragmentShader: 'uniform sampler2D t; varying vec2 vUv; void main(){ gl_FragColor = vec4(texture2D(t, vec2(0.5)).rgb, 1.0); }',
+        depthTest: false, depthWrite: false,
+      });
+      post._draw(mat, out);
+      const b = new Float32Array(4);
+      g.renderer.readRenderTargetPixels(out, 0, 0, 1, 1, b);
+      out.dispose(); mat.dispose();
+      return [+b[0].toFixed(3), +b[1].toFixed(3), +b[2].toFixed(3)];
+    };
+    // camera forward is (-sin yaw, -cos yaw)
+    const toward = Math.atan2(-S.x, -S.z);
+    const sun = centre(toward), away = centre(toward + Math.PI);
+    g.city.visible = true;
+    const fogCompiled = g.renderer.info.programs.some((p) =>
+      p.fragmentShader && (gl.getShaderSource(p.fragmentShader) || '').includes('ashFogDepth'));
+    const warmth = (c) => c[0] / Math.max(1e-4, c[2]);
+    return { sun, away, warmSun: +warmth(sun).toFixed(2), warmAway: +warmth(away).toFixed(2), fogCompiled };
+  });
+  expect(r.fogCompiled, 'no compiled shader contains the height fog');
+  expect(r.warmSun > r.warmAway * 1.6,
+    `the horizon is no warmer toward the sun (r/b ${r.warmSun}) than away from it (${r.warmAway})`);
+  return r;
+});
+
 check('every surface is textured at the world scale it declares', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
