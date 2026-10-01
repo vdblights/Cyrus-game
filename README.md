@@ -22,6 +22,14 @@ vendored in `vendor/`, so it runs fully offline.
 Add `?seed=12345` to the URL to replay an exact city; the seed for the current
 one is printed under the menu.
 
+The world is built in the browser on every load — every texture is painted,
+the city laid out and the shaders compiled — which takes a few seconds. The
+loading screen says which part it is on, with a field note to read, and
+draws a survey of the sector as it goes: the street grid first, then the
+buildings and the rooftops a marksman can take once the city is laid out,
+and where you go in. The survey stays beside DEPLOY afterwards, so you can
+see the sector before you drop into it.
+
 ### One-file build
 
 ```bash

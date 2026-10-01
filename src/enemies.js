@@ -175,7 +175,7 @@ export function primeEnemyKits() {
 
 /**
  * One body of every archetype, for compiling their shaders before play rather
- * than on the frame the first one comes into view (`Game.precompile`). Built
+ * than on the frame the first one comes into view (`Game.precompileStages`). Built
  * inside `reserve`, so the meshes it mints cost the seeded stream nothing,
  * and never pooled, so it changes nothing about how a wave is spawned.
  */

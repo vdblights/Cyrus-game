@@ -49,6 +49,77 @@ check('boots without errors and builds a city', async (page) => {
   return boot;
 });
 
+check('the loading screen moves, and the menu does not jump when it is done', async (page) => {
+  // Boot used to be the body of the constructor: one task, seventeen seconds
+  // under software rendering, during which the page drew nothing at all and
+  // the word LOADING sat frozen. It is a list of stages now, with a chance to
+  // paint between each, and this counts the frames the page actually drew
+  // while it ran — `__bootFrames`, from the harness. And when it is done the
+  // progress gives way to DEPLOY in the same column, so nothing under the
+  // panel moves; hiding the panel instead lifted the whole menu by most of
+  // its height.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const L = g.loading;
+    const pcts = L.log.map((e) => e.pct);
+
+    const c = document.getElementById('survey');
+    const px = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let lit = 0;
+    for (let i = 0; i < px.length; i += 4) if (px[i] > 60) lit++;
+
+    const top = () => document.querySelector('.controls').getBoundingClientRect().top;
+    const ready = top();
+    L.root.classList.replace('ready', 'busy');
+    const busy = top();
+    L.root.classList.replace('busy', 'ready');
+    const deploy = document.getElementById('start-btn').getBoundingClientRect();
+
+    return {
+      stages: L.log.length - 1, frames: window.__bootFrames,
+      rising: pcts.every((p, i) => i === 0 || p >= pcts[i - 1]), last: pcts[pcts.length - 1],
+      surveyed: L.surveyed, perches: g.perches.length, lit: +(lit / (px.length / 4)).toFixed(3),
+      deploy: deploy.width > 0 && deploy.height > 0, moved: +(ready - busy).toFixed(1),
+    };
+  });
+  expect(r.stages >= 15, `boot reported only ${r.stages} stages`);
+  // Measured on seed 1: 18 frames across 18 stages, against 0 with every
+  // yield taken out of boot.
+  expect(r.frames >= r.stages, `the page drew ${r.frames} frames across ${r.stages} stages of boot`);
+  expect(r.rising && r.last === 100, `progress went ${JSON.stringify(r)}`);
+  expect(r.surveyed && r.surveyed.perches === r.perches && r.lit > 0.1,
+    `the survey shows ${JSON.stringify(r.surveyed)} with ${r.lit} of it drawn`);
+  expect(r.deploy, 'DEPLOY is not on the menu once boot is done');
+  expect(Math.abs(r.moved) < 1, `the menu moved ${r.moved} px when loading finished`);
+  return r;
+});
+
+check('every city material survives the bake', async (page) => {
+  // The bake merges the city by material, and it used to bucket by
+  // `material.uuid`. Under `reserve` a UUID is not unique — every reserve
+  // that starts from the same place in the seeded stream mints the same
+  // ones — so the moment the city's materials were painted in separate
+  // steps, materials from different steps shared UUIDs and were merged into
+  // each other's batches: every facade, the concrete, the glass and the
+  // streetlights' metal were drawn in some other step's material. Nothing
+  // errored and no other check noticed. This asks that every material
+  // painted for the city is still the material of something in the merged
+  // city.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const painted = new Set(Object.values(g.paintedMaterials).flat());
+    const merged = new Set();
+    g.city.traverse((o) => { if (o.isMesh) merged.add(o.material); });
+    const lost = [...painted].filter((m) => !merged.has(m)).map((m) => m.userData.name);
+    return { painted: painted.size, merged: merged.size, lost };
+  });
+  // Measured on seed 1: 27 painted, and 16 of them lost with the UUID key put
+  // back.
+  expect(r.painted >= 20, `only ${r.painted} city materials were painted`);
+  expect(r.lost.length === 0, `lost in the bake: ${r.lost.join(', ')}`);
+  return r;
+});
+
 check('bullets damage hostiles, headshots hurt more', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -2139,10 +2210,10 @@ check('nothing compiles at first contact', async (page) => {
     return { known: known.size, fresh: fresh.map((q) => q.cacheKey.split(',')[0]) };
   });
   // Measured on seed 1: 8 programs with the old boot compile put back. On
-  // the way there, 8 again when `precompile` compiled against the canvas
+  // the way there, 8 again when the warm-up compiled against the canvas
   // rather than the target the scene is drawn into (the output colour space
   // is part of the key), and 1 more — the muzzle flash — until that was built
-  // with the view model. The warm-up frame `precompile` now ends with would
+  // with the view model. The warm-up frame boot now ends with would
   // catch the first of those on its own, at the price of 22 programs built
   // for the canvas and never used (52 at the menu against 30) — so this does
   // not notice the target going missing, and nothing else does either.

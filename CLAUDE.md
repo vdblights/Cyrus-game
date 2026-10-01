@@ -66,6 +66,7 @@ builds, never to play.
 | `src/hud.js` | DOM readouts, killfeed, radar, capture banner |
 | `src/nav.js` | Walkable grid over `world.boxes`, and a route field to the player |
 | `src/rng.js` | Seeded `Math.random` for the page's lifetime, and `reserve`/`spend` |
+| `src/loading.js` | The loading screen: stages, progress, field notes, the sector survey |
 
 The whole game hangs off `window.__game`, which is how tests and probes drive it.
 
@@ -241,7 +242,7 @@ These each cost real debugging time. Changing them needs a reason.
   logging `Math.random.mark()` around each step of `buildCity` on both sides
   of the change and walking forward to the first call that disagreed — which
   is the method worth reusing, because it ends the search in minutes. The
-  constructor now builds a throwaway `Sprite` inside that same `reserve`. If
+  first stage of boot builds a throwaway `Sprite` inside that same `reserve`. If
   a later change removes the last Sprite built before the city, or adds a
   first instance of some other lazily-shared three type inside it, the same
   thing happens again, and `a seed still lays out the city it did` is what
@@ -467,13 +468,45 @@ These each cost real debugging time. Changing them needs a reason.
   testing note about hardcoded aim heights from the other side: baking the
   offsets in put every part at the feet, and turned the headshot check into a
   leg shot that quietly still passed the "did damage" half.
+- **Boot is a list of stages, and it yields between them.** `Game.boot` runs
+  a plan of `[label, weight, run]` and gives the page a frame before each
+  one (`yieldToPaint`), so the loading screen can say what is happening and
+  move. It used to be the body of the constructor — one task, seventeen
+  seconds under software rendering, with the page frozen on the word
+  LOADING. Three things keep that from costing the seed anything. Every
+  stage that mints three objects still runs inside `reserve`, or is the city
+  itself, exactly as before. The order is unchanged. And nothing that runs
+  while boot waits may draw on `Math.random`: the loading screen cycles its
+  field notes off the seed and the clock, and the only listeners bound by
+  then are input. The city's materials are `CITY_PAINT` in `city.js`, a step
+  per facade style and per family, because painting them is seven of those
+  seventeen seconds and as one step the bar would sit still for most of
+  boot. Anything that moves *continuously* on the loading screen is a CSS
+  transform or opacity, because between yields no script runs and only the
+  compositor can animate. Weights are tenths of a second: as measured for
+  the CPU stages, estimated for the three GPU ones, which software
+  rendering inflates about a hundredfold. `window.__game` exists from the
+  first stage; `state` is `'loading'` until the last, which is what the
+  harness waits on, and `game.booted` resolves then too.
+- **Under `reserve`, a UUID is not unique — never key anything on one.**
+  `reserve` rewinds the seeded stream, so every reserve that starts from the
+  same place mints the same UUIDs. That was true before boot was staged
+  (each archetype's kit is its own reserve), but nothing keyed on them until
+  `bakeStatic` bucketing by `material.uuid` met the city's materials painted
+  in separate steps: 16 of its 27 materials were merged into other steps'
+  batches, every facade and the streetlights among them, and nothing errored.
+  Key on the object (a `Map` takes one), or on `id`, which three counts and
+  never rewinds. `every city material survives the bake` reports the 16 with
+  the UUID key put back. The texture side of the split was checked the other
+  way: a hash over every pixel of all 66 city textures is identical before
+  and after, because each is painted on its own generator.
 - **Every shader is built before the first fight, and nothing is built
   lazily in one.** `renderer.compile` only compiles what is visible, and at
   boot that was the city: every hostile, every pooled tracer, casing and
   sprite, and the muzzle flash compiled on the first frame that drew them —
   five programs at first sight of a hostile and three on the first shot,
   measured on seed 1, a stall at exactly the moment of first contact.
-  `Game.precompile` shows every hidden thing, stands one body of each
+  `Game.precompileStages` shows every hidden thing, stands one body of each
   archetype in front of the camera (`sampleBodies`, inside `reserve`, never
   pooled), compiles both scenes, uploads every texture their materials hold,
   draws one real frame, and puts everything back. Three things in it are
@@ -781,6 +814,44 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The loading pass is the eighth, and it came from play too: a better loading
+screen, or something to look at while the world builds. What there was to
+look at was the word LOADING, frozen, because boot never let the page draw.
+Measured on seed 1 under software rendering, boot was 17 s: 7.0 s painting
+the city's textures, 7.6 s compiling and warming shaders (the part real
+hardware does in a fraction of that), 1.6 s building the guns, and the rest
+small. Boot is staged now (invariant above), and the screen has four things
+on it: the stage and a weighted bar, the last few stages ticked off, a field
+note — twelve, each a real mechanic, cycling every six seconds — and a
+survey of the sector, drawn as a street grid from the constants before
+anything is built and filled in with buildings shaded by height, the
+perches and the insertion point once the city is laid out. A radar sweep
+and a shimmer on the bar are CSS on the compositor, so they keep moving
+through the long stages.
+
+When boot ends the progress gives way to DEPLOY and the best-score line in
+the same column, and the survey stays, because it is the sector you are
+about to drop into. Hiding the panel, the obvious thing, lifted everything
+under it by most of its height at the moment the player was reading it.
+
+Boot is no faster; it is 17 s in software and some seconds on real
+hardware, and this pass makes those seconds legible rather than shorter.
+The way to shorten them is the texture painting, which is pure CPU: painting
+the five facade styles in a worker, or caching the painted canvases between
+visits, is where the time is.
+
+Two checks, each confirmed to fail: `the loading screen moves, and the menu
+does not jump when it is done` (0 frames drawn across 18 stages with the
+yields taken out, and DEPLOY gone with the panel hidden) and `every city
+material survives the bake` (16 of 27 lost with the UUID key put back — the
+bug the staging itself exposed, invariant above).
+
+A trap for anyone looking at it: Playwright cannot photograph boot mid-stage.
+`page.screenshot` and `page.evaluate` both wait for the main thread, so a
+loop that tries to sample the loading screen gets the menu. The look was
+judged by booting, putting the panel back into its busy state and replaying
+a few stages by hand — the survey keeps what it drew.
 
 The responsiveness pass is the seventh, and it came from play as one
 sentence: the most recent version is starting to feel laggy. Nothing could
