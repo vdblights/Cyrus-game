@@ -53,6 +53,21 @@ const START_BUDGET_MS = 12.5;
 const MAX_STEP = 0.05;
 /** …and the longest frame it will catch up on rather than drop. */
 const MAX_FRAME = 0.2;
+/** The hemisphere light under the sky's environment… */
+const HEMI = 0.28;
+/**
+ * …and standing in for it on the low tier, where nothing reads the
+ * environment. Chosen by matching the frame: across three views on seed 1
+ * the PBR low tier averages 82.2 (sRGB, 0-255) with its darkest fifth at
+ * 39.5; Lambert under 3.0 gives 82.1 and 42.5, under 0.28 it gave 59.8 and
+ * 16.4 — shaded walls gone black.
+ */
+const HEMI_PLAIN = 2.8;
+/** What a low-tier Lambert twin takes from the material it stands in for. */
+const TWIN_PROPS = ['color', 'map', 'vertexColors', 'emissive', 'emissiveMap', 'emissiveIntensity',
+  'aoMap', 'aoMapIntensity', 'alphaMap', 'alphaTest', 'transparent', 'opacity', 'side',
+  'depthWrite', 'depthTest', 'polygonOffset', 'polygonOffsetFactor', 'polygonOffsetUnits',
+  'blending', 'fog', 'toneMapped', 'flatShading', 'wireframe', 'visible'];
 const RAY = new THREE.Raycaster();
 const SHADOW_AT = new THREE.Vector3();
 const SHADOW_AHEAD = new THREE.Vector3();
@@ -66,7 +81,12 @@ class Game {
     // seed first: everything below this line draws on Math.random()
     this.seed = initRandom();
     this.canvas = document.getElementById('scene');
-    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
+    // No multisampling on the canvas. High and medium draw the scene into the
+    // post chain's own multisampled target, so the canvas's samples only ever
+    // antialiased the low tier — and cost every tier a full-screen resolve,
+    // and the low tier more than a quarter of its frame (707 ms against 970
+    // under software rendering), on the machines least able to pay it.
+    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
     this.perf = new PerfMeter(this.renderer);
     this.renderer.shadowMap.enabled = true;
@@ -284,6 +304,7 @@ class Game {
         bodies = sampleBodies();
         this.camera.getWorldDirection(V1);
         bodies.position.copy(this.camera.position).addScaledVector(V1, 6).setY(0);
+        this.dress(bodies);
         this.scene.add(bodies);
         shown = [];
         unculled = [];
@@ -375,7 +396,8 @@ class Game {
     // The sky itself carries the ambient now (see setupEnvironment), so what
     // is left of the hemisphere is the warm ground bounce the dome cannot
     // supply — it has nothing below the horizon worth reflecting.
-    this.scene.add(new THREE.HemisphereLight(0xa9b4c2, 0x7d6650, 0.28));
+    this.hemi = new THREE.HemisphereLight(0xa9b4c2, 0x7d6650, HEMI);
+    this.scene.add(this.hemi);
 
     const sun = new THREE.DirectionalLight(SUN_COLOR, 3.0);
     sun.position.copy(SUN_DIR).multiplyScalar(SUN_DISTANCE);
@@ -555,9 +577,14 @@ class Game {
       // paid per pixel, and 4x MSAA multiplies the scene pass again. On a 2x
       // screen 1.75 drew 3.06x the pixels of 1.0; 1.25 draws half what 1.75
       // did and, under 4x MSAA, still reads clean.
-      high: { shadows: true, soft: true, shadowSize: 2048, span: 55, nearSize: 2048, nearSpan: 13, normals: true, pixel: 1.25, dust: true, post: true, bloom: true, samples: 4, ao: true },
-      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, nearSize: 1024, nearSpan: 11, normals: true, pixel: 1.0, dust: true, post: true, bloom: true, samples: 2, ao: true },
-      low: { shadows: false, soft: false, shadowSize: 512, span: 40, nearSize: 0, nearSpan: 11, normals: false, pixel: 1, dust: false, post: false, bloom: false, samples: 0, ao: false },
+      high: { shadows: true, soft: true, shadowSize: 2048, span: 55, nearSize: 2048, nearSpan: 13, normals: true, pixel: 1.25, dust: true, post: true, bloom: true, samples: 4, ao: true, fires: 3, flashes: true, plain: false },
+      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, nearSize: 1024, nearSpan: 11, normals: true, pixel: 1.0, dust: true, post: true, bloom: true, samples: 2, ao: true, fires: 2, flashes: true, plain: false },
+      // Low is for the integrated GPU in an old laptop, and it was not low
+      // enough: measured as 14 fps on an Intel HD. Every lit pixel still ran
+      // the PBR model against the sky's environment and twelve point lights.
+      // Lambert, no point lights and no canvas samples take the same frame
+      // from 970 ms to 173 under software rendering.
+      low: { shadows: false, soft: false, shadowSize: 512, span: 40, nearSize: 0, nearSpan: 11, normals: false, pixel: 1, dust: false, post: false, bloom: false, samples: 0, ao: false, fires: 0, flashes: false, plain: true },
     }[level];
 
     // the low tier draws straight to the canvas, as it always did: a machine
@@ -582,6 +609,17 @@ class Game {
     for (const { m, map } of this.normalMapped) m.normalMap = cfg.normals ? map : null;
     for (const m of this.materials) m.needsUpdate = true;   // shadow state is compiled in
     this.dust.visible = cfg.dust;
+
+    // the point-light count is compiled into every lit program, so it is set
+    // here, with the tier, and held constant until the next tier change
+    this.fireLights = cfg.fires;
+    this.placeFireLights(true);
+    this.effects.muzzleLight.visible = this.effects.blastLight.visible = cfg.flashes;
+    this.plainMaterials = cfg.plain;
+    this.dress(this.scene);
+    // a Lambert twin cannot see the sky's environment, which is most of the
+    // light a shaded wall gets; the hemisphere stands in for it
+    this.hemi.intensity = cfg.plain ? HEMI_PLAIN : HEMI;
 
     this.activeTier = level;
     this.resize();
@@ -1133,6 +1171,7 @@ class Game {
 
     const pooled = this.pool[typeKey];
     const e = (pooled && pooled.length) ? pooled.pop() : new Enemy(typeKey, this.scene, this);
+    this.dress(e.group);
     e.spawn(x, z, this.waveHpScale * (elite ? 2.6 : 1), y);
     if (elite) {
       e.applyElite(true);
@@ -1353,6 +1392,7 @@ class Game {
     const floor = this.world.groundHeight(pos.x, pos.z, SUPPORT_RADIUS, 0.5);
     // a clone shares the geometry and the materials; only the nodes are new
     const mesh = this.pickupProto[kind].clone();
+    this.dress(mesh);
     mesh.position.set(pos.x, floor + 0.45, pos.z);
     this.scene.add(mesh);
     this.pickups.push({ kind, mesh, active: true, born: this.time, floor });
@@ -1534,7 +1574,67 @@ class Game {
     }
   }
 
+  /**
+   * Light only the fires nearest the player.
+   *
+   * Every fire barrel carried a point light, and every lit pixel in the city
+   * evaluated all of them — ten on seed 1, plus the muzzle flash and the
+   * blast, twelve in all — whether it was two metres from a fire or two
+   * hundred. A fire's light reaches 14 m. So each tier keeps a fixed number
+   * lit (`fires`), handed to whichever barrels are nearest. Fixed matters:
+   * the count of visible lights is part of every lit program's key, and
+   * changing it would recompile the city mid-run. Which ones are visible is
+   * not, so the handover is free.
+   */
+  placeFireLights(force = false) {
+    const fires = this.fireBarrels;
+    if (!fires || !fires.length) return;
+    const now = this.time;
+    if (!force && now - (this.firesPlacedAt ?? -1) < 0.25) return;
+    this.firesPlacedAt = now;
+    const p = this.player.position;
+    const near = [...fires].sort((a, b) =>
+      Math.hypot(a.light.position.x - p.x, a.light.position.z - p.z)
+      - Math.hypot(b.light.position.x - p.x, b.light.position.z - p.z));
+    near.forEach((b, i) => { b.light.visible = i < this.fireLights; });
+  }
+
+  /**
+   * Put every lit material under `root` into the dress the tier wants: its
+   * own, or on the low tier a Lambert twin wearing the same map, colour,
+   * vertex shading and fog. PBR against the sky's environment was half the
+   * low tier's frame on its own. The twins are built once, inside `reserve`,
+   * because each is a material and a material mints a UUID out of the
+   * seeded stream; and they share the original's colour objects, so a
+   * hostile's band or flash still changes both. Called with the tier, and
+   * on anything that joins the scene afterwards (a hostile, a pickup, the
+   * bodies shown to the shader compile).
+   */
+  dress(root) {
+    const plain = this.plainMaterials;
+    if (!plain && !this.twins) return;
+    this.twins = this.twins || new Map();
+    reserve(() => root.traverse((o) => {
+      if (!o.isMesh || !o.material || Array.isArray(o.material)) return;
+      const m = o.material;
+      if (plain && m.isMeshStandardMaterial) o.material = this.twinOf(m);
+      else if (!plain && m.userData.pbr) o.material = m.userData.pbr;
+    }));
+  }
+
+  twinOf(m) {
+    let t = this.twins.get(m);
+    if (t) return t;
+    t = new THREE.MeshLambertMaterial();
+    for (const k of TWIN_PROPS) if (m[k] !== undefined) t[k] = m[k];
+    t.name = m.name;
+    t.userData = { ...m.userData, pbr: m };
+    this.twins.set(m, t);
+    return t;
+  }
+
   flickerFires(dt) {
+    this.placeFireLights();
     for (const b of this.fireBarrels) {
       b.phase += dt * 9;
       // deliberately not random: cosmetic per-frame noise would consume the

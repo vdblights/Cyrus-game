@@ -599,6 +599,41 @@ These each cost real debugging time. Changing them needs a reason.
   one pixel, it does not bloom into a box` puts a speck of NaN and then of
   infinity in front of the camera: 4 pixels changed each, against 6,589 with
   `sane` returning its input.
+- **The low tier is plain, and point lights are pooled.** Low used to drop
+  shadows and post and keep everything else, and everything else was most of
+  it: reported from play as 14 fps on an Intel HD with auto already on low.
+  Measured on seed 1 under software rendering, three views, low went 986 ms
+  a frame → 176. Three changes, each measured on its own. **The canvas has
+  no multisampling** (`antialias: false`): high and medium draw into the
+  post chain's own multisampled target, so the canvas's samples only ever
+  antialiased low, and cost every tier a resolve — 27% of low's frame.
+  **Fire lights are pooled**: every barrel carried a point light and every
+  lit pixel looped over all twelve (ten fires, the muzzle, the blast). Each
+  tier lights a fixed number (`fires`: 3, 2, 0), handed to the nearest
+  barrels every quarter second by `placeFireLights`; the muzzle and blast
+  lights are hidden on low. *Fixed* is the load-bearing word — the count of
+  visible point lights is part of every lit program's key, so a count that
+  changed as you walked would recompile the city; which barrels hold them is
+  not. **Low draws Lambert twins** of every PBR material in the world scene
+  (`dress`, `twinOf`): PBR against the sky's environment was half of low's
+  frame on its own. A twin shares the original's map, vertex colours, fog
+  and its `Color` objects, so a hostile's band and hurt flash still change
+  both; it is built once, inside `reserve`, because a material mints a UUID.
+  Anything that joins the scene after the tier is applied must be dressed —
+  a hostile on spawn, a drop when it is cloned, the bodies shown to the
+  boot compile — or it arrives in PBR and compiles at first contact (booted
+  on low: 18 programs at the menu, 0 new in the fight). The view scene is
+  not dressed: the gun turned flat chalk as Lambert, it is a small share of
+  the frame, and its scene has no point lights. And Lambert cannot see the
+  environment, which is most of the light a shaded wall gets, so on low the
+  hemisphere rises from 0.28 to 2.8 (`HEMI_PLAIN`), matched against the PBR
+  frame: mean 82.1 against 82.2 and darkest fifth 42.5 against 39.5, where
+  0.28 left shaded walls black. Two checks, each confirmed to fail by
+  breaking the reader: `the low tier draws plainly` (163 PBR meshes with
+  low left on PBR, 57.1 against 80.9 brightness with the hemisphere left
+  alone) and `the fire nearest you is lit, and the light count never
+  changes` (12 visible on the old code). High and medium gained about 10%
+  from the pooling and the canvas (1537 → 1403 ms, 1396 → 1259).
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -751,6 +786,16 @@ For timing anything in the headless browser, `gl.finish()` is not a sync
 point — it returns early in the GPU process and made a 142k-triangle frame
 look like 2.6 ms. A one-pixel `readPixels` is.
 
+The other side of that: a frame drawn without a sync is not free, it is
+queued. `the fire nearest you is lit` first drew ten high-tier frames in a
+loop to see whether any compiled a program, which under software rendering
+queued 20-30 s of drawing that nothing waited for — until the next check's
+page load, which waited for all of it and hit the 30 s navigation timeout.
+It looked like a flake: it passed at 41 s on one local run and failed on
+CI and on another. If a check only needs to know what would compile, ask
+`renderer.compile(scene, camera)`, which builds programs under the current
+lights and draws nothing; if it needs pixels, sync each frame it draws.
+
 An eighth, from the perch pass, and it is the expensive kind again: a
 tolerance is a place for a bug to live. `stairs carry the player onto a
 perch` passed a perch once the feet came within 0.7 m of the deck, which the
@@ -897,6 +942,19 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The low-tier pass is the eleventh, and it is the first that had numbers
+from the machine that reported the problem, because the readout from the
+tenth was there to give them: about 14 fps, auto settled on low, the mouse
+captured, and an Intel HD — an old integrated GPU. So the lag was the frame
+rate, and the cheapest tier was not cheap. What low still paid for, and
+what it pays now, is the invariant above; it went 5.6x cheaper under
+software rendering, which scales per-pixel work the way a weak GPU does
+more faithfully than it scales anything else. Medium is still about seven
+times low's cost, so a machine like that one belongs on low and `auto` will
+put it there. If low is still short on it, the next levers are resolution
+(`renderScale` already reaches 0.7 in a fight) and a pixel ratio below 1
+for low, then the facade texture size.
 
 The lag pass is the tenth, and it came from play the day the ninth merged:
 no black boxes on a second machine, but the game still slow and laggy —
