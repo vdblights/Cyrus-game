@@ -1736,6 +1736,7 @@ export function buildCity(scene, painted = null) {
   // Vertical ground: raised slabs and stacked containers, each reachable by
   // a stair run of half-metre steps so they can be walked up without jumping.
   const perches = [];
+  const sites = [];                             // each perch's deck and stair run
   const edgeLimit = (GRID * BLOCK) / 2 - 8;    // keep clear of the perimeter
   for (let i = 0; i < GRID; i++) {
     for (let j = 0; j < GRID; j++) {
@@ -1759,16 +1760,39 @@ export function buildCity(scene, painted = null) {
           const zLo = fromSouth ? pz - sd / 2 : pz - sd / 2 - runLen;
           const zHi = fromSouth ? pz + sd / 2 + runLen : pz + sd / 2;
           if (!areaClear(world, px - sw / 2 - 1, zLo - 1, px + sw / 2 + 1, zHi + 1)) continue;
+          sites.push([px - sw / 2 - 1, zLo - 1, px + sw / 2 + 1, zHi + 1]);
           terrace(group, world, px, pz, sw, sd, h, fromSouth, darkConcrete, perches);
         } else {
           const rot = Math.random() < 0.5 ? 0 : Math.PI / 2;
           const halfW = rot === 0 ? 1.6 : 3.4, halfD = rot === 0 ? 3.4 : 1.6;
           if (!areaClear(world, px - halfW - 8, pz - halfD - 8, px + halfW + 8, pz + halfD + 8)) continue;
+          // the deck and its stair run, which climbs off its +x side or its +z
+          const run = 2.6 * 2 * 1.9 + 1;
+          sites.push([px - halfW - 1, pz - halfD - 1,
+            px + halfW + 1 + (rot === 0 ? run : 0), pz + halfD + 1 + (rot === 0 ? 0 : run)]);
           containerStack(group, world, px, pz, rot, perches);
         }
         break;
       }
     }
+  }
+
+  // Rubble is not in the box list while the perches go down — it is
+  // registered last — so a perch went down in a rubble lot as readily as
+  // anywhere, with a fallen slab lying across its stairs. The perch stays
+  // where it was placed and the rubble on its deck and its run is cleared
+  // away, the way whoever built it would have. The heaps were already built,
+  // so taking them out costs the stream nothing.
+  for (let k = heaps.length - 1; k >= 0; k--) {
+    const m = heaps[k];
+    m.updateMatrixWorld(true);
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    const b = m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld);
+    if (!sites.some(([x0, z0, x1, z1]) => b.max.x > x0 && b.min.x < x1 && b.max.z > z0 && b.min.z < z1)) continue;
+    m.removeFromParent();
+    heaps.splice(k, 1);
+    const i = world.solids.indexOf(m);
+    if (i >= 0) world.solids.splice(i, 1);
   }
 
   registerFloors(world, floors);
@@ -1801,6 +1825,7 @@ export function buildCity(scene, painted = null) {
     }
     return true;
   }
+
 
   // ------------------------------------------------------------- builders
   function buildTower(g, w, cx, cz, facadeMats, conc, metal, glass) {
@@ -2788,8 +2813,9 @@ export function buildCity(scene, painted = null) {
         if (parts) y = null;
         if (Math.abs(m.minX + dx) > lim || Math.abs(m.maxX + dx) > lim
           || Math.abs(m.minZ + dz) > lim || Math.abs(m.maxZ + dz) > lim) { ok = false; break; }
-        // level: the same floor under the middle and every corner
-        const cs = footCorners(m, dx, dz, -0.05);
+        // level: the same floor under the middle and every corner, with a
+        // hand's breadth to spare, so nothing is left teetering on a kerb
+        const cs = footCorners(m, dx, dz, 0.05);
         for (const [x, z] of [[m.cx + dx, m.cz + dz], ...cs]) {
           const f = floorAt(x, z);
           if (y === null) y = f;

@@ -3410,10 +3410,20 @@ check('a seed still lays out the city it did', async (page) => {
   // checked — `placed` is every box but the heaps, and it has to come out
   // exactly what the whole city did before them: 425 cd6eb736, 371 68d89f10,
   // 417 f7c4a2df.
+  //
+  // And once more, for the props: every container, wreck, barrier, drum and
+  // lamp is settled clear, level and onto its floor or not put down, and the
+  // plaza's fountain became a basin. The stream is untouched — a dropped
+  // prop is built and taken back out — but the props move, and the perches
+  // are placed round them, so the perches move too; rubble on a perch's
+  // deck or stairs is cleared rather than registered. Compared collider by
+  // collider before and after: every building and every floor is identical
+  // on all three seeds. Before it: 901/635/12 f77a4c34 (425 cd6eb736),
+  // 880/580/10 faf144f5 (371 68d89f10), 923/626/12 7271e677 (417 f7c4a2df).
   const want = {
-    1: { boxes: 901, solids: 635, perches: 12, fp: 'f77a4c34', placed: 425, fpPlaced: 'cd6eb736' },
-    7: { boxes: 880, solids: 580, perches: 10, fp: 'faf144f5', placed: 371, fpPlaced: '68d89f10' },
-    20260101: { boxes: 923, solids: 626, perches: 12, fp: '7271e677', placed: 417, fpPlaced: 'f7c4a2df' },
+    1: { boxes: 801, solids: 580, perches: 13, fp: '88473ce5', placed: 429, fpPlaced: '5d9b6755' },
+    7: { boxes: 834, solids: 543, perches: 11, fp: 'dcd3d7d2', placed: 376, fpPlaced: 'd57389ac' },
+    20260101: { boxes: 877, solids: 573, perches: 10, fp: '4f7b5ad', placed: 395, fpPlaced: '4f540362' },
   };
 
   const got = {};
