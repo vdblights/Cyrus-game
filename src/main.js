@@ -180,6 +180,7 @@ class Game {
         this.fireBarrels = city.fireBarrels;
         this.perches = city.perches;
         this.batches = city.batches;
+        this.weedMeshes = city.group.children.filter((o) => o.isMesh && o.material.userData.name === 'weeds');
         this.streets = city.streets;     // where the carriageways are, as built
         // The shapes the props are cut from, kept so a check can measure
         // them: a facet wound the wrong way round does not error, it
@@ -577,14 +578,14 @@ class Game {
       // paid per pixel, and 4x MSAA multiplies the scene pass again. On a 2x
       // screen 1.75 drew 3.06x the pixels of 1.0; 1.25 draws half what 1.75
       // did and, under 4x MSAA, still reads clean.
-      high: { shadows: true, soft: true, shadowSize: 2048, span: 55, nearSize: 2048, nearSpan: 13, normals: true, pixel: 1.25, dust: true, post: true, bloom: true, samples: 4, ao: true, fires: 3, flashes: true, plain: false },
-      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, nearSize: 1024, nearSpan: 11, normals: true, pixel: 1.0, dust: true, post: true, bloom: true, samples: 2, ao: true, fires: 2, flashes: true, plain: false },
+      high: { shadows: true, soft: true, shadowSize: 2048, span: 55, nearSize: 2048, nearSpan: 13, normals: true, pixel: 1.25, dust: true, post: true, bloom: true, samples: 4, ao: true, fires: 3, flashes: true, plain: false, weeds: true },
+      medium: { shadows: true, soft: false, shadowSize: 1024, span: 40, nearSize: 1024, nearSpan: 11, normals: true, pixel: 1.0, dust: true, post: true, bloom: true, samples: 2, ao: true, fires: 2, flashes: true, plain: false, weeds: true },
       // Low is for the integrated GPU in an old laptop, and it was not low
       // enough: measured as 14 fps on an Intel HD. Every lit pixel still ran
       // the PBR model against the sky's environment and twelve point lights.
       // Lambert, no point lights and no canvas samples take the same frame
       // from 970 ms to 173 under software rendering.
-      low: { shadows: false, soft: false, shadowSize: 512, span: 40, nearSize: 0, nearSpan: 11, normals: false, pixel: 1, dust: false, post: false, bloom: false, samples: 0, ao: false, fires: 0, flashes: false, plain: true },
+      low: { shadows: false, soft: false, shadowSize: 512, span: 40, nearSize: 0, nearSpan: 11, normals: false, pixel: 1, dust: false, post: false, bloom: false, samples: 0, ao: false, fires: 0, flashes: false, plain: true, weeds: false },
     }[level];
 
     // the low tier draws straight to the canvas, as it always did: a machine
@@ -617,6 +618,12 @@ class Game {
     this.effects.muzzleLight.visible = this.effects.blastLight.visible = cfg.flashes;
     this.plainMaterials = cfg.plain;
     this.dress(this.scene);
+    // The weeds and the cloud's finer octaves are the two things the realism
+    // pass after the low tier's own added to every pixel; measured on low,
+    // 32 ms and 22 ms of a 210 ms software frame. Low keeps the cloud's
+    // shapes and drops the weeds.
+    for (const m of this.weedMeshes || []) m.visible = cfg.weeds;
+    this.sky.material.uniforms.cloudLow.value = cfg.plain ? 1 : 0;
     // a Lambert twin cannot see the sky's environment, which is most of the
     // light a shaded wall gets; the hemisphere stands in for it
     this.hemi.intensity = cfg.plain ? HEMI_PLAIN : HEMI;

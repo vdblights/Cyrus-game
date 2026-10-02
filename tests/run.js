@@ -2670,6 +2670,86 @@ check('a shot from your right is heard on your right', async (page) => {
   return r;
 });
 
+check('the sky has weather in it', async (page) => {
+  // A clear gradient at the end of the afternoon was the most computer-made
+  // thing left in the frame. This looks up at the sky away from the sun with
+  // nothing else drawn, and measures how much neighbouring pixels differ
+  // across the frame: a gradient changes slowly, cloud has edges.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const { SUN_DIR } = await import('/src/atmosphere.js');
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    const scene = new THREE.Scene();
+    scene.add(new THREE.Mesh(g.sky.geometry, g.sky.material));
+    const cam = new THREE.PerspectiveCamera(70, 1.6, 1, 1000);
+    cam.lookAt(-SUN_DIR.x, 0.6, -SUN_DIR.z);
+    const W = 320, H = 200;
+    const rt = new THREE.WebGLRenderTarget(W, H);
+    g.renderer.setRenderTarget(rt);
+    g.renderer.render(scene, cam);
+    const buf = new Uint8Array(W * H * 4);
+    g.renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
+    g.renderer.setRenderTarget(null);
+    rt.dispose();
+    const lum = (i) => 0.2126 * buf[i] + 0.7152 * buf[i + 1] + 0.0722 * buf[i + 2];
+    let edge = 0, n = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x + 6 < W; x += 3) {
+        edge += Math.abs(lum((y * W + x) * 4) - lum((y * W + x + 6) * 4));
+        n++;
+      }
+    }
+    return { contrast: +(edge / n).toFixed(2) };
+  });
+  // Measured on seed 1: 3.07 with cloud, 0.11 with the cloud function
+  // returning the clear sky it was given.
+  expect(r.contrast > 1, `the sky away from the sun is a plain gradient (contrast ${r.contrast})`);
+  return r;
+});
+
+check('weeds grow where they can stand, and stay off the low tier', async (page) => {
+  // The overgrowth is decoration: in neither collision list, placed by the
+  // city's private generator, so it must only grow where something could —
+  // on the street or a floor, clear of anything taller than a kerb. This
+  // reads every tuft's root out of the merged city (the midpoint of a card's
+  // two bottom corners) and asks the footing and the box list about it. And
+  // it is the one thing the low tier drops, because on low it was a sixth
+  // of a software frame.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const W = g.world;
+    let tufts = 0, floating = 0, buried = 0, inside = 0;
+    for (const mesh of g.weedMeshes) {
+      const p = mesh.geometry.attributes.position;
+      // each card copy is four vertices, the first two its bottom corners
+      for (let v = 0; v + 3 < p.count; v += 16) {
+        const x = (p.getX(v) + p.getX(v + 1)) / 2, z = (p.getZ(v) + p.getZ(v + 1)) / 2;
+        const y = p.getY(v);
+        tufts++;
+        const ground = W.groundHeight(x, z, 0.05, y + 0.05);
+        if (y > ground + 0.03) floating++;
+        if (y < ground - 0.03) buried++;
+        if (W.occupied(x, z, 0, 0.6)) inside++;
+      }
+    }
+    const inSolids = g.world.solids.some((m) => m.material?.userData?.name === 'weeds');
+    g.applyQuality('high');
+    const shownHigh = g.weedMeshes.every((m) => m.visible);
+    g.applyQuality('low');
+    const shownLow = g.weedMeshes.some((m) => m.visible);
+    return { tufts, floating, buried, inside, inSolids, shownHigh, shownLow };
+  });
+  // Measured on seed 1: 6,877 tufts, none floating, buried or inside
+  // anything; 838 inside a collider with the clearance test taken out.
+  expect(r.tufts > 2000, `only ${r.tufts} tufts of weeds in the sector`);
+  expect(r.floating === 0 && r.buried === 0, `${r.floating} tufts float and ${r.buried} are buried`);
+  expect(r.inside === 0, `${r.inside} tufts grow inside a collider`);
+  expect(!r.inSolids, 'weeds are in the list bullets are traced against');
+  expect(r.shownHigh && !r.shownLow, `weeds shown on high ${r.shownHigh}, on low ${r.shownLow}`);
+  return r;
+});
+
 check('the frame-rate readout shows on a key, and names the GPU', async (page) => {
   // Lag is reported from machines nobody here can see, so the game carries
   // its own numbers: the key left of 1 shows them, and the pause menu has

@@ -329,13 +329,36 @@ export function asphalt(variant = 0) {
       crack(ctx, s, rr(0, s), rr(0, s), rr(180, 420), rr(2, 3.6), 'rgba(18,18,21,0.7)');
     }
 
-    // potholes: a dark pit with a lighter rim of broken edge
+    // Potholes: a dark pit inside a lighter rim of broken edge. Both are
+    // ragged polygons, not ellipses — a filled oval repeated every 8 m of road
+    // read as a row of identical black discs, which no road has ever had.
+    // The rim is the same outline pushed out, so the broken edge follows the
+    // pit's own shape.
+    const ragged = (x, y, r, squash, turn, grow) => {
+      const n = 11 + ((r * 7) | 0) % 6;
+      ctx.beginPath();
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * Math.PI * 2;
+        const rad = r * grow * (0.62 + 0.38 * Math.sin(a * 3 + turn) * 0.5 + rr(0.15, 0.55));
+        const px = Math.cos(a) * rad, py = Math.sin(a) * rad * squash;
+        const c = Math.cos(turn), sn = Math.sin(turn);
+        const qx = x + px * c - py * sn, qy = y + px * sn + py * c;
+        if (k === 0) ctx.moveTo(qx, qy); else ctx.lineTo(qx, qy);
+      }
+      ctx.closePath();
+      ctx.fill();
+    };
     for (let i = 0; i < 5; i++) {
-      const x = rr(0, s), y = rr(0, s), r = rr(6, 20);
+      const x = rr(0, s), y = rr(0, s), r = rr(6, 20), squash = rr(0.55, 0.95), turn = rr(0, 6.28);
       ctx.fillStyle = 'rgba(120,115,106,0.28)';
-      ctx.beginPath(); ctx.ellipse(x, y, r * 1.35, r * 1.1, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = 'rgba(14,14,16,0.75)';
-      ctx.beginPath(); ctx.ellipse(x, y, r, r * 0.8, rr(0, 3), 0, Math.PI * 2); ctx.fill();
+      ragged(x, y, r, squash, turn, 1.35);
+      ctx.fillStyle = 'rgba(14,14,16,0.72)';
+      ragged(x, y, r, squash, turn, 0.95);
+      // gravel kicked out of it
+      ctx.fillStyle = 'rgba(30,29,32,0.6)';
+      for (let k = 0; k < 9; k++) {
+        ctx.fillRect(x + rr(-r * 1.8, r * 1.8), y + rr(-r * 1.4, r * 1.4), rr(1, 2.6), rr(1, 2.6));
+      }
     }
 
     // oil and ash, dark and soft-edged
@@ -1317,6 +1340,53 @@ export function dirtyGlass() {
 }
 
 /** Dust / smoke sprite used by muzzle flashes, impacts and blood. */
+/**
+ * A tuft of weeds, on a transparent card: what grows in the cracks of a city
+ * nobody has swept for years. Late-summer stock — olive, straw and a few
+ * darker blades — because a bright lawn green reads as a park, and seed
+ * heads on the tallest stems, which is the part that says *weed*. Blades are
+ * filled, tapering curves rather than stroked lines, so the alpha edge is a
+ * blade's own edge when the card is alpha-tested.
+ */
+export function weeds(variant = 0) {
+  const tex = make('weeds' + variant, () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, s, s);
+    const stock = [[96, 108, 54], [132, 120, 70], [72, 86, 40], [150, 136, 86], [58, 70, 34]];
+    const blades = 46 + (variant * 9) % 20;
+    for (let i = 0; i < blades; i++) {
+      const [r, g, b] = stock[(Math.random() * stock.length) | 0];
+      const k = rr(0.75, 1.15);
+      ctx.fillStyle = `rgb(${(r * k) | 0},${(g * k) | 0},${(b * k) | 0})`;
+      // rooted near the middle of the card, fanning out as they rise
+      const x0 = s / 2 + rr(-0.16, 0.16) * s;
+      const h = rr(0.35, 0.97) * s;
+      const lean = rr(-0.45, 0.45) * h;
+      const w = rr(2.2, 5.5);
+      const tipX = x0 + lean, tipY = s - h;
+      const cx = x0 + lean * 0.25, cy = s - h * 0.6;
+      ctx.beginPath();
+      ctx.moveTo(x0 - w, s);
+      ctx.quadraticCurveTo(cx - w * 0.6, cy, tipX, tipY);
+      ctx.quadraticCurveTo(cx + w * 0.6, cy, x0 + w, s);
+      ctx.closePath();
+      ctx.fill();
+      if (h > s * 0.75 && chance(0.35)) {      // a seed head on a tall stem
+        ctx.fillStyle = `rgb(${(150 * k) | 0},${(132 * k) | 0},${(88 * k) | 0})`;
+        for (let j = 0; j < 7; j++) {
+          ctx.beginPath();
+          ctx.ellipse(tipX + rr(-3, 3), tipY + j * 3.2, rr(1.6, 2.6), rr(2.5, 4), lean * 0.002, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    return c;
+  });
+  // a card, not a tile: clamp, or the top of each blade bleeds onto the root
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
 export function particleSprite(color = '#ffffff') {
   return make('spr' + color, () => {
     const s = 64, c = canvas(s), ctx = c.getContext('2d');

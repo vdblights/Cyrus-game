@@ -581,6 +581,124 @@ function bakeStatic(group, world) {
   return buckets.size;
 }
 
+/**
+ * Weeds, where weeds grow: along the kerb on both sides of it, against the
+ * foot of every building, and in the cracks of the pavement, the plaza and
+ * the rubble — a city nobody has swept in years. This is the strongest single
+ * cue that the place is abandoned rather than merely empty, and it was the
+ * one the city did not have.
+ *
+ * Decoration by the rules in the invariant: in neither `world.boxes` nor
+ * `world.solids`, so you walk through it and shoot through it, which is what
+ * grass is; placed by `decor`'s own generator, so no seed moves; and only
+ * ever where it can stand — on a floor or the street, clear of anything
+ * taller than a kerb. A tuft is two crossed cards, each built twice with
+ * opposite winding and its own normal (tilted up, so a blade is lit like the
+ * ground it grows from), rather than one card drawn double-sided: three
+ * flips a double-sided face's normal on its back, which turned the back of
+ * every card into the dark side of a downward-facing surface. One mesh per
+ * lot, so the bake files each into its patch and they cull with the city.
+ */
+function overgrowth(group, world, mat) {
+  const byLot = new Map();
+  const add = (x, z, scale) => {
+    // standing room: on a floor or the street, not inside anything taller
+    if (Math.abs(x) > world.bounds - 1 || Math.abs(z) > world.bounds - 1) return;
+    if (world.occupied(x, z, 0.12, 0.6)) return;
+    const y = world.groundHeight(x, z, 0.05, 0.6);
+    const key = `${Math.round(x / BLOCK)},${Math.round(z / BLOCK)}`;
+    let geos = byLot.get(key);
+    if (!geos) byLot.set(key, geos = []);
+    geos.push(tuft(x, y, z, scale));
+  };
+
+  const apron = (LOT + 6) / 2;
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      const cx = lotCenter(i), cz = lotCenter(j);
+      // the kerb line, both sides of it, in clumps with gaps between
+      for (const [ax, az, along] of [[0, -1, 'x'], [0, 1, 'x'], [-1, 0, 'z'], [1, 0, 'z']]) {
+        for (let t = -apron; t < apron; t += randRange(0.8, 2.4)) {
+          if (Math.random() < 0.3) continue;
+          const side = Math.random() < 0.6 ? -1 : 1;          // pavement side, mostly
+          const off = apron + side * randRange(0.08, 0.45);
+          const x = cx + (along === 'x' ? t : ax * off);
+          const z = cz + (along === 'z' ? t : az * off);
+          for (let k = Math.random() < 0.5 ? 3 : 2; k > 0; k--) {
+            add(x + randRange(-0.35, 0.35), z + randRange(-0.35, 0.35), randRange(0.75, 1.3));
+          }
+        }
+      }
+      // cracks across the lot: a scatter, denser where nothing is built
+      for (let k = 0; k < 24; k++) {
+        add(cx + randRange(-apron, apron), cz + randRange(-apron, apron), randRange(0.55, 1.1));
+      }
+    }
+  }
+
+  // against the foot of every building and wall, where the sweepings gather
+  for (const b of world.boxes) {
+    if (b.floor || b.top < 2.5 || b.sin) continue;
+    const pad = 0.22;
+    const edges = [
+      [b.minX - pad, b.minZ - pad, b.maxX + pad, b.minZ - pad],
+      [b.minX - pad, b.maxZ + pad, b.maxX + pad, b.maxZ + pad],
+      [b.minX - pad, b.minZ - pad, b.minX - pad, b.maxZ + pad],
+      [b.maxX + pad, b.minZ - pad, b.maxX + pad, b.maxZ + pad],
+    ];
+    for (const [x0, z0, x1, z1] of edges) {
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      for (let t = randRange(0, 1.5); t < len; t += randRange(0.6, 2.0)) {
+        if (Math.random() < 0.3) continue;
+        const f = t / len;
+        // tallest against the wall, where the wind leaves the dust
+        add(x0 + (x1 - x0) * f, z0 + (z1 - z0) * f, randRange(0.95, 1.6));
+      }
+    }
+  }
+
+  for (const [key, geos] of byLot) {
+    const [li, lj] = key.split(',').map(Number);
+    const mesh = new THREE.Mesh(mergeIntoOne(geos), mat);
+    mesh.receiveShadow = true;           // a card's shadow is a smear; skip casting
+    mesh.userData.tint = tintAt(li * BLOCK, lj * BLOCK, 31, 0.22);
+    group.add(mesh);
+  }
+}
+
+/** One tuft: two crossed cards, each built front and back. */
+function tuft(x, y, z, scale) {
+  const w = randRange(0.4, 0.8) * scale, h = randRange(0.25, 0.6) * scale;
+  const rot = Math.random() * Math.PI;
+  const pos = [], nor = [], uv = [], idx = [];
+  for (const a of [rot, rot + Math.PI / 2]) {
+    const dx = Math.cos(a) * w / 2, dz = Math.sin(a) * w / 2;
+    const nx = -Math.sin(a), nz = Math.cos(a);           // the card's own normal
+    for (const face of [1, -1]) {
+      const base = pos.length / 3;
+      // normal mostly up: a blade is lit like the ground it grows from
+      const n = new THREE.Vector3(nx * face * 0.45, 1, nz * face * 0.45).normalize();
+      for (const [px, py, pz, u, v] of [
+        [x - dx, y, z - dz, 0, 0], [x + dx, y, z + dz, 1, 0],
+        [x + dx, y + h, z + dz, 1, 1], [x - dx, y + h, z - dz, 0, 1]]) {
+        pos.push(px, py, pz); nor.push(n.x, n.y, n.z); uv.push(u, v);
+      }
+      // wound so the facet faces the side this copy is lit from
+      const ux = 2 * dx, uz = 2 * dz;                        // bottom edge
+      const cx = -uz * h, cz = ux * h;                       // (bottom edge) x (up), sign of the face it makes
+      const facesNormal = (cx * nx + cz * nz) * face > 0;
+      if (facesNormal) idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      else idx.push(base, base + 2, base + 1, base, base + 3, base + 2);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+
 /** Lots per side of one batch patch (see `bakeStatic`). */
 const BATCH_LOTS = 2;
 const PATCH = BATCH_LOTS * BLOCK;
@@ -781,6 +899,19 @@ export const CITY_PAINT = [
       });
     },
   },
+  {
+    label: 'Letting the weeds in',
+    weight: 1,
+    // Alpha-tested rather than blended: a blended card has to be sorted, and
+    // two thousand of them merged into a handful of batches cannot be. No
+    // normal map — a blade is too thin to have a relief worth lighting.
+    run(m) {
+      m.weedMat = new THREE.MeshStandardMaterial({
+        map: TEX.weeds(0), alphaTest: 0.5,
+        roughness: 0.9, metalness: 0, envMapIntensity: 0.6, vertexColors: true,
+      });
+    },
+  },
 ];
 
 /** Every step of `CITY_PAINT` at once, for a caller with nothing to show. */
@@ -808,6 +939,8 @@ function labelMaterials(m) {
   label(m.paintMat, 'paint', TILE.paint);
   label(m.burntMat, 'burnt', TILE.metal);
   label(m.tireMat, 'tire', TILE.rubber);
+  // a card, not a surface: it declares no tile, so the density check skips it
+  m.weedMat.userData.name = 'weeds';
 }
 
 /**
@@ -826,7 +959,7 @@ export function buildCity(scene, painted = null) {
   const mats = painted || paintCity();
   labelMaterials(mats);
   const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
-    asphaltMat, paintMat, carBodyMats, burntMat, tireMat } = mats;
+    asphaltMat, paintMat, carBodyMats, burntMat, tireMat, weedMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
   const rustFor = (x, z) =>
@@ -1049,6 +1182,10 @@ export function buildCity(scene, painted = null) {
   }
 
   registerFloors(world, floors);
+
+  // Last, so it sees every collider and every floor it might grow against —
+  // and inside `decor`, so where it grows costs the layout nothing.
+  decor(() => overgrowth(group, world, weedMat));
 
   const batches = bakeStatic(group, world);
 

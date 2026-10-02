@@ -167,14 +167,98 @@ const SKY_VERT = /* glsl */`
   }
 `;
 
+/**
+ * Cloud, drawn on the dome and nowhere else.
+ *
+ * A clear gradient at the end of the afternoon was the most computer-made
+ * thing left in the frame: real dusk skies are rarely empty, and a layer of
+ * broken cloud lit gold on the sun's side and slate underneath is most of
+ * what makes one read as weather rather than as a backdrop. It is a
+ * domain-warped value-noise field on a plane 1.2 km up, thresholded to about
+ * half cover, and lit by asking the same field a little toward the sun —
+ * denser there means this point is in the cloud's own shadow — which is the
+ * cheapest self-shadowing that still gives a cloud a lit edge and a dark
+ * belly. It thins into the haze toward the horizon, where the plane is
+ * looked at edge-on, and it lets the sun's forward glow through where it is
+ * thin, so the cloud nearest the sun gets a bright rim rather than a cut-out.
+ *
+ * It lives here, not in `ashAtmosphere`, because the fog reads that function
+ * for every pixel in the city and cloud in the fog would mottle the haze. The
+ * environment map is rendered from this material, so the light the city
+ * reflects carries the cloud with it — a grey belly overhead dims the
+ * sky-light a little, as it does. It costs nothing in the seeded stream: no
+ * `Math.random`, just a hash.
+ */
+const CLOUD_GLSL = /* glsl */`
+  float cloudHash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+  float cloudNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cloudHash(i), cloudHash(i + vec2(1.0, 0.0)), u.x),
+               mix(cloudHash(i + vec2(0.0, 1.0)), cloudHash(i + vec2(1.0, 1.0)), u.x), u.y);
+  }
+  uniform float cloudLow;     // 1 on the low tier: fewer octaves, same shapes
+  float cloudFbm(vec2 p, int octaves) {
+    float v = 0.0, a = 0.5;
+    for (int k = 0; k < 5; k++) {
+      if (k >= octaves) break;
+      v += a * cloudNoise(p);
+      p = mat2(1.6, 1.2, -1.2, 1.6) * p;
+      a *= 0.5;
+    }
+    return v;
+  }
+  // cover in 0..1 at a point on the cloud plane, in km, through a warp the
+  // caller works out once: the self-shadow sample below reuses it, which is
+  // nine noise lookups a sky pixel saved for no visible difference
+  float cloudCover(vec2 p, vec2 warp, int octaves) {
+    return smoothstep(0.52, 0.74, cloudFbm(p + warp * 1.4, octaves));
+  }
+
+  vec3 ashClouds(vec3 d, vec3 sky) {
+    if (d.y <= 0.0) return sky;
+    // the plane is 1.2 km up; a ray that hardly rises meets it very far off
+    float t = 1.2 / max(d.y, 0.03);
+    vec2 p = d.xz * t * 0.55 + vec2(11.0, -4.0);
+    int detail = cloudLow > 0.5 ? 3 : 4;
+    vec2 warp = vec2(cloudFbm(p * 0.6 + 3.1, 2), cloudFbm(p * 0.6 - 7.4, 2));
+    float cover = cloudCover(p, warp, detail);
+    if (cover <= 0.001) return sky;
+
+    // self-shadow: the same cloud a few hundred metres toward the sun
+    vec2 toSun = normalize(ASH_SUN.xz) * 0.35;
+    float shade = cloudCover(p + toSun, warp, detail - 1);
+    float lit = clamp(1.0 - shade * 0.85 + (1.0 - cover) * 0.35, 0.0, 1.0);
+
+    vec3 belly = vec3(0.080, 0.070, 0.078);           // slate, a touch violet
+    vec3 sunlit = vec3(0.78, 0.47, 0.27);              // the light's own gold, at dusk
+    vec3 col = mix(belly, sunlit, lit * lit);
+
+    // thin cloud near the sun lets the glow through: a bright rim, not a hole
+    float mu = dot(d, ASH_SUN);
+    float g = 0.6;
+    float hg = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * mu, 1.5);
+    col += vec3(1.0, 0.7, 0.42) * hg * 0.05 * (1.0 - cover);
+
+    // edge-on toward the horizon the layer is lost in the haze
+    float fade = smoothstep(0.03, 0.22, d.y);
+    return mix(sky, col, cover * 0.92 * fade);
+  }
+`;
+
 const SKY_FRAG = /* glsl */`
   uniform float disc;
   varying vec3 vDir;
   ${ATMOSPHERE_GLSL}
+  ${CLOUD_GLSL}
 
   void main() {
     vec3 d = normalize(vDir);
-    vec3 col = ashAtmosphere(d, 1.0);
+    vec3 col = ashClouds(d, ashAtmosphere(d, 1.0));
 
     // The sun as the sun is: small, and far brighter than anything around it,
     // so the bloom makes its glare rather than a painted halo. Half a degree
@@ -193,7 +277,7 @@ const SKY_FRAG = /* glsl */`
 /** The dome's material. `disc` is 0 when the dome is rendered into the environment. */
 export function skyMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { disc: { value: 1 } },
+    uniforms: { disc: { value: 1 }, cloudLow: { value: 0 } },
     vertexShader: SKY_VERT,
     fragmentShader: SKY_FRAG,
     side: THREE.BackSide,

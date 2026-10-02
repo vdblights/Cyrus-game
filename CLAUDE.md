@@ -399,6 +399,32 @@ These each cost real debugging time. Changing them needs a reason.
   low-frequency shapes into a 96px canvas and lets the upscale smooth them,
   which is the same picture for about a thousandth of the cost. Nothing in
   `textures.js` should set `ctx.filter` again.
+- **Cloud is on the dome only, and weeds are decoration with a tier.**
+  The clouds (`CLOUD_GLSL` in `atmosphere.js`) are a domain-warped value
+  noise on a plane 1.2 km up, self-shadowed by one more lookup toward the
+  sun, and they live in the dome's shader and nowhere else: the fog reads
+  `ashAtmosphere` for every pixel in the city, and cloud in it would mottle
+  the haze. The environment map is rendered from the dome, so the city's
+  reflected light carries the cloud. The warp is worked out once and reused
+  by the shadow lookup — the first version did it twice and was 20 noise
+  lookups a sky pixel against 11. The weeds (`overgrowth` in `city.js`) are
+  decoration by every rule in the decoration invariant — placed inside
+  `decor` after the floors are registered, in neither collision list, and
+  only where they can stand — and two things about the geometry are
+  load-bearing. A tuft's two cards are each built twice with opposite
+  winding and their own normal, tilted up, rather than drawn double-sided:
+  three flips a double-sided face's normal on its back, which lights the
+  back of a card as the underside of something. And they declare no `TILE`,
+  so the texel-density check skips them, which is right for a card. One
+  mesh per lot, so the bake files them into patches and they cull. On low
+  they are hidden and the cloud drops an octave (`cloudLow`): measured on
+  low, interleaved over three rounds, weeds were 32 ms and the cloud 22 ms of
+  a 210 ms software frame, and low is the tier that has to stay cheap.
+  Medium and high pay about 4% for both. `the sky has weather in it`
+  (contrast 3.07 against 0.11 with the cloud returning the clear sky) and
+  `weeds grow where they can stand, and stay off the low tier` (838 inside
+  a collider with the clearance test out; shown on low with the tier
+  ignored) guard them.
 - **Weathering is a thresholded fractal, never a filled shape.** Every large
   stain goes through `mottle`, which used to fill ellipses into a low-res
   layer. Upscaled, they came out soft-edged and still round, and a surface
@@ -982,6 +1008,18 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The weather-and-weeds pass is the fourteenth, and it came from looking at
+four frames before touching anything and asking what still read as made.
+Three things did. The sky was a bare gradient — clouds now, invariant above.
+Nothing grew in a city meant to have been abandoned for years — 6,877 tufts
+of weeds on seed 1 now, along every kerb, at the foot of every building and
+through the cracks, about 55k triangles in 9 batches. And the asphalt's
+potholes were filled ellipses, a row of identical black discs repeating
+every 8 m of road; they are ragged polygons with a rim that follows the
+pit's own outline and a scatter of kicked-out gravel. The layout is
+untouched (all three pinned fingerprints), because everything placed is
+placed by `decor`.
 
 The sound pass is the thirteenth, and it was item 4 of the list: you could
 not hear which side fire was coming from. The invariant above has it. One

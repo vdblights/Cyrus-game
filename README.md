@@ -385,11 +385,11 @@ float.
 Shadow mapping costs more than everything else in the scene put together, so
 it is the first thing the quality tiers drop:
 
-| Tier | Shadows | Lighting | Fire lights | Post | Pixel ratio | Dust |
-| --- | --- | --- | --- | --- | --- | --- |
-| High | 2048 wide + 2048 near, soft | PBR + sky, normal maps | nearest 3 | occlusion, bloom + grade, 4x MSAA | up to 1.25 | yes |
-| Medium | 1024 wide + 1024 near, hard | PBR + sky, normal maps | nearest 2 | occlusion, bloom + grade, 2x MSAA | up to 1.0 | yes |
-| Low | off | Lambert | none | off, straight to the canvas | 1.0 | no |
+| Tier | Shadows | Lighting | Fire lights | Post | Pixel ratio | Dust | Weeds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| High | 2048 wide + 2048 near, soft | PBR + sky, normal maps | nearest 3 | occlusion, bloom + grade, 4x MSAA | up to 1.25 | yes | yes |
+| Medium | 1024 wide + 1024 near, hard | PBR + sky, normal maps | nearest 2 | occlusion, bloom + grade, 2x MSAA | up to 1.0 | yes | yes |
+| Low | off | Lambert | none | off, straight to the canvas | 1.0 | no | no |
 
 A machine that cannot afford shadows cannot afford a bloom either, so Low
 drops the whole post chain and hands tone mapping back to the renderer. It
@@ -400,6 +400,14 @@ keeps its full materials. Under software rendering that is 176 ms a frame
 against 986 for what Low used to be. On every tier only the nearest few fire
 barrels cast real light — a fire's light reaches 14 m, and every barrel in
 the sector used to be paid for on every pixel.
+
+The sky carries weather: a layer of broken cloud lit gold on the sun's side
+and slate underneath, which the city's reflected light picks up too. And the
+city is overgrown — weeds along both sides of every kerb, against the foot of
+every building and through the cracks of the pavement — which is the
+strongest single thing that says nobody has swept here in years. Weeds are
+walked and shot through, as grass is. Low keeps the cloud, at fewer octaves,
+and drops the weeds.
 
 The pixel ratio is the column that matters most. Every pass the post chain
 adds is paid per pixel, and on a 2x screen High used to draw 3.06 times the
