@@ -656,6 +656,24 @@ These each cost real debugging time. Changing them needs a reason.
   `a hostile follows you onto a car roof, and stays up there with you` puts
   the player on eight decks on seed 1: 8 of 8 up within 1.3 s and still up;
   0 of 8 with the climb taken out and 4 of 8 still up without the guard.
+- **A sound from somewhere is placed there, and only its direction is the
+  panner's.** Every sound was mono. Now anything that happens at a point —
+  a hostile's shot (at its muzzle), an impact, a hit, a death, a blast, a
+  grenade bounce, an alert — goes through `_out(at)`, a fresh HRTF panner
+  at that point, and `listen` puts the listener on the camera every frame.
+  HRTF rather than equal-power because a stereo pan cannot tell front from
+  back. `rolloffFactor` is 0: loudness stays the caller's own distance gain,
+  exactly as before, so placing a sound changed nothing about how loud
+  anything is. What is yours — your gun, your steps, the HUD — stays
+  unplaced, and so do the tails off the buildings (a shot's echo, a blast's
+  roll), which come from every wall at once. Nothing here touches the seeded
+  stream; `distantFire` and the alert's 30% gate already drew on it and still
+  do, in the same order. `a shot from your right is heard on your right`
+  stands a raider at the player's right, records where the game placed its
+  shot and the ears, and plays that shot through the real chain into an
+  `OfflineAudioContext` (`audio.init(ctx)` takes one): right over left 2.42,
+  0.42 from the mirror position, 1.03 unplaced; 1.0 with the panner taken
+  out, and no place at all with the muzzle not passed.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -964,6 +982,12 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The sound pass is the thirteenth, and it was item 4 of the list: you could
+not hear which side fire was coming from. The invariant above has it. One
+thing worth knowing for next time: hostiles make no footsteps, so a flanker
+is still silent until it shoots — placed footsteps per hostile are the
+obvious next sound, and the panner is already there for them.
 
 The climbing pass is the twelfth, and it was item 5 of the list: a car
 roof was a place hostiles could not follow you to. It is the invariant
@@ -1860,22 +1884,20 @@ Suggested next work, in the order I would do it:
 3. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-4. **Positional audio** — sounds are mono, so you cannot hear which side fire
-   is coming from. `PannerNode` in the already-centralised audio module.
-5. **Finish what the rig made possible.** Hostiles now have knees, elbows,
+4. **Finish what the rig made possible.** Hostiles now have knees, elbows,
    a waist, a neck and a weapon their hands follow, so the rest is poses,
    not plumbing: a reload visible from across the street (drop the
    magazine's hold point and let the left hand follow it), a crouch behind
    cover, a hip-fire spray from a breaker, a turn of the head toward a
    sound. Each is a weapon pose plus maybe a waist angle; the arms come
    free.
-6. **More on the ground now that paint is there.** The markings pass put a
+5. **More on the ground now that paint is there.** The markings pass put a
    geometry layer on the road and left the pavement alone: manhole covers,
    kerb drops at the crossings, hatched keep-clear boxes and painted parking
    bays all fall out of the same `roadMarkings` machinery and the same street
    grid. Drop them in the same merged mesh and they cost one more batch of
    nothing.
-7. **Keep wall decoration out of jumping reach of a perch.** Decoration is
+6. **Keep wall decoration out of jumping reach of a perch.** Decoration is
    built where you cannot stand, and a terrace can put you within a jump of
    some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
    1.15 m above it, which you would fall through. Perches are placed after
@@ -1883,7 +1905,7 @@ Suggested next work, in the order I would do it:
    occupied or the decoration is skipped near a perch; `decor` costs the
    stream nothing either way. `what stands on a perch holds you up` stops at
    the deck's footprint on purpose and would need widening to cover it.
-8. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+7. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make

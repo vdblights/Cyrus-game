@@ -1265,7 +1265,7 @@ class Game {
       end = hitW.point.clone();
       const n = hitW.face ? hitW.face.normal.clone().transformDirection(hitW.object.matrixWorld) : dir.clone().negate();
       this.effects.impact(end, n);
-      audio.impact();
+      audio.impact(end);
     } else {
       this.effects.impact(end, dir.clone().negate(), 'soft');
     }
@@ -1343,7 +1343,7 @@ class Game {
   /** Frag detonation: damage falls off with distance and needs line of sight. */
   explode(pos) {
     this.effects.explosion(pos);
-    audio.explosion();
+    audio.explosion(1, pos);
 
     // Blast is traced from a little above the casing: a grenade resting
     // against a sandbag still throws fragments over it. Cover behind which a
@@ -1486,6 +1486,9 @@ class Game {
     }
     const stepped = performance.now();
     if (this.state === 'playing') this.autoCalibrate();
+    // the ears go where the eyes went this frame
+    this.camera.getWorldDirection(V1);
+    audio.listen(this.camera.position.x, this.camera.position.y, this.camera.position.z, V1);
 
     this.hud.tick(elapsed);
     this.flickerFires(elapsed);

@@ -501,6 +501,12 @@ A few notes on the implementation:
   canvas at boot, every sound is synthesised from noise bursts and oscillator
   envelopes, and every model is assembled out of chamfered boxes and profiles
   described by their cross-sections.
+- **You hear where things are.** A hostile's shot, a round striking a wall, a
+  hit, a blast, a grenade skittering and a hostile's shout are each placed
+  where they happened, through an HRTF panner, with the listener riding the
+  camera — so fire from behind you sounds like it, best on headphones. Your
+  own gun and footsteps stay centred, and the echo off the buildings comes
+  from everywhere.
 - **Normal maps are generated, not authored.** A Sobel pass over each
   texture's own luminance becomes its normal map, so painted detail lights
   like geometry without shipping a second set of images.

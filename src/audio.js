@@ -2,6 +2,16 @@
  * All sound is synthesised at runtime with the Web Audio API — no asset
  * files. Gunshots are a noise burst through a resonant filter plus a low
  * body thump; everything else is built from short envelopes.
+ *
+ * Anything that happens somewhere — a hostile's shot, a round striking a
+ * wall, a hit, a blast, a grenade skittering, a hostile shouting — is placed
+ * there: it goes through a panner at that point, and the listener follows
+ * the camera (`listen`, every frame). Everything used to be mono, so fire
+ * from behind you sounded exactly like fire from in front. The panner only
+ * says *where*; how loud is still the caller's distance gain, as it always
+ * was (`rolloffFactor` 0), so placing a sound never made the game quieter.
+ * What is yours — your own gun, your steps, the HUD's ticks — stays in your
+ * head, unpanned.
  */
 class Audio {
   constructor() {
@@ -14,11 +24,12 @@ class Audio {
     this.wind = null;
   }
 
-  init() {
+  /** `ctx` is for a check that renders offline; play builds its own. */
+  init(ctx) {
     if (this.ctx) return;
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) { this.enabled = false; return; }
-    this.ctx = new AC();
+    if (!ctx && !AC) { this.enabled = false; return; }
+    this.ctx = ctx || new AC();
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.5;
 
@@ -54,6 +65,46 @@ class Audio {
 
   resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); }
 
+  /**
+   * Put the listener where the camera is, facing where it faces. `fwd` is a
+   * unit vector; up is the world's, because the view never rolls far enough
+   * to matter to an ear.
+   */
+  listen(x, y, z, fwd) {
+    const L = this.ctx && this.ctx.listener;
+    if (!L) return;
+    if (L.positionX) {
+      const t = this.ctx.currentTime;
+      L.positionX.setValueAtTime(x, t); L.positionY.setValueAtTime(y, t); L.positionZ.setValueAtTime(z, t);
+      L.forwardX.setValueAtTime(fwd.x, t); L.forwardY.setValueAtTime(fwd.y, t); L.forwardZ.setValueAtTime(fwd.z, t);
+      L.upX.setValueAtTime(0, t); L.upY.setValueAtTime(1, t); L.upZ.setValueAtTime(0, t);
+    } else {
+      L.setPosition(x, y, z);
+      L.setOrientation(fwd.x, fwd.y, fwd.z, 0, 1, 0);
+    }
+  }
+
+  /**
+   * Where a placed sound plugs in: a panner at `at`, or the master bus for
+   * a sound with no place. HRTF, because a stereo pan alone cannot tell
+   * front from back, and that is half of what an ear is for in a fight.
+   */
+  _out(at) {
+    if (!at) return this.master;
+    const p = this.ctx.createPanner();
+    p.panningModel = 'HRTF';
+    p.distanceModel = 'inverse';
+    p.rolloffFactor = 0;            // loudness is the caller's distance gain
+    if (p.positionX) {
+      const t = this.ctx.currentTime;
+      p.positionX.setValueAtTime(at.x, t); p.positionY.setValueAtTime(at.y, t); p.positionZ.setValueAtTime(at.z, t);
+    } else {
+      p.setPosition(at.x, at.y, at.z);
+    }
+    p.connect(this.master);
+    return p;
+  }
+
   setVolume(v) {
     this.volume = v;
     if (this.master) this.master.gain.value = this.muted ? 0 : v * 0.5;
@@ -65,7 +116,7 @@ class Audio {
     if (m) this.stopAmbience();
   }
 
-  _noise(dur, filterType, freq, q, gain, sweepTo) {
+  _noise(dur, filterType, freq, q, gain, sweepTo, out = this.master) {
     const ctx = this.ctx;
     const src = ctx.createBufferSource();
     src.buffer = this.noiseBuf;
@@ -78,13 +129,13 @@ class Audio {
     const g = ctx.createGain();
     g.gain.setValueAtTime(gain, ctx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.0008, ctx.currentTime + dur);
-    src.connect(flt); flt.connect(g); g.connect(this.master);
+    src.connect(flt); flt.connect(g); g.connect(out);
     src.start();
     src.stop(ctx.currentTime + dur + 0.02);
     return g;
   }
 
-  _tone(type, f0, f1, dur, gain, delay = 0) {
+  _tone(type, f0, f1, dur, gain, delay = 0, out = this.master) {
     const ctx = this.ctx;
     const t = ctx.currentTime + delay;
     const osc = ctx.createOscillator();
@@ -95,13 +146,14 @@ class Audio {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(gain, t + 0.005);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    osc.connect(g); g.connect(this.master);
+    osc.connect(g); g.connect(out);
     osc.start(t); osc.stop(t + dur + 0.02);
   }
 
   /** @param {'pistol'|'smg'|'rifle'|'shotgun'} kind */
-  shot(kind, distanceGain = 1) {
+  shot(kind, distanceGain = 1, at = null) {
     if (!this.ctx) return;
+    const out = this._out(at);
     const spec = {
       pistol:  { dur: 0.16, freq: 1800, q: 1.2, gain: 0.55, body: 150 },
       smg:     { dur: 0.11, freq: 2400, q: 1.0, gain: 0.42, body: 190 },
@@ -109,9 +161,9 @@ class Audio {
       shotgun: { dur: 0.32, freq: 900,  q: 0.9, gain: 0.75, body: 80  },
     }[kind] || { dur: 0.16, freq: 1600, q: 1.2, gain: 0.5, body: 140 };
 
-    this._noise(spec.dur, 'bandpass', spec.freq, spec.q, spec.gain * distanceGain, spec.freq * 0.25);
-    this._tone('sine', spec.body, spec.body * 0.35, spec.dur * 1.4, 0.5 * distanceGain);
-    // tail slapping off the buildings
+    this._noise(spec.dur, 'bandpass', spec.freq, spec.q, spec.gain * distanceGain, spec.freq * 0.25, out);
+    this._tone('sine', spec.body, spec.body * 0.35, spec.dur * 1.4, 0.5 * distanceGain, 0, out);
+    // tail slapping off the buildings: from everywhere, so it is not placed
     this._noise(0.5, 'lowpass', 900, 0.7, 0.10 * distanceGain, 250);
   }
 
@@ -127,9 +179,14 @@ class Audio {
 
   swap() { if (this.ctx) { this._tone('square', 260, 400, 0.05, 0.07); this._noise(0.07, 'highpass', 2200, 1, 0.06); } }
 
-  impact() { if (this.ctx) this._noise(0.09, 'bandpass', 2200, 1.6, 0.14, 700); }
+  impact(at = null) { if (this.ctx) this._noise(0.09, 'bandpass', 2200, 1.6, 0.14, 700, this._out(at)); }
 
-  flesh() { if (this.ctx) { this._noise(0.10, 'lowpass', 700, 1, 0.30, 220); this._tone('sine', 90, 50, 0.10, 0.16); } }
+  flesh(at = null) {
+    if (!this.ctx) return;
+    const out = this._out(at);
+    this._noise(0.10, 'lowpass', 700, 1, 0.30, 220, out);
+    this._tone('sine', 90, 50, 0.10, 0.16, 0, out);
+  }
 
   hitmark() { if (this.ctx) this._tone('square', 1400, 1400, 0.035, 0.09); }
 
@@ -168,14 +225,20 @@ class Audio {
   /** Grenade: pin, bounce, and the blast itself. */
   pinPull() { if (this.ctx) { this._tone('square', 1200, 700, 0.05, 0.10); this._noise(0.05, 'highpass', 3000, 1, 0.08); } }
 
-  grenadeBounce() { if (this.ctx) { this._tone('square', 420, 260, 0.05, 0.06); this._noise(0.04, 'bandpass', 1800, 2, 0.05); } }
-
-  explosion(gain = 1) {
+  grenadeBounce(at = null) {
     if (!this.ctx) return;
-    this._tone('sine', 90, 24, 1.1, 0.75 * gain);            // body
-    this._noise(0.35, 'lowpass', 1600, 0.8, 0.85 * gain, 200); // crack
-    this._noise(1.6, 'lowpass', 500, 0.7, 0.40 * gain, 90);    // rolling tail
-    this._noise(0.9, 'highpass', 2200, 0.8, 0.14 * gain, 900); // debris hiss
+    const out = this._out(at);
+    this._tone('square', 420, 260, 0.05, 0.06, 0, out);
+    this._noise(0.04, 'bandpass', 1800, 2, 0.05, undefined, out);
+  }
+
+  explosion(gain = 1, at = null) {
+    if (!this.ctx) return;
+    const out = this._out(at);
+    this._tone('sine', 90, 24, 1.1, 0.75 * gain, 0, out);                // body
+    this._noise(0.35, 'lowpass', 1600, 0.8, 0.85 * gain, 200, out);      // crack
+    this._noise(1.6, 'lowpass', 500, 0.7, 0.40 * gain, 90);              // rolling tail, off every wall
+    this._noise(0.9, 'highpass', 2200, 0.8, 0.14 * gain, 900, out);      // debris hiss
   }
 
   meleeSwing() { if (this.ctx) this._noise(0.16, 'bandpass', 700, 1.4, 0.16, 260); }
@@ -254,7 +317,12 @@ class Audio {
     this.wind = null;
   }
 
-  enemyAlert() { if (this.ctx) { this._tone('sawtooth', 300, 120, 0.35, 0.10); this._noise(0.3, 'bandpass', 700, 1.5, 0.10, 300); } }
+  enemyAlert(at = null) {
+    if (!this.ctx) return;
+    const out = this._out(at);
+    this._tone('sawtooth', 300, 120, 0.35, 0.10, 0, out);
+    this._noise(0.3, 'bandpass', 700, 1.5, 0.10, 300, out);
+  }
 }
 
 export const audio = new Audio();

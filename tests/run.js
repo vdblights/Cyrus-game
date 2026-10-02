@@ -2605,6 +2605,71 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
   return r;
 });
 
+check('a shot from your right is heard on your right', async (page) => {
+  // Every sound was mono, so fire from behind you sounded exactly like fire
+  // from in front. This stands a raider to the player's right, lets it fire,
+  // records where the game said the shot came from and where it said the
+  // ears were, and then plays that same shot through the real audio chain
+  // into an offline context, so what is measured is the two channels coming
+  // out — the same again from the left, and once with no place at all.
+  const r = await page.evaluate(async () => {
+    const { audio } = await import('/src/audio.js');
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const { target, px, pz } = window.__place(12);
+    g.player.reset(px, pz);
+    const dx = target.x - px, dz = target.z - pz;
+    // face 90 degrees left of the hostile, so it stands on the right
+    g.player.yaw = Math.atan2(-dx, -dz) + Math.PI / 2;
+    g.player.pitch = 0;
+    const e = g.spawnEnemy('raider');
+    e.pos.set(target.x, g.world.groundHeight(target.x, target.z, 0.12, 0.6), target.z);
+    e.group.position.copy(e.pos);
+    e.alert(g.time, 0);
+    e.nextFire = 0;
+    let shotAt, ears;
+    const realShot = audio.shot.bind(audio), realListen = audio.listen.bind(audio);
+    audio.shot = (kind, gain, at) => { if (at && !shotAt) shotAt = { x: at.x, y: at.y, z: at.z }; if (!at) shotAt = shotAt || null; };
+    audio.listen = (x, y, z, f) => { ears = { x, y, z, f: { x: f.x, y: f.y, z: f.z } }; };
+    try {
+      for (let i = 0; i < 90 && !shotAt; i++) {
+        g.time += 1 / 30; g.player.health = 100;
+        g.frame();
+        g.player.yaw = Math.atan2(-dx, -dz) + Math.PI / 2;
+      }
+    } finally { audio.shot = realShot; audio.listen = realListen; }
+    if (!shotAt || !ears) return { shotAt: shotAt || null, ears: !!ears };
+
+    // play it: the real chain, into an offline context
+    const saved = { ctx: audio.ctx, master: audio.master, noiseBuf: audio.noiseBuf };
+    const render = async (at) => {
+      audio.ctx = null;
+      const off = new OfflineAudioContext(2, 44100 * 0.5, 44100);
+      audio.init(off);
+      audio.listen(ears.x, ears.y, ears.z, ears.f);
+      audio.shot('rifle', 1, at);
+      const buf = await off.startRendering();
+      const energy = (ch) => buf.getChannelData(ch).reduce((a, v) => a + v * v, 0);
+      return +(energy(1) / energy(0)).toFixed(2);           // right over left
+    };
+    try {
+      const mirror = { x: 2 * ears.x - shotAt.x, y: shotAt.y, z: 2 * ears.z - shotAt.z };
+      return { placed: true, right: await render(shotAt), left: await render(mirror), nowhere: await render(null) };
+    } finally { Object.assign(audio, saved); }
+  });
+  expect(r.shotAt !== null && r.placed, `the hostile's shot was not given a place: ${JSON.stringify(r)}`);
+  // Measured on seed 1: right over left 2.42 from the right, 0.42 from the
+  // left, 1.03 from nowhere (the room's reverb is stereo, so not exactly 1),
+  // and 1.0 with the panner taken out. The echo off the buildings
+  // is deliberately not placed, which is why the ratio is not larger.
+  expect(r.right > 1.8, `a shot from the right came out ${r.right}x louder on the right`);
+  expect(r.left < 0.55, `a shot from the left came out ${r.left}x louder on the right`);
+  expect(Math.abs(r.nowhere - 1) < 0.1, `a sound with no place was panned (${r.nowhere})`);
+  return r;
+});
+
 check('the frame-rate readout shows on a key, and names the GPU', async (page) => {
   // Lag is reported from machines nobody here can see, so the game carries
   // its own numbers: the key left of 1 shows them, and the pause menu has

@@ -625,7 +625,7 @@ export class Enemy {
     if (this.alerted || !this.alive) return;
     this.alerted = true;
     this.nextFire = Math.max(this.nextFire, time + readyIn);
-    if (Math.random() < 0.3) audio.enemyAlert();
+    if (Math.random() < 0.3) audio.enemyAlert({ x: this.pos.x, y: this.pos.y + 1.5, z: this.pos.z });
   }
 
   /** @returns {'kill'|'hit'|null} */
@@ -651,7 +651,7 @@ export class Enemy {
       this.die(fromDir);
       return 'kill';
     }
-    audio.flesh();
+    audio.flesh(point || this.pos);
     return 'hit';
   }
 
@@ -667,7 +667,7 @@ export class Enemy {
     this.vel.set(0, 0, 0);
     this.fallDir = Math.atan2(fromDir ? fromDir.x : 0, fromDir ? fromDir.z : 1);
     this.game.effects.gib(V1.copy(this.pos).setY(this.pos.y + 1.2));
-    audio.flesh();
+    audio.flesh(V1);
   }
 
   /**
@@ -1043,7 +1043,7 @@ export class Enemy {
 
     this.game.effects.muzzle(muzzle, t.pellets ? 1.4 : 0.9);
     this.kick = Math.min(1.5, this.kick + (t.pellets ? 1.3 : 0.8));
-    audio.shot(t.sound || 'rifle', THREE.MathUtils.clamp(14 / Math.max(3, dist), 0.16, 1));
+    audio.shot(t.sound || 'rifle', THREE.MathUtils.clamp(14 / Math.max(3, dist), 0.16, 1), muzzle);
 
     if (hits > 0) {
       let dmg = t.damage * hits;
