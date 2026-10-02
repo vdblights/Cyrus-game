@@ -172,7 +172,10 @@ These each cost real debugging time. Changing them needs a reason.
   `city.js` gives each one a stack of colliders cut to its own shape: tiers
   a third of a metre deep, each the tightest of sixteen turned rectangles
   round the heap's cross-section at that height, shrunk to the section's
-  own area. A box the size of the heap would have been a pillar you stood
+  own area. The section is the hull of two cuts, at the tier's middle and
+  just under its top: a mound narrows as it rises, so the upper cut adds
+  nothing to it, and a fallen slab leans, so its upper cut is where the
+  overhang is. A box the size of the heap would have been a pillar you stood
   on in mid-air over its slopes; tiers under `STEP_HEIGHT` make it a mound
   you scramble up. Heaps are registered after the floors, appended to
   everything else, and flagged `heap`, so the layout check still measures
@@ -195,15 +198,25 @@ These each cost real debugging time. Changing them needs a reason.
   builds a prop where it was rolled, reads back the colliders it registered
   as its footprint, and moves the whole thing to the nearest half-metre
   offset (out to a `reach` per kind) that is inside the sector, 20 cm clear
-  of every collider standing, and on one floor level, then lifts it onto
-  that floor. A barricade passes `parts`, so each slab finds its own level
+  of every collider standing, and on one floor level — every corner 5 cm
+  past its edge, so nothing teeters on a kerb — then lifts it onto that
+  floor. A barricade passes `parts`, so each slab finds its own level
   and a row can step off a kerb. If nowhere fits, everything the builder
   added is taken back out — after its rolls and its `spend` were paid, so
   the stream never sees the difference and every later roll gets the value
   it always did. On seed 1 that drops 18 props, and all but one were
   rolled into the perimeter wall. What it does change is the layout: props
   move, and perches are placed round them, so the layout check was
-  re-measured once for it. The fountain went with it: it was an open tube
+  re-measured once for it: compared collider by collider, every building
+  and every floor is identical on all three pinned seeds. The perches
+  moving exposed a hole that had always been there: a perch is placed
+  before the rubble is registered, so `areaClear` cannot see it, and seed
+  1's new layout put a container stack in a rubble lot with a fallen slab
+  across its stairs (`stairs carry the player onto a perch`, 12 of 13).
+  Rejecting perch sites near rubble cost seed 1 five of its thirteen
+  perches, because there is a heap in every street; instead the rubble on
+  a perch's deck and stair run is cleared before `registerHeaps`, which
+  costs the stream nothing because the heaps were already built. The fountain went with it: it was an open tube
   with a solid 6.8 m square deck for a collider, so you stood on air over
   the basin and past the rim at every corner, and walked through the
   plinth from the deck. It is a lathed basin now, the rim sixteen staves
@@ -1204,7 +1217,14 @@ The rubble fix came from play, the day after the street pass, as one
 line: objects around that you can clip right through, rubble and the like.
 An audit of everything drawn at body height with no collider under it found
 exactly two things, both in the rubble — the heaps and the leaning slabs —
-and nothing else in the sector. The invariant above has the fix and the
+and nothing else in the sector. That audit sampled each facet at its
+centre, and a second one sampling every 30 cm across each facet found two
+more it had missed: the fountain's plinth, which you walked through from
+the deck, and the top of every leaning slab, whose tiers were cut at their
+middle and left up to 0.6 m of a lean's overhang at head height. Looking
+at the fountain is what found the props standing in each other, which was
+item 1 of the list from the other side — the invariant on settling props
+has all of it. The invariant above has the fix and the
 check that keeps it. The same report said the frame rate was much improved
 from the last one, which is the first word from a real machine since the
 low-tier pass.
