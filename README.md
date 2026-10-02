@@ -531,6 +531,14 @@ A few notes on the implementation:
   canvas at boot, every sound is synthesised from noise bursts and oscillator
   envelopes, and every model is assembled out of chamfered boxes and profiles
   described by their cross-sections.
+- **What you can see, you can bump into.** Every heap of rubble and every
+  fallen slab carries colliders cut to its own shape — a stack of tiers
+  shallower than a step, each fitted to the heap's cross-section at that
+  height — so a mound stops you at its foot and you can scramble up it, and
+  it stops a bullet. Containers, wrecks, barriers, drums and lamps stand
+  clear of one another, inside the sector, and on the floor under them —
+  a barrier on the pavement stands on the pavement — and the plaza's dry
+  fountain is a basin you can climb into, round a plinth that stops you.
 - **You hear where things are.** A hostile's shot, a round striking a wall, a
   hit, a blast, a grenade skittering and a hostile's shout are each placed
   where they happened, through an HRTF panner, with the listener riding the

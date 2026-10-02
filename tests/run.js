@@ -411,11 +411,14 @@ check('stairs carry the player onto a perch', async (page) => {
       // perch with pavement beside it and its stairs round another side was
       // approached across the pavement, which is a low step too, and walked
       // into the side of its own deck.
+      // A heap of rubble's lowest tier is a low step too, and a heap is not
+      // a stair: look for the treads past them.
+      const bare = { boxes: g.world.boxes.filter((b) => !b.heap) };
       let approach = null;
       for (const [ax, az] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
         for (let d = 3; d < 18; d += 0.25) {
           const x = perch.x + ax * d, z = perch.z + az * d;
-          const rise = g.world.groundHeight(x, z, 0.42, 99) - floorAt(x, z, 0.42);
+          const rise = g.world.groundHeight.call(bare, x, z, 0.42, 99) - floorAt(x, z, 0.42);
           if (rise > 0.05 && rise < 0.55) { approach = { ax, az, d }; break; }
         }
         if (approach) break;
@@ -732,7 +735,9 @@ check('a prop stops you where you can see it, not a metre before', async (page) 
       return 0;
     };
 
-    const turned = g.world.boxes.filter((b) => b.sin !== 0);
+    // a prop's own footprint, turned; a rubble heap's tiers are fitted to a shape, and
+    // a thin fallen slab's grazing approach is not what this measures
+    const turned = g.world.boxes.filter((b) => b.sin !== 0 && !b.heap);
     let nowWorst = 0, oldWorst = 0, nowSum = 0, oldSum = 0, n = 0;
     for (const b of turned) {
       const old = asAabb(b);
@@ -2300,6 +2305,195 @@ check('a wreck fits the box you collide with, and stands on its wheels', async (
   return r;
 });
 
+check('rubble stops you and stops a bullet, and you can climb it', async (page) => {
+  // Reported from play: objects you can clip right through, rubble first.
+  // Every heap of rubble and every fallen slab in a rubble lot was drawn and
+  // registered nowhere — the slabs stopped bullets and not boots, the heaps
+  // neither. This measures the whole sector first: every facet of the drawn
+  // city standing at body height above the street that no collider stands
+  // under or within a body's width of — what you could walk into — with
+  // the weeds left out, because walking through a weed is right. Then it
+  // walks into the biggest heap on a level approach, and fires at it.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    const W = g.world, BODY = 0.42;
+    const covered = (x, y, z) => W.boxes.some((b) => {
+      if (b.top < y - 0.05 || b.floor) return false;
+      if (x < b.minX - BODY || x > b.maxX + BODY || z < b.minZ - BODY || z > b.maxZ + BODY) return false;
+      const rx = x - b.cx, rz = z - b.cz;
+      const lx = b.cos * rx - b.sin * rz, lz = b.sin * rx + b.cos * rz;
+      return Math.abs(lx) <= b.hx + BODY && Math.abs(lz) <= b.hz + BODY;
+    });
+    const ghost = {};
+    for (const m of g.city.children) {
+      if (!m.isMesh || m.material.userData.name === 'weeds') continue;
+      const name = m.material.userData.name;
+      const p = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : p.count;
+      const at = (k) => (idx ? idx.getX(k) : k);
+      for (let k = 0; k + 2 < n; k += 3) {
+        const a = at(k), b = at(k + 1), c = at(k + 2);
+        const x = (p.getX(a) + p.getX(b) + p.getX(c)) / 3, y = (p.getY(a) + p.getY(b) + p.getY(c)) / 3;
+        const z = (p.getZ(a) + p.getZ(b) + p.getZ(c)) / 3;
+        const floor = W.groundHeight(x, z, 0.01, y + 0.02);
+        if (y - floor < 0.3 || y - floor > 2.0 || floor > 1.0 || covered(x, y, z)) continue;
+        const ux = p.getX(b) - p.getX(a), uy = p.getY(b) - p.getY(a), uz = p.getZ(b) - p.getZ(a);
+        const wx = p.getX(c) - p.getX(a), wy = p.getY(c) - p.getY(a), wz = p.getZ(c) - p.getZ(a);
+        ghost[name] = (ghost[name] || 0) + Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2;
+      }
+    }
+    const ghostArea = Object.values(ghost).reduce((a, v) => a + v, 0);
+
+    // the biggest heap: an icosahedron among the raycast targets
+    const heaps = W.solids.filter((m) => m.geometry.type === 'IcosahedronGeometry');
+    if (!heaps.length) return { ghost, ghostArea, heaps: 0 };
+    const size = (m) => m.geometry.parameters.radius * Math.max(m.scale.x, m.scale.z);
+    // the biggest heap with nothing else between it and three metres out:
+    // a shot along the ground from there has to reach it first
+    const sight = (m, ang) => {
+      const R = size(m), y = W.groundHeight(m.position.x, m.position.z, 0.12, 0.5) + 0.3;
+      const o = new THREE.Vector3(m.position.x + Math.sin(ang) * (R + 3), y, m.position.z + Math.cos(ang) * (R + 3));
+      const ray = new THREE.Raycaster(o, new THREE.Vector3(-Math.sin(ang), 0, -Math.cos(ang)), 0, R + 3);
+      return ray.intersectObjects(W.solids, false)[0];
+    };
+    const open = heaps.filter((m) => [0, 1, 2, 3].some((k) => sight(m, k * Math.PI / 2 + 0.4)?.object === m))
+      .sort((a, b) => size(b) - size(a));
+    const heap = open[0];
+    if (!heap) return { ghostArea: +ghostArea.toFixed(1), heaps: heaps.length, open: 0 };
+    const hx = heap.position.x, hz = heap.position.z, R = size(heap);
+    const base = W.groundHeight(hx, hz, 0.12, 0.5);
+
+    // a level approach from four sides: start clear of it, walk at its centre
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const walks = [];
+    for (let k = 0; k < 4; k++) {
+      const ang = (k / 4) * Math.PI * 2 + 0.4;
+      const sx = hx + Math.sin(ang) * (R + 2.5), sz = hz + Math.cos(ang) * (R + 2.5);
+      if (Math.abs(W.groundHeight(sx, sz, 0.42, 3) - base) > 0.05) continue;    // not level ground
+      if (sight(heap, ang)?.object !== heap) continue;                         // something else in the way
+      g.player.reset(sx, sz);
+      g.player.yaw = Math.atan2(-(hx - sx), -(hz - sz)); g.player.pitch = 0;
+      g.input.keys.add('KeyW');
+      // closest it ever got, and how high it stood there: walked through,
+      // a heap is passed through its middle and out the far side
+      let closest = Infinity, up = 0;
+      for (let i = 0; i < 120; i++) {
+        g.time += 1 / 60; g.player.health = 100; g.step(1 / 60);
+        g.player.yaw = Math.atan2(-(hx - sx), -(hz - sz));
+        const d = Math.hypot(g.player.position.x - hx, g.player.position.z - hz);
+        if (d < closest) { closest = d; up = g.player.feetY - base; }
+      }
+      g.input.keys.delete('KeyW');
+      walks.push({ dist: +closest.toFixed(2), up: +up.toFixed(2) });
+    }
+
+    // and a shot along the ground at it, from three metres out
+    const angs = [0, 1, 2, 3].map((k) => k * Math.PI / 2 + 0.4);
+    const hit = sight(heap, angs.find((a) => sight(heap, a)?.object === heap));
+    const shot = hit ? { at: +hit.distance.toFixed(2), heap: hit.object === heap } : null;
+    return { ghostArea: +ghostArea.toFixed(1), heaps: heaps.length, R: +R.toFixed(2), shot, walks, ghost };
+  });
+  // Seed 1: about 660 m² of rubble at body height with nothing under it
+  // before; under 10 now, which is the low rim of the heaps at ankle height.
+  expect(r.ghostArea < 25, `${r.ghostArea} m² of the city stands at body height with no collider: ${JSON.stringify(r.ghost)}`);
+  expect(r.heaps > 20, `only ${r.heaps} heaps of rubble are things a bullet can hit`);
+  expect(r.walks.length >= 2, `found only ${r.walks.length} level approaches to the biggest heap`);
+  expect(r.open > 0 || r.R, `no heap of rubble can be seen clear from three metres — a bullet passes through all ${r.heaps}`);
+  expect(r.shot && r.shot.heap, `a shot at a heap ${r.shot ? 'stopped ' + r.shot.at + ' m out on something else' : 'hit nothing'}`);
+  for (const w of r.walks) {
+    // walking at a heap you are stopped at its foot, or you scramble up it
+    expect(w.dist > r.R * 0.45 || w.up > 0.25, `walked ${w.dist} m from the centre of a ${r.R} m heap at ${w.up} m up — inside it`);
+  }
+  return r;
+});
+
+check('every prop stands clear of the rest, inside the sector, and on its floor', async (page) => {
+  // Containers, wrecks, barriers, drums and lamps went down wherever their
+  // rolls put them: a container through the plaza's fountain on all three
+  // pinned seeds, cars and barriers through one another, every prop rolled
+  // past the last lot half inside the perimeter wall, and anything that
+  // landed on a pavement or a slab sunk into it by the slab's height.
+  // `settle` stands each one clear, level and on its floor. This reads it
+  // three ways: each prop's colliders against every other collider taller
+  // than a step; against the sector's edge; and what is drawn — the lowest
+  // point of each prop's own meshes over the floor its corners stand on,
+  // which has to be the same for every copy of a shape, on the road or off.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const W = g.world, B = W.boxes;
+    const corners = (b) => [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([u, v]) => {
+      const lx = u * b.hx, lz = v * b.hz;
+      return [b.cx + b.cos * lx + b.sin * lz, b.cz - b.sin * lx + b.cos * lz];
+    });
+    const depth = (a, b) => {
+      let d = Infinity;
+      const ca = corners(a), cb = corners(b);
+      for (const [ax, az] of [[a.cos, -a.sin], [a.sin, a.cos], [b.cos, -b.sin], [b.sin, b.cos]]) {
+        const pa = ca.map(([x, z]) => x * ax + z * az), pb = cb.map(([x, z]) => x * ax + z * az);
+        d = Math.min(d, Math.min(Math.max(...pa), Math.max(...pb)) - Math.max(Math.min(...pa), Math.min(...pb)));
+        if (d <= 0) return 0;
+      }
+      return d;
+    };
+    const floors = B.filter((b) => b.floor);
+    const floorAt = (x, z) => floors.reduce((y, f) => (x >= f.minX && x <= f.maxX && z >= f.minZ && z <= f.maxZ ? Math.max(y, f.top) : y), 0);
+    const props = B.filter((b) => b.prop);
+    let overlaps = 0, outside = 0, unlevel = 0;
+    const eg = [];
+    for (const a of props) {
+      if (Math.max(Math.abs(a.minX), Math.abs(a.maxX), Math.abs(a.minZ), Math.abs(a.maxZ)) > W.bounds) outside++;
+      const fs = corners(a).map(([x, z]) => floorAt(x, z));
+      if (Math.max(...fs) - Math.min(...fs) > 0.01) unlevel++;
+      for (const b of B) {
+        if (b === a || b.floor || b.heap || b.top <= 0.55 || b.prop === a.prop) continue;
+        if (a.maxX < b.minX || b.maxX < a.minX || a.maxZ < b.minZ || b.maxZ < a.minZ) continue;
+        const d = depth(a, b);
+        if (d > 0.05) { overlaps++; if (eg.length < 4) eg.push([+a.cx.toFixed(1), +a.cz.toFixed(1), +d.toFixed(2)]); }
+      }
+    }
+    // what is drawn: each prop mesh's lowest point over the floor under it,
+    // grouped by shape and finish, so a copy on a pavement is held to what
+    // the same shape does in the road
+    const lift = new Map();
+    for (const s of W.solids) {
+      const id = s.userData.prop;
+      if (!id) continue;
+      const e = s.matrixWorld.elements, p = s.geometry.attributes.position;
+      let lo = Infinity, sx = 0, sz = 0;
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+        lo = Math.min(lo, e[1] * x + e[5] * y + e[9] * z + e[13]);
+        sx += e[0] * x + e[4] * y + e[8] * z + e[12]; sz += e[2] * x + e[6] * y + e[10] * z + e[14];
+      }
+      sx /= p.count; sz /= p.count;
+      const key = s.geometry.id + '/' + s.material.id;
+      if (!lift.has(key)) lift.set(key, []);
+      lift.get(key).push({ off: lo - floorAt(sx, sz), on: floorAt(sx, sz) > 0.1 });
+    }
+    let spread = 0, onFloor = 0, worstKey = null;
+    for (const [key, list] of lift) {
+      const offs = list.map((q) => q.off);
+      const s = Math.max(...offs) - Math.min(...offs);
+      onFloor += list.filter((q) => q.on).length;
+      if (s > spread) { spread = s; worstKey = key; }
+    }
+    return {
+      props: new Set(props.map((b) => b.prop)).size, overlaps, outside, unlevel,
+      spread: +spread.toFixed(3), onFloor, shapes: lift.size, eg,
+    };
+  });
+  expect(r.props > 60, `only ${r.props} props settled`);
+  expect(r.overlaps === 0, `${r.overlaps} prop colliders stand inside another collider: ${JSON.stringify(r.eg)}`);
+  expect(r.outside === 0, `${r.outside} prop colliders past the edge of the sector`);
+  expect(r.unlevel === 0, `${r.unlevel} props straddle two floor levels`);
+  expect(r.onFloor > 10, `only ${r.onFloor} prop meshes stand on a floor, so the seating is barely measured`);
+  expect(r.spread < 0.03, `a prop shape stands ${r.spread} m differently on one floor than another — sunk or floating`);
+  return r;
+});
+
 check('what is set into the street lies flush on it, road or pavement', async (page) => {
   // Manhole covers and gully grates in the road, blister paving on the
   // pavement at each crossing, yellow lines and boxes: all decoration, laid a
@@ -2449,16 +2643,24 @@ const CITY_FINGERPRINT = () => {
     const n = Math.round(v * 1000) | 0;
     for (let b = 0; b < 32; b += 8) { h ^= (n >>> b) & 0xff; h = Math.imul(h, 16777619); }
   };
-  for (const b of g.world.boxes) {
-    eat(b.minX); eat(b.minZ); eat(b.maxX); eat(b.maxZ);
-    eat(b.top); eat(b.cx); eat(b.cz); eat(b.hx); eat(b.hz); eat(b.cos); eat(b.sin);
-  }
-  for (const p of g.perches) { eat(p.x); eat(p.y); eat(p.z); }
+  const print = (boxes) => {
+    h = 2166136261;
+    for (const b of boxes) {
+      eat(b.minX); eat(b.minZ); eat(b.maxX); eat(b.maxZ);
+      eat(b.top); eat(b.cx); eat(b.cz); eat(b.hx); eat(b.hz); eat(b.cos); eat(b.sin);
+    }
+    for (const p of g.perches) { eat(p.x); eat(p.y); eat(p.z); }
+    return (h >>> 0).toString(16);
+  };
+  const placed = g.world.boxes.filter((b) => !b.heap);
   return {
     boxes: g.world.boxes.length,
     solids: g.world.solids.length,
     perches: g.perches.length,
-    fp: (h >>> 0).toString(16),
+    fp: print(g.world.boxes),
+    // everything placed before the rubble was given colliders
+    placed: placed.length,
+    fpPlaced: print(placed),
   };
 };
 
@@ -2704,6 +2906,9 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
       if (b.floor || b.top < 0.8 || b.top > 1.7) continue;
       const cx = b.cx ?? (b.minX + b.maxX) / 2, cz = b.cz ?? (b.minZ + b.maxZ) / 2;
       if (Math.abs(W.groundHeight(cx, cz, 0.42, 99) - b.top) > 0.05) continue;
+      // one deck per place: the fountain's rim is sixteen staves, first in
+      // the list, and eight of them were all this sampled
+      if (out.some((o) => Math.hypot(o.at[0] - cx, o.at[1] - cz) < 4)) continue;
       // a start on open ground, with a climbable face between it and the deck
       let start = null;
       const R = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 2 + 3.5;
@@ -2736,7 +2941,7 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
         g.step(1 / 30);
         if (upAt === null && e.pos.y > b.top - 0.1) upAt = +t.toFixed(1);
       }
-      out.push({ top: +b.top.toFixed(2), upAt, stayed: Math.abs(e.pos.y - b.top) < 0.1 });
+      out.push({ top: +b.top.toFixed(2), upAt, stayed: Math.abs(e.pos.y - b.top) < 0.1, at: [cx, cz] });
     }
     return { decks: out.length, up: out.filter((o) => o.upAt !== null).length,
       stayed: out.filter((o) => o.stayed).length, slowest: Math.max(...out.map((o) => o.upAt ?? 99)) };
@@ -3200,10 +3405,28 @@ check('a seed still lays out the city it did', async (page) => {
   // reproduces the old value exactly on all three seeds, and the perches are
   // untouched. Before it: 378/420/12 c8f04a70, 325/361/10 482fa9b1,
   // 374/422/12 30770211.
+  //
+  // And once more, for the rubble: every heap and fallen slab became a stack
+  // of colliders cut to its shape, reported from play as rubble you walked
+  // straight through. Like the floors they are appended after everything
+  // else, and they carry a `heap` flag, so the old fingerprint is still
+  // checked — `placed` is every box but the heaps, and it has to come out
+  // exactly what the whole city did before them: 425 cd6eb736, 371 68d89f10,
+  // 417 f7c4a2df.
+  //
+  // And once more, for the props: every container, wreck, barrier, drum and
+  // lamp is settled clear, level and onto its floor or not put down, and the
+  // plaza's fountain became a basin. The stream is untouched — a dropped
+  // prop is built and taken back out — but the props move, and the perches
+  // are placed round them, so the perches move too; rubble on a perch's
+  // deck or stairs is cleared rather than registered. Compared collider by
+  // collider before and after: every building and every floor is identical
+  // on all three seeds. Before it: 901/635/12 f77a4c34 (425 cd6eb736),
+  // 880/580/10 faf144f5 (371 68d89f10), 923/626/12 7271e677 (417 f7c4a2df).
   const want = {
-    1: { boxes: 425, solids: 467, perches: 12, fp: 'cd6eb736' },
-    7: { boxes: 371, solids: 407, perches: 10, fp: '68d89f10' },
-    20260101: { boxes: 417, solids: 465, perches: 12, fp: 'f7c4a2df' },
+    1: { boxes: 801, solids: 580, perches: 13, fp: '88473ce5', placed: 429, fpPlaced: '5d9b6755' },
+    7: { boxes: 834, solids: 543, perches: 11, fp: 'dcd3d7d2', placed: 376, fpPlaced: 'd57389ac' },
+    20260101: { boxes: 877, solids: 573, perches: 10, fp: '4f7b5ad', placed: 395, fpPlaced: '4f540362' },
   };
 
   const got = {};
@@ -3218,6 +3441,8 @@ check('a seed still lays out the city it did', async (page) => {
     expect(r.boxes === w.boxes && r.perches === w.perches && r.solids === w.solids,
       `seed ${seed} lays out ${r.boxes}/${r.solids}/${r.perches} boxes/solids/perches, ` +
       `not ${w.boxes}/${w.solids}/${w.perches}`);
+    expect(r.placed === w.placed && r.fpPlaced === w.fpPlaced,
+      `seed ${seed}'s city moved under the rubble: ${r.placed} ${r.fpPlaced}, not ${w.placed} ${w.fpPlaced}`);
     expect(r.fp === w.fp,
       `seed ${seed} has the same number of colliders in different places ` +
       `(${r.fp}, not ${w.fp})`);

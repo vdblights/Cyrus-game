@@ -213,6 +213,29 @@ export class World {
   }
 
   /**
+   * True when a body of radius `pad` at a point would touch any solid as
+   * tall as `minTop` — the footprint, not the AABB round it.
+   *
+   * `occupied` is for placing things, where a turned prop claiming its
+   * corners' worth of extra street is the safe direction. Steering is the
+   * other case: avoidance probed with it, so a hostile two metres from a
+   * container at a slant read the empty corner of its AABB as the way being
+   * blocked, turned aside, found the way open again, and stood dithering a
+   * metre from anything.
+   */
+  blocked(x, z, pad = 0, minTop = 1.2) {
+    for (const b of this.boxes) {
+      if (b.top < minTop) continue;
+      if (x <= b.minX - pad || x >= b.maxX + pad || z <= b.minZ - pad || z >= b.maxZ + pad) continue;
+      const rx = x - b.cx, rz = z - b.cz;
+      const lx = b.cos * rx - b.sin * rz, lz = b.sin * rx + b.cos * rz;
+      const dx = Math.max(0, Math.abs(lx) - b.hx), dz = Math.max(0, Math.abs(lz) - b.hz);
+      if (dx * dx + dz * dz < pad * pad) return true;
+    }
+    return false;
+  }
+
+  /**
    * Segment-vs-box test over the whole box list (three-slab method). Boxes
    * run from the ground to `top`, so a sight line clears low cover by
    * passing over it.

@@ -254,6 +254,159 @@ function registerFloors(world, slabs) {
 }
 
 /**
+ * Give every heap of rubble and every fallen slab a collider shaped like it.
+ *
+ * They were drawn and registered nowhere — or, for the leaning slabs, in the
+ * raycast list and not the box list — so a mound a metre and a half high was
+ * something you walked straight through, and the piles stopped no bullets
+ * either. Reported from play as objects you can clip right through.
+ *
+ * A box with the heap's height and footprint would make every mound a flat
+ * topped pillar you stood on in mid-air over its slopes. So each one is cut
+ * into tiers a third of a metre deep, and each tier is the rectangle that
+ * best fits the heap's own cross-section from the middle of that tier to its
+ * top (which, for a mound, is just the middle): a mound
+ * comes out a stepped cone you scramble up, a fallen slab a ramp of steps.
+ * The rectangle is the smallest of sixteen turns round the section's hull,
+ * shrunk to the hull's own area, so a round section claims no more ground
+ * than it covers and a flat one claims all of it.
+ *
+ * Registered after the floors and after everything else is placed, the same
+ * way and for the same reason: nothing placed earlier saw them, so every
+ * other collider in a seed is where it was, and only the boxes appended here
+ * are new. The piles join the raycast list too; the slabs were already in it.
+ */
+function registerHeaps(world, heaps) {
+  const TIER = 0.33;
+  for (const m of heaps) {
+    m.updateMatrixWorld(true);
+    const geo = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry;
+    const p = geo.attributes.position;
+    const v = new THREE.Vector3();
+    const pts = [];
+    for (let i = 0; i < p.count; i++) pts.push(v.fromBufferAttribute(p, i).applyMatrix4(m.matrixWorld).toArray());
+    const cx = m.position.x, cz = m.position.z;
+    const base = world.groundHeight(cx, cz, 0.12, 0.5);
+    const top = Math.max(...pts.map((q) => q[1]));
+    if (top - base < 0.15) continue;
+    const tiers = Math.min(6, Math.max(1, Math.round((top - base) / TIER)));
+    for (let t = 1; t <= tiers; t++) {
+      // Where the surface crosses the middle of this tier, and again just
+      // under its top. A mound narrows as it rises, so the upper cut adds
+      // nothing to it; a fallen slab leans, and its upper cut is where the
+      // overhang is — the middle alone left 0.6 m of it at head height with
+      // nothing under it.
+      const cut = [];
+      for (const at of [t - 0.5, t - 0.05]) {
+        const level = base + (at / tiers) * (top - base);
+        for (let k = 0; k + 2 < pts.length; k += 3) {
+          for (let e = 0; e < 3; e++) {
+            const a = pts[k + e], b = pts[k + (e + 1) % 3];
+            if ((a[1] - level) * (b[1] - level) > 0 || a[1] === b[1]) continue;
+            const f = (level - a[1]) / (b[1] - a[1]);
+            cut.push([a[0] + f * (b[0] - a[0]), a[2] + f * (b[2] - a[2])]);
+          }
+        }
+      }
+      if (cut.length < 3) continue;
+      const hull = convexHull(cut);
+      let area = 0;
+      for (let i = 0; i < hull.length; i++) {
+        const [x0, z0] = hull[i], [x1, z1] = hull[(i + 1) % hull.length];
+        area += x0 * z1 - x1 * z0;
+      }
+      area = Math.abs(area) / 2;
+      // the tightest of sixteen turns
+      let best = null;
+      for (let j = 0; j < 16; j++) {
+        const rot = (j / 16) * (Math.PI / 2), c = Math.cos(rot), s = Math.sin(rot);
+        let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+        for (const [x, z] of hull) {
+          const u = c * x + s * z, w = -s * x + c * z;
+          a0 = Math.min(a0, u); a1 = Math.max(a1, u); b0 = Math.min(b0, w); b1 = Math.max(b1, w);
+        }
+        const rect = (a1 - a0) * (b1 - b0);
+        if (!best || rect < best.rect) best = { rect, rot, c, s, a0, a1, b0, b1 };
+      }
+      const shrink = Math.sqrt(Math.min(1, area / Math.max(best.rect, 1e-6)));
+      const hu = ((best.a1 - best.a0) / 2) * shrink, hw = ((best.b1 - best.b0) / 2) * shrink;
+      if (hu < 0.08 || hw < 0.08) continue;
+      const mu = (best.a0 + best.a1) / 2, mw = (best.b0 + best.b1) / 2;
+      // back from the turned frame; `addRotatedBox` turns by -rot in its own convention
+      const wx = best.c * mu - best.s * mw, wz = best.s * mu + best.c * mw;
+      world.addRotatedBox(wx, wz, hu, hw, -best.rot, base + (t / tiers) * (top - base));
+      world.boxes[world.boxes.length - 1].heap = true;     // so the layout check can see past them
+    }
+    if (!world.solids.includes(m)) world.solids.push(m);
+  }
+}
+
+/** What a prop does not need to be clear of: a kerb, a floor, a step. */
+const STEP_UP = 0.55;
+
+/**
+ * Where `settle` tries a prop, nearest first: every half-metre offset out to
+ * `reach`, in a fixed order, so a seed settles its props the same way twice.
+ */
+const OFFSETS = new Map();
+function settleOffsets(reach) {
+  if (!OFFSETS.has(reach)) {
+    const out = [];
+    const n = Math.floor(reach / 0.5);
+    for (let i = -n; i <= n; i++) {
+      for (let j = -n; j <= n; j++) {
+        const d = Math.hypot(i, j) * 0.5;
+        if (d <= reach) out.push([i * 0.5, j * 0.5, d, Math.atan2(j, i)]);
+      }
+    }
+    out.sort((a, b) => a[2] - b[2] || a[3] - b[3]);
+    OFFSETS.set(reach, out.map(([x, z]) => [x, z]));
+  }
+  return OFFSETS.get(reach);
+}
+
+/** A box's footprint corners in the world, moved by (dx, dz) and grown by `grow`. */
+function footCorners(b, dx, dz, grow = 0) {
+  const hx = b.hx + grow, hz = b.hz + grow, out = [];
+  for (const [u, v] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
+    const lx = u * hx, lz = v * hz;
+    // the inverse of the box's own frame: lx = c·rx − s·rz, lz = s·rx + c·rz
+    out.push([b.cx + dx + b.cos * lx + b.sin * lz, b.cz + dz - b.sin * lx + b.cos * lz]);
+  }
+  return out;
+}
+
+/** Whether two turned footprints come within `gap` of each other (separating axes). */
+function footOverlap(a, dx, dz, b, gap) {
+  const ca = footCorners(a, dx, dz), cb = footCorners(b, 0, 0);
+  for (const [ax, az] of [[a.cos, -a.sin], [a.sin, a.cos], [b.cos, -b.sin], [b.sin, b.cos]]) {
+    let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (const [x, z] of ca) { const p = x * ax + z * az; a0 = Math.min(a0, p); a1 = Math.max(a1, p); }
+    for (const [x, z] of cb) { const p = x * ax + z * az; b0 = Math.min(b0, p); b1 = Math.max(b1, p); }
+    if (a1 + gap <= b0 || b1 + gap <= a0) return false;
+  }
+  return true;
+}
+
+/** Andrew's monotone chain, for a heap's cross-section. */
+function convexHull(points) {
+  const pts = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const q of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const q = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  upper.pop(); lower.pop();
+  return lower.concat(upper);
+}
+
+/**
  * UV options for a wall wearing a facade: floors and window bays snapped to
  * the wall's own extent so nothing is cut at a corner, the tile slid along by
  * a whole bay or floor so two buildings do not show the same window in the
@@ -1442,6 +1595,10 @@ export function buildCity(scene, painted = null) {
   // rubble lot's broken floor, a ruin's courtyard — recorded as it is laid
   // and registered once the rest of the city is (see `registerFloors`).
   const floors = [];
+  // every heap of rubble and fallen slab, given a collider once the city is placed
+  const heaps = [];
+  // how many props `settle` has stood up, so each one's colliders carry an id
+  let settled = 0;
 
   // sidewalks: a raised concrete apron around every lot
   const walkMat = concreteMat;
@@ -1492,29 +1649,38 @@ export function buildCity(scene, painted = null) {
       const cx = lotCenter(i), cz = lotCenter(j);
       const half = LOT / 2 + 3;
 
+      // Each prop is rolled exactly as it always was and then settled: moved
+      // as little as it takes to stand clear and level, and lifted onto the
+      // floor it stands on — or dropped, when nowhere near will have it.
+
       // streetlight on a lot corner
       if (Math.random() < 0.55) {
-        lamps.push(streetlight(group, world, cx + half + 1.5, cz + half + 1.5, metalMat));
+        const lamp = settle(group, world, 1.5, () => streetlight(group, world, cx + half + 1.5, cz + half + 1.5, metalMat));
+        if (lamp) lamps.push({ x: lamp.made.x + lamp.dx, y: lamp.made.y + lamp.y, z: lamp.made.z + lamp.dz });
       }
       // wrecked vehicles along the street running +Z of this lot
       if (Math.random() < 0.8) {
-        const along = randRange(-LOT / 2, LOT / 2);
-        wreckedCar(group, world, cx + along, cz + half + randRange(2, 5), Math.random() < 0.5 ? 0 : Math.PI, metalMat, glassMat);
+        settle(group, world, 3, () => {
+          const along = randRange(-LOT / 2, LOT / 2);
+          wreckedCar(group, world, cx + along, cz + half + randRange(2, 5), Math.random() < 0.5 ? 0 : Math.PI, metalMat, glassMat);
+        });
       }
       if (Math.random() < 0.6) {
-        const along = randRange(-LOT / 2, LOT / 2);
-        wreckedCar(group, world, cx + half + randRange(2, 5), cz + along, Math.PI / 2 + randRange(-0.35, 0.35), metalMat, glassMat);
+        settle(group, world, 3, () => {
+          const along = randRange(-LOT / 2, LOT / 2);
+          wreckedCar(group, world, cx + half + randRange(2, 5), cz + along, Math.PI / 2 + randRange(-0.35, 0.35), metalMat, glassMat);
+        });
       }
       // barricades and containers block some intersections
       if (Math.random() < 0.30) {
-        barricade(group, world, cx + half + randRange(-3, 3), cz + half + randRange(-3, 3), Math.random() * Math.PI, darkConcrete);
+        settle(group, world, 3, () => barricade(group, world, cx + half + randRange(-3, 3), cz + half + randRange(-3, 3), Math.random() * Math.PI, darkConcrete), true);
       }
       if (Math.random() < 0.16) {
-        container(group, world, cx + half + randRange(-2, 2), cz + half + randRange(-2, 2), Math.random() < 0.5 ? 0 : Math.PI / 2);
+        settle(group, world, 3, () => container(group, world, cx + half + randRange(-2, 2), cz + half + randRange(-2, 2), Math.random() < 0.5 ? 0 : Math.PI / 2));
       }
       if (Math.random() < 0.35) {
-        const b = fireBarrel(group, world, cx + half + randRange(-4, 4), cz + half + randRange(-4, 4));
-        fireBarrels.push(b);
+        const b = settle(group, world, 3, () => fireBarrel(group, world, cx + half + randRange(-4, 4), cz + half + randRange(-4, 4)));
+        if (b) fireBarrels.push(b.made);
       }
       rubblePile(group, cx + randRange(-half, half), cz + half + randRange(1, 5), darkConcrete);
     }
@@ -1570,6 +1736,7 @@ export function buildCity(scene, painted = null) {
   // Vertical ground: raised slabs and stacked containers, each reachable by
   // a stair run of half-metre steps so they can be walked up without jumping.
   const perches = [];
+  const sites = [];                             // each perch's deck and stair run
   const edgeLimit = (GRID * BLOCK) / 2 - 8;    // keep clear of the perimeter
   for (let i = 0; i < GRID; i++) {
     for (let j = 0; j < GRID; j++) {
@@ -1593,11 +1760,16 @@ export function buildCity(scene, painted = null) {
           const zLo = fromSouth ? pz - sd / 2 : pz - sd / 2 - runLen;
           const zHi = fromSouth ? pz + sd / 2 + runLen : pz + sd / 2;
           if (!areaClear(world, px - sw / 2 - 1, zLo - 1, px + sw / 2 + 1, zHi + 1)) continue;
+          sites.push([px - sw / 2 - 1, zLo - 1, px + sw / 2 + 1, zHi + 1]);
           terrace(group, world, px, pz, sw, sd, h, fromSouth, darkConcrete, perches);
         } else {
           const rot = Math.random() < 0.5 ? 0 : Math.PI / 2;
           const halfW = rot === 0 ? 1.6 : 3.4, halfD = rot === 0 ? 3.4 : 1.6;
           if (!areaClear(world, px - halfW - 8, pz - halfD - 8, px + halfW + 8, pz + halfD + 8)) continue;
+          // the deck and its stair run, which climbs off its +x side or its +z
+          const run = 2.6 * 2 * 1.9 + 1;
+          sites.push([px - halfW - 1, pz - halfD - 1,
+            px + halfW + 1 + (rot === 0 ? run : 0), pz + halfD + 1 + (rot === 0 ? 0 : run)]);
           containerStack(group, world, px, pz, rot, perches);
         }
         break;
@@ -1605,7 +1777,26 @@ export function buildCity(scene, painted = null) {
     }
   }
 
+  // Rubble is not in the box list while the perches go down — it is
+  // registered last — so a perch went down in a rubble lot as readily as
+  // anywhere, with a fallen slab lying across its stairs. The perch stays
+  // where it was placed and the rubble on its deck and its run is cleared
+  // away, the way whoever built it would have. The heaps were already built,
+  // so taking them out costs the stream nothing.
+  for (let k = heaps.length - 1; k >= 0; k--) {
+    const m = heaps[k];
+    m.updateMatrixWorld(true);
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    const b = m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld);
+    if (!sites.some(([x0, z0, x1, z1]) => b.max.x > x0 && b.min.x < x1 && b.max.z > z0 && b.min.z < z1)) continue;
+    m.removeFromParent();
+    heaps.splice(k, 1);
+    const i = world.solids.indexOf(m);
+    if (i >= 0) world.solids.splice(i, 1);
+  }
+
   registerFloors(world, floors);
+  registerHeaps(world, heaps);
 
   // Last, so it sees every collider and every floor it might grow against —
   // and inside `decor`, so where it grows costs the layout nothing.
@@ -1634,6 +1825,7 @@ export function buildCity(scene, painted = null) {
     }
     return true;
   }
+
 
   // ------------------------------------------------------------- builders
   function buildTower(g, w, cx, cz, facadeMats, conc, metal, glass) {
@@ -1760,7 +1952,7 @@ export function buildCity(scene, painted = null) {
     g.add(slab);
     floors.push(slab);
     for (let k = 0; k < 5; k++) rubblePile(g, cx + randRange(-8, 8), cz + randRange(-8, 8), conc);
-    if (Math.random() < 0.5) container(g, w, cx + randRange(-6, 6), cz + randRange(-6, 6), Math.random() * Math.PI);
+    if (Math.random() < 0.5) settle(g, w, 4, () => container(g, w, cx + randRange(-6, 6), cz + randRange(-6, 6), Math.random() * Math.PI));
   }
 
   function buildRubbleLot(g, w, cx, cz, conc) {
@@ -1783,8 +1975,9 @@ export function buildCity(scene, painted = null) {
       m.userData.tint = tintAt(m.position.x, m.position.z, 7, 0.12);
       g.add(m);
       w.solids.push(m);
+      heaps.push(m);
     }
-    if (Math.random() < 0.6) container(g, w, cx + randRange(-7, 7), cz + randRange(-7, 7), Math.random() * Math.PI);
+    if (Math.random() < 0.6) settle(g, w, 4, () => container(g, w, cx + randRange(-7, 7), cz + randRange(-7, 7), Math.random() * Math.PI));
   }
 
   function buildPlaza(g, w, cx, cz, conc, metal) {
@@ -1796,25 +1989,40 @@ export function buildCity(scene, painted = null) {
     floors.push(slab);
 
     // dry fountain in the middle: cover to fight from
-    const ring = new THREE.Mesh(cylGeo(3.2, 3.4, 1, TILE.concrete, 16, true), conc);
-    ring.position.set(cx, 0.5, cz);
-    ring.material = conc;
+    // It is a basin: a battered rim a quarter metre wide round a dry floor at
+    // plaza level, and a plinth in the middle. It used to be an open tube
+    // with a 6.8 m square deck at the rim's height for a collider, so you
+    // stood on air over the basin and on air past the rim at every corner of
+    // the square, and walked through the plinth from the deck.
+    spend(2 * UUID_COST);                         // what the open tube cost
+    const ring = reserve(() => new THREE.Mesh(latheGeo(
+      [[3.4, 0], [3.2, 1.0], [2.95, 1.0], [2.95, 0.25]], 24, TILE.concrete).rotateX(-Math.PI / 2), conc));   // a lathe turns about Z
+    ring.position.set(cx, 0, cz);
     ring.castShadow = ring.receiveShadow = true;
     g.add(ring);
-    w.addBox(cx - 3.4, cz - 3.4, cx + 3.4, cz + 3.4, 1);
     w.solids.push(ring);
+    // the rim, as sixteen staves round the circle: the corner of each stands
+    // 6 cm past the curve at worst, so a body is stopped where the rim is
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2, r = 3.17;
+      const half = r * Math.tan(Math.PI / 16) + 0.03;
+      w.addRotatedBox(cx + Math.cos(a) * r, cz + Math.sin(a) * r, 0.23, half, -a, 1);   // thin across the radius
+    }
 
     const plinth = new THREE.Mesh(boxGeo(1.4, 2.2, 1.4, TILE.concrete), conc);
     plinth.position.set(cx, 1.1, cz);
     plinth.castShadow = true;
     g.add(plinth);
+    w.addSolid(plinth, 0.7, 0.7, 2.2);
 
     // sandbagged firing positions around the plaza
     for (let k = 0; k < 4; k++) {
       const a = (k / 4) * Math.PI * 2 + 0.4;
-      barricade(g, w, cx + Math.cos(a) * 8, cz + Math.sin(a) * 8, a, conc);
+      settle(g, w, 2, () => barricade(g, w, cx + Math.cos(a) * 8, cz + Math.sin(a) * 8, a, conc), true);
     }
-    for (let k = 0; k < 3; k++) container(g, w, cx + randRange(-9, 9), cz + randRange(-9, 9), Math.random() * Math.PI);
+    for (let k = 0; k < 3; k++) {
+      settle(g, w, 6, () => container(g, w, cx + randRange(-9, 9), cz + randRange(-9, 9), Math.random() * Math.PI));
+    }
   }
 
   /**
@@ -2534,6 +2742,102 @@ export function buildCity(scene, painted = null) {
     }
   }
 
+  /**
+   * Build a free-standing prop, then find it somewhere to stand.
+   *
+   * Every prop used to go down exactly where its rolls put it, on the
+   * street's own level, with nothing asked of where that was: a container
+   * through the plaza's fountain on every pinned seed, cars and barriers in
+   * one another, every prop rolled past the last lot half inside the
+   * perimeter wall (the kerb there is a metre from it, so that street does
+   * not exist), and anything on a pavement, the plaza or a lot's slab sunk
+   * into it by the slab's height.
+   *
+   * So the prop is built where it was rolled — its rolls and its `spend`
+   * exactly as they always were — and then the colliders it registered are
+   * read back as its footprint, and the nearest offset is found, on a half
+   * metre grid out to `reach`, where that footprint is inside the sector,
+   * clear of every collider already standing, and level: one floor height
+   * under every corner, so nothing straddles a kerb. Everything it built is
+   * moved there and lifted onto that floor. If there is nowhere, it is taken
+   * back out — after its rolls were spent, so the stream never knows.
+   *
+   * A prop made of separate pieces — a barricade's row of slabs, one mesh
+   * and one collider each — passes `parts`, and each piece is asked for its
+   * own level and lifted onto its own floor, so a row can step off a kerb.
+   *
+   * @returns {{ made: *, dx: number, dz: number, y: number } | null}
+   */
+  function settle(g, w, reach, build, parts = false) {
+    const c0 = g.children.length, b0 = w.boxes.length, s0 = w.solids.length;
+    const made = build();
+    const mine = w.boxes.slice(b0);
+    const spot = findSpot(w, b0, mine, reach, parts);
+    if (!spot) {
+      for (const o of g.children.slice(c0)) g.remove(o);
+      w.boxes.length = b0;
+      w.solids.length = s0;
+      return null;
+    }
+    const { dx, dz, y, ys } = spot;
+    const id = ++settled;
+    g.children.slice(c0).forEach((o, i) => {
+      o.position.x += dx; o.position.y += parts ? ys[i] : y; o.position.z += dz;
+      o.traverse((c) => { c.userData.prop = id; });
+    });
+    mine.forEach((b, i) => {
+      b.cx += dx; b.minX += dx; b.maxX += dx;
+      b.cz += dz; b.minZ += dz; b.maxZ += dz;
+      b.top += parts ? ys[i] : y;
+      b.prop = id;                                   // which prop, for a check that asks
+    });
+    return { made, dx, dz, y };
+  }
+
+  /** The top of the highest slab drawn under (x, z), or the street's 0. */
+  function floorAt(x, z) {
+    let y = 0;
+    for (const f of floors) {
+      const { width, height, depth } = f.geometry.parameters, p = f.position;
+      if (Math.abs(x - p.x) <= width / 2 && Math.abs(z - p.z) <= depth / 2) y = Math.max(y, p.y + height / 2);
+    }
+    return y;
+  }
+
+  function findSpot(w, b0, mine, reach, parts) {
+    const lim = w.bounds - 0.3, GAP = 0.2;
+    for (const [dx, dz] of settleOffsets(reach)) {
+      let y = null, ok = true;
+      const ys = [];
+      for (const m of mine) {
+        if (parts) y = null;
+        if (Math.abs(m.minX + dx) > lim || Math.abs(m.maxX + dx) > lim
+          || Math.abs(m.minZ + dz) > lim || Math.abs(m.maxZ + dz) > lim) { ok = false; break; }
+        // level: the same floor under the middle and every corner, with a
+        // hand's breadth to spare, so nothing is left teetering on a kerb
+        const cs = footCorners(m, dx, dz, 0.05);
+        for (const [x, z] of [[m.cx + dx, m.cz + dz], ...cs]) {
+          const f = floorAt(x, z);
+          if (y === null) y = f;
+          else if (Math.abs(f - y) > 0.01) { ok = false; break; }
+        }
+        if (!ok) break;
+        ys.push(y ?? 0);
+        // clear of everything standing, by a hand's width
+        for (let k = 0; k < b0 && ok; k++) {
+          const b = w.boxes[k];
+          if (b.top <= STEP_UP || b.floor) continue;
+          if (m.maxX + dx < b.minX - GAP || m.minX + dx > b.maxX + GAP
+            || m.maxZ + dz < b.minZ - GAP || m.minZ + dz > b.maxZ + GAP) continue;
+          if (footOverlap(m, dx, dz, b, GAP)) ok = false;
+        }
+        if (!ok) break;
+      }
+      if (ok) return { dx, dz, y: y ?? 0, ys };
+    }
+    return null;
+  }
+
   function container(g, w, x, z, rot) {
     const cw = 2.5, ch = 2.6, cd = 6.0;
     spend(2 * UUID_COST);                         // what the box used to cost
@@ -2580,5 +2884,6 @@ export function buildCity(scene, painted = null) {
     m.scale.y = randRange(0.35, 0.7);
     m.receiveShadow = m.castShadow = true;
     g.add(m);
+    heaps.push(m);
   }
 }

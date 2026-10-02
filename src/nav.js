@@ -126,7 +126,9 @@ export class NavGrid {
       }
     };
     for (const b of this.world.boxes) {
-      if (b.top <= STEP) continue;
+      // A heap of rubble is climbed, not walked round: every tier of it rises
+      // less than a step, so it is ground here, the way a kerb is.
+      if (b.top <= STEP || b.heap) continue;
       // cells the solid overlaps: floor of each edge, since cell i covers
       // [origin + i*cell, origin + (i+1)*cell)
       fill(

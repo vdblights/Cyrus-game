@@ -85,7 +85,12 @@ These each cost real debugging time. Changing them needs a reason.
   `minX..maxZ`. The min/max is the enclosing AABB, kept as a cheap reject and
   for the readers that only want a bound — `occupied`, where every caller is
   placing something and wants clearance rather than contact, and the nav bake,
-  where claiming slightly too much is the safe direction. `resolve`,
+  where claiming slightly too much is the safe direction. Steering is not one
+  of those: avoidance probed with `occupied` until settled props put a
+  slanted container on the plaza, and a scavenger two metres off it read the
+  empty corner of its AABB as the way being blocked and dithered in place
+  (`a hostile follows you onto a car roof`, 7 of 8). It asks `blocked`,
+  which tests the footprint. `resolve`,
   `groundHeight` and `bounceSphere` transform into the box's own frame, where
   every box is axis-aligned and the transform is the identity for the ones
   that already are, so there is one code path and not two. `lineOfSight` is
@@ -163,6 +168,73 @@ These each cost real debugging time. Changing them needs a reason.
   a perch's pavement before its stairs and walked into its deck. What still
   assumes y=0 is wrong now: an effect that lands, a pickup, an objective
   ring and a test that says "on the street" all ask the floor instead.
+- **Anything you can see at body height is something you can bump into.**
+  Every heap of rubble (`rubblePile`) and every fallen slab in a rubble lot
+  was drawn and registered nowhere — the slabs were in the raycast list and
+  not the box list, the heaps in neither — so on seed 1 about 660 m² of the
+  city stood between 0.3 and 2 m off the street with nothing under it:
+  reported from play as rubble you clip right through. `registerHeaps` in
+  `city.js` gives each one a stack of colliders cut to its own shape: tiers
+  a third of a metre deep, each the tightest of sixteen turned rectangles
+  round the heap's cross-section at that height, shrunk to the section's
+  own area. The section is the hull of two cuts, at the tier's middle and
+  just under its top: a mound narrows as it rises, so the upper cut adds
+  nothing to it, and a fallen slab leans, so its upper cut is where the
+  overhang is. A box the size of the heap would have been a pillar you stood
+  on in mid-air over its slopes; tiers under `STEP_HEIGHT` make it a mound
+  you scramble up. Heaps are registered after the floors, appended to
+  everything else, and flagged `heap`, so the layout check still measures
+  the old fingerprint over every other box — 476 boxes more on seed 1, and
+  the game step did not move (0.2 ms median either way). `rubble stops you
+  and stops a bullet, and you can climb it` audits the whole merged city
+  for facets at body height further than a body's width from any collider
+  as tall as they are, weeds excepted: 667 m² with `registerHeaps` taken
+  out, 9.5 now, which is the low rim of the heaps at ankle height. Any new
+  prop that stands off the ground has to pass that audit or be decoration
+  by the rules above.
+- **A prop stands clear, level and on its floor, or it is not put down.**
+  Containers, wrecks, barriers, drums and lamps went down exactly where
+  their rolls put them, at street level, with nothing asked of the spot: a
+  container stood through the plaza's fountain on all three pinned seeds,
+  props stood in one another, and every prop rolled past the last lot was
+  half inside the perimeter wall — the kerb there is a metre from it, so
+  the street those rolls were aiming at does not exist. Anything that
+  landed on a pavement or a slab was sunk into it. `settle` in `city.js`
+  builds a prop where it was rolled, reads back the colliders it registered
+  as its footprint, and moves the whole thing to the nearest half-metre
+  offset (out to a `reach` per kind) that is inside the sector, 20 cm clear
+  of every collider standing, and on one floor level — every corner 5 cm
+  past its edge, so nothing teeters on a kerb — then lifts it onto that
+  floor. A barricade passes `parts`, so each slab finds its own level
+  and a row can step off a kerb. If nowhere fits, everything the builder
+  added is taken back out — after its rolls and its `spend` were paid, so
+  the stream never sees the difference and every later roll gets the value
+  it always did. On seed 1 that drops 18 props, and all but one were
+  rolled into the perimeter wall. What it does change is the layout: props
+  move, and perches are placed round them, so the layout check was
+  re-measured once for it: compared collider by collider, every building
+  and every floor is identical on all three pinned seeds. The perches
+  moving exposed a hole that had always been there: a perch is placed
+  before the rubble is registered, so `areaClear` cannot see it, and seed
+  1's new layout put a container stack in a rubble lot with a fallen slab
+  across its stairs (`stairs carry the player onto a perch`, 12 of 13).
+  Rejecting perch sites near rubble cost seed 1 five of its thirteen
+  perches, because there is a heap in every street; instead the rubble on
+  a perch's deck and stair run is cleared before `registerHeaps`, which
+  costs the stream nothing because the heaps were already built. The fountain went with it: it was an open tube
+  with a solid 6.8 m square deck for a collider, so you stood on air over
+  the basin and past the rim at every corner, and walked through the
+  plinth from the deck. It is a lathed basin now, the rim sixteen staves
+  round the circle, the plinth a collider. Note that `latheGeo` turns
+  about Z; a lathe that should stand up needs `rotateX(-π/2)`, and the
+  first render of the basin lay on its side. `every prop stands clear of
+  the rest, inside the sector, and on its floor` reads all of it,
+  including what is drawn: the lowest point of each prop's own meshes over
+  its floor has to be the same for every copy of a shape. The route field skips heap boxes the way it skips a
+  kerb: every tier rises less than a step, so a hostile climbs a heap
+  rather than walking round it, and baking them as walls cut 1.9% of seed
+  1's walkable sector off into pockets — `the route field reaches the whole
+  sector` caught it at 98.1% connected.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -1146,6 +1218,22 @@ pit's own outline and a scatter of kicked-out gravel. The layout is
 untouched (all three pinned fingerprints), because everything placed is
 placed by `decor`.
 
+The rubble fix came from play, the day after the street pass, as one
+line: objects around that you can clip right through, rubble and the like.
+An audit of everything drawn at body height with no collider under it found
+exactly two things, both in the rubble — the heaps and the leaning slabs —
+and nothing else in the sector. That audit sampled each facet at its
+centre, and a second one sampling every 30 cm across each facet found two
+more it had missed: the fountain's plinth, which you walked through from
+the deck, and the top of every leaning slab, whose tiers were cut at their
+middle and left up to 0.6 m of a lean's overhang at head height. Looking
+at the fountain is what found the props standing in each other, which was
+item 1 of the list from the other side — the invariant on settling props
+has all of it. The invariant above has the fix and the
+check that keeps it. The same report said the frame rate was much improved
+from the last one, which is the first word from a real machine since the
+low-tier pass.
+
 The street pass is the seventeenth, and it was two things asked for at
 once: footsteps for the hostiles, and more on the ground. Both are in the
 invariants above. Footsteps were what the sound pass left for next time —
@@ -2038,16 +2126,7 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Seat the props that stand on a floor.** Barricades, drums, terrace
-   crates and the containers in a ruin are all built from y=0, so on a lot
-   they are sunk 0.28-0.45 m into the floor, and their colliders' tops are
-   measured from the street rather than from the slab. Nothing walks through
-   anything — the collider still matches the visible top — but a barricade
-   on the pavement stands 28 cm shorter than one in the road, and its
-   foot is buried. Lifting each by `groundHeight` at its footprint is a
-   layout change (every top moves), and the stairs that end at a terrace's
-   deck have to move with it.
-2. **Instance hostiles per archetype and part.** A hostile is twelve meshes
+1. **Instance hostiles per archetype and part.** A hostile is twelve meshes
    drawn in three passes, 36 calls each, and a full wave is most of the
    frame's calls. Every raider's left shin is the same geometry and the same
    material, so an `InstancedMesh` per archetype and part, written per frame
@@ -2056,23 +2135,23 @@ Suggested next work, in the order I would do it:
    scene graph the way the city's solids do. If frame rate is still reported
    short after the pixel caps, this and the wide cascade's 2048 map on high
    are what is left.
-3. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
+2. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-4. **Finish what the rig made possible.** Hostiles now have knees, elbows,
+3. **Finish what the rig made possible.** Hostiles now have knees, elbows,
    a waist, a neck and a weapon their hands follow, so the rest is poses,
    not plumbing: a reload visible from across the street (drop the
    magazine's hold point and let the left hand follow it), a crouch behind
    cover, a hip-fire spray from a breaker, a turn of the head toward a
    sound. Each is a weapon pose plus maybe a waist angle; the arms come
    free.
-5. **Drop the kerbs at the crossings.** The street pass did everything on
+4. **Drop the kerbs at the crossings.** The street pass did everything on
    the ground but this, because a dropped kerb is a ramp in the pavement's
    floor: `registerFloors` would register a sloped or stepped apron corner,
    every crossing's footing moves, and the layout check's fingerprints have
    to be re-measured once. The tactile paving is already where the drops
    would go.
-6. **Keep wall decoration out of jumping reach of a perch.** Decoration is
+5. **Keep wall decoration out of jumping reach of a perch.** Decoration is
    built where you cannot stand, and a terrace can put you within a jump of
    some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
    1.15 m above it, which you would fall through. Perches are placed after
@@ -2080,7 +2159,7 @@ Suggested next work, in the order I would do it:
    occupied or the decoration is skipped near a perch; `decor` costs the
    stream nothing either way. `what stands on a perch holds you up` stops at
    the deck's footprint on purpose and would need widening to cover it.
-7. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+6. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make
