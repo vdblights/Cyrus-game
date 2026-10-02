@@ -183,7 +183,11 @@ These each cost real debugging time. Changing them needs a reason.
   as tall as they are, weeds excepted: 667 m² with `registerHeaps` taken
   out, 9.5 now, which is the low rim of the heaps at ankle height. Any new
   prop that stands off the ground has to pass that audit or be decoration
-  by the rules above.
+  by the rules above. The route field skips heap boxes the way it skips a
+  kerb: every tier rises less than a step, so a hostile climbs a heap
+  rather than walking round it, and baking them as walls cut 1.9% of seed
+  1's walkable sector off into pockets — `the route field reaches the whole
+  sector` caught it at 98.1% connected.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
