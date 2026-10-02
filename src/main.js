@@ -1499,6 +1499,8 @@ class Game {
 
     this.hud.tick(elapsed);
     this.flickerFires(elapsed);
+    const wind = this.paintedMaterials?.weedMat?.userData.windTime;
+    if (wind) wind.value = this.time;
     this.perf.beforeRender();
     this.render();
     const ended = performance.now();

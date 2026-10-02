@@ -2750,6 +2750,99 @@ check('weeds grow where they can stand, and stay off the low tier', async (page)
   return r;
 });
 
+check('puddles and litter lie on the ground they are drawn on', async (page) => {
+  // Standing water and drifted paper are decoration by the flush rule: a
+  // centimetre up, walked over and shot through like the road paint. That is
+  // only true if every corner of each one finds the same level ground — a
+  // puddle half over a kerb is a sheet of glass hanging in the air. This
+  // reads every vertex of the merged water, damp ring and litter and asks
+  // the footing what is under it.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const W = g.world;
+    const out = {};
+    g.city.traverse((m) => {
+      const name = m.isMesh && m.material.userData.name;
+      if (!['water', 'damp', 'litter'].includes(name)) return;
+      const lift = { water: 0.012, damp: 0.008, litter: 0.006 }[name];
+      const row = out[name] || (out[name] = { verts: 0, off: 0, inside: 0, worst: 0 });
+      const p = m.geometry.attributes.position;
+      for (let v = 0; v < p.count; v++) {
+        const x = p.getX(v), y = p.getY(v), z = p.getZ(v);
+        const ground = W.groundHeight(x, z, 0.02, y);
+        const gap = Math.abs(y - lift - ground);
+        row.verts++;
+        row.worst = Math.max(row.worst, +gap.toFixed(3));
+        if (gap > 0.02) row.off++;
+        if (W.occupied(x, z, 0, 0.6)) row.inside++;
+      }
+    });
+    out.puddles = out.water ? out.water.verts / 15 : 0;
+    out.inSolids = W.solids.some((m) => ['water', 'damp', 'litter'].includes(m.material?.userData?.name));
+    return out;
+  });
+  // Measured on seed 1: 142 puddles and 484 sheets, every vertex on its
+  // ground. With the puddles' level test taken out, 35 water vertices stand
+  // off it, at worst 0.28 m — the height of a kerb. And it caught the first
+  // version of the litter doing exactly that: 172 corners of sheets dropped
+  // across a kerb line, which only the centre had been asked about.
+  expect(r.puddles > 60, `only ${r.puddles} puddles in the sector`);
+  for (const k of ['water', 'damp', 'litter']) {
+    expect(r[k] && r[k].off === 0, `${r[k]?.off} ${k} vertices stand off the ground (worst ${r[k]?.worst} m)`);
+    expect(r[k].inside === 0, `${r[k].inside} ${k} vertices are inside a collider`);
+  }
+  expect(!r.inSolids, 'water or litter is in the list bullets are traced against');
+  return { puddles: r.puddles, litter: r.litter.verts / 4 };
+});
+
+check('weeds move in the wind, and are still when time is', async (page) => {
+  // A still frame of weeds reads as a photograph pasted on the street. The
+  // tips sway on game time, so this draws the same view at one wind time
+  // twice and at another once, with the post chain off so its grain is not
+  // the thing being measured.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.settings.quality = 'high';
+    g.applyQuality('high');
+    const p = g.weedMeshes[0].geometry.attributes.position;
+    const x = p.getX(0), z = p.getZ(0);
+    g.player.reset(x + 1.5, z + 1.5);
+    g.player.yaw = Math.atan2(1.5, 1.5); g.player.pitch = -0.6;
+    g.step(1 / 60);
+    g.post.configure({ enabled: false, bloom: false, samples: 0, ao: false });
+    const gl = g.renderer.getContext();
+    const W = g.renderer.domElement.width, H = g.renderer.domElement.height;
+    const shot = () => {
+      g.renderer.setRenderTarget(null); g.renderer.clear(); g.renderer.render(g.scene, g.camera);
+      const b = new Uint8Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, b); return b;
+    };
+    const wind = g.paintedMaterials.weedMat.userData.windTime;
+    wind.value = 0; const a = shot();
+    wind.value = 0; const a2 = shot();
+    wind.value = 0.7; const b = shot();
+    let still = 0, moved = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      if (Math.abs(a[i] - a2[i]) > 12) still++;
+      if (Math.abs(a[i] - b[i]) > 12) moved++;
+    }
+    // and the loop is what advances it
+    const before = wind.value;
+    g.clock.getDelta = () => 1 / 30;
+    g.render = () => {};
+    g.frame();
+    return { still, moved, advanced: wind.value !== before };
+  });
+  // Measured on seed 1: 1,534 pixels move between two wind times, none
+  // between two frames at the same one; 0 with the sway taken out.
+  expect(r.still === 0, `${r.still} pixels changed with nothing moving`);
+  expect(r.moved > 300, `only ${r.moved} pixels moved between two wind times`);
+  expect(r.advanced, 'the loop does not advance the wind');
+  return r;
+});
+
 check('the frame-rate readout shows on a key, and names the GPU', async (page) => {
   // Lag is reported from machines nobody here can see, so the game carries
   // its own numbers: the key left of 1 shows them, and the pause menu has

@@ -425,6 +425,30 @@ These each cost real debugging time. Changing them needs a reason.
   `weeds grow where they can stand, and stay off the low tier` (838 inside
   a collider with the clearance test out; shown on low with the tier
   ignored) guard them.
+- **Water is a mirror for the sky and not for the sun; litter and puddles
+  lie on one level or not at all.** A puddle (`puddles` in `city.js`) is a
+  near-black fan at roughness 0.06, so it shows the environment map — the
+  sky with its cloud — sharply. At that smoothness the sun's direct
+  highlight is thousands of times brighter than the street, and the bloom
+  made it a white egg the size of the puddle, at 0.04 and still at 0.1; the
+  water material scales `directSpecular` down to a glint in its own shader
+  (`onBeforeCompile`), and only there. The damp ring under it reflects
+  almost nothing (0.12 environment, a tenth of the sun), because with any
+  sheen it caught the bright sky at a grazing angle and came out paler than
+  the asphalt it was meant to darken. Both are decoration by the flush rule,
+  a centimetre up with the road paint's polygon offset — which is only true
+  if every vertex finds the ground the centre does: the ring is tested
+  point by point and a puddle that would cross a kerb is not laid. Litter
+  (`debris`) is the same rule, and the first version only asked about each
+  sheet's centre, so 172 corners hung over kerb lines; every corner is asked
+  now. Concrete chips are plain boxes cut at `TILE.concrete` and merged into
+  the concrete batches — a chamfered chip was 44 triangles, drawn three
+  times because those batches cast shadows, and took a frame from 190k
+  triangles to 424k. The weeds sway on game time (`windTime`, advanced in
+  `frame`), with the tip moving as `v²` and the phase running across the
+  city so a gust is seen to travel. `puddles and litter lie on the ground
+  they are drawn on` and `weeds move in the wind, and are still when time
+  is` guard them.
 - **Weathering is a thresholded fractal, never a filled shape.** Every large
   stain goes through `mottle`, which used to fill ellipses into a low-res
   layer. Upscaled, they came out soft-edged and still round, and a surface
@@ -1008,6 +1032,19 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The rain-and-litter pass is the fifteenth, and it is more of the
+fourteenth, asked for by name after the screenshots of that one: what else
+says a city has been left. Standing water in the gutters and the dips —
+142 puddles on seed 1, each a mirror of the clouded sky with a damp ring —
+litter drifted against the kerbs (484 sheets of newsprint, card, white
+paper and plastic, one card in four quarters), chips of brick and concrete
+along the foot of every wall, and a breeze in the weeds. The invariant
+above has the three things that went wrong on the way: a sun glint the
+size of a puddle, a damp ring paler than the dry road, and litter hanging
+over kerbs. Measured interleaved against the commit before: low 217 →
+226 ms, high 1,654 → 1,723 under software rendering, triangles on high
+190k → 245k. The layout fingerprints are unchanged.
 
 The weather-and-weeds pass is the fourteenth, and it came from looking at
 four frames before touching anything and asking what still read as made.

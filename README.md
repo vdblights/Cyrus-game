@@ -409,6 +409,13 @@ strongest single thing that says nobody has swept here in years. Weeds are
 walked and shot through, as grass is. Low keeps the cloud, at fewer octaves,
 and drops the weeds.
 
+Rain has been and gone: puddles lie in the gutters and the dips of the road,
+dark and mirror-smooth, showing the sky above them with the sun as a small
+glint, each inside a ring of damp asphalt. Paper, card and plastic have
+drifted against the kerbs, and chips of brick and concrete lie along the
+foot of every wall. The weeds move in a breeze that runs down the street
+rather than through every tuft at once.
+
 The pixel ratio is the column that matters most. Every pass the post chain
 adds is paid per pixel, and on a 2x screen High used to draw 3.06 times the
 pixels of a 1x one — measured in software at that ratio, a frame cost 5,968

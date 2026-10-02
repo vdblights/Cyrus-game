@@ -1348,6 +1348,78 @@ export function dirtyGlass() {
  * filled, tapering curves rather than stroked lines, so the alpha edge is a
  * blade's own edge when the card is alpha-tested.
  */
+/**
+ * Litter: four sheets on one card, each a quarter of it — newsprint, a flap
+ * of cardboard, a crumpled white sheet and a faded plastic bag. Torn edges
+ * are the card's own alpha, so a sheet is the shape of something dropped
+ * rather than a rectangle. The city is a long way from its last street
+ * sweeper, and what blows into a gutter is most of what says so.
+ */
+export function litter() {
+  const tex = make('litter', () => {
+    const s = 256, h = s / 2, c = canvas(s), ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, s, s);
+    const torn = (x0, y0, inset) => {
+      // a ragged quadrilateral filling most of a quarter
+      ctx.beginPath();
+      const pts = [];
+      for (const [cx, cy] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+        pts.push([x0 + inset + cx * (h - 2 * inset) + rr(-8, 8), y0 + inset + cy * (h - 2 * inset) + rr(-8, 8)]);
+      }
+      for (let k = 0; k < 4; k++) {
+        const [ax, ay] = pts[k], [bx, by] = pts[(k + 1) % 4];
+        if (k === 0) ctx.moveTo(ax, ay);
+        for (let t = 1; t <= 6; t++) {
+          const f = t / 6;
+          ctx.lineTo(ax + (bx - ax) * f + rr(-2.5, 2.5), ay + (by - ay) * f + rr(-2.5, 2.5));
+        }
+      }
+      ctx.closePath();
+    };
+    // newsprint: grey-cream with columns of print
+    torn(0, 0, 10); ctx.fillStyle = '#b9b2a0'; ctx.fill();
+    ctx.save(); ctx.clip();
+    ctx.fillStyle = 'rgba(40,38,36,0.55)';
+    for (let col = 0; col < 3; col++) {
+      for (let y = 22; y < h - 14; y += 4) {
+        if (chance(0.12)) continue;
+        ctx.fillRect(16 + col * 34, y, rr(18, 30), 1.6);
+      }
+    }
+    ctx.fillRect(16, 12, 90, 6);                       // a headline
+    ctx.restore();
+    // cardboard: brown, with corrugation lines and a water stain
+    torn(h, 0, 8); ctx.fillStyle = '#8a6a45'; ctx.fill();
+    ctx.save(); ctx.clip();
+    ctx.strokeStyle = 'rgba(60,44,28,0.35)'; ctx.lineWidth = 1;
+    for (let y = 6; y < h; y += 5) { ctx.beginPath(); ctx.moveTo(h, y); ctx.lineTo(s, y + 3); ctx.stroke(); }
+    ctx.fillStyle = 'rgba(50,36,22,0.35)';
+    mottle(ctx, s, 3, 'rgba(50,36,22,0.35)', 10, 30);
+    ctx.restore();
+    // crumpled white sheet: creases as light and dark streaks
+    torn(0, h, 14); ctx.fillStyle = '#d8d4cb'; ctx.fill();
+    ctx.save(); ctx.clip();
+    for (let k = 0; k < 14; k++) {
+      ctx.strokeStyle = chance(0.5) ? 'rgba(255,255,255,0.4)' : 'rgba(90,86,80,0.35)';
+      ctx.lineWidth = rr(1, 2.5);
+      ctx.beginPath();
+      ctx.moveTo(rr(0, h), h + rr(0, h)); ctx.lineTo(rr(0, h), h + rr(0, h)); ctx.stroke();
+    }
+    ctx.restore();
+    // a faded plastic bag
+    torn(h, h, 12); ctx.fillStyle = '#6f8494'; ctx.fill();
+    ctx.save(); ctx.clip();
+    for (let k = 0; k < 10; k++) {
+      ctx.strokeStyle = 'rgba(220,230,235,0.3)'; ctx.lineWidth = rr(1, 3);
+      ctx.beginPath(); ctx.moveTo(h + rr(0, h), h + rr(0, h)); ctx.lineTo(h + rr(0, h), h + rr(0, h)); ctx.stroke();
+    }
+    ctx.restore();
+    return c;
+  });
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
 export function weeds(variant = 0) {
   const tex = make('weeds' + variant, () => {
     const s = 256, c = canvas(s), ctx = c.getContext('2d');
