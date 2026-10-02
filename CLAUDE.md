@@ -786,6 +786,16 @@ For timing anything in the headless browser, `gl.finish()` is not a sync
 point — it returns early in the GPU process and made a 142k-triangle frame
 look like 2.6 ms. A one-pixel `readPixels` is.
 
+The other side of that: a frame drawn without a sync is not free, it is
+queued. `the fire nearest you is lit` first drew ten high-tier frames in a
+loop to see whether any compiled a program, which under software rendering
+queued 20-30 s of drawing that nothing waited for — until the next check's
+page load, which waited for all of it and hit the 30 s navigation timeout.
+It looked like a flake: it passed at 41 s on one local run and failed on
+CI and on another. If a check only needs to know what would compile, ask
+`renderer.compile(scene, camera)`, which builds programs under the current
+lights and draws nothing; if it needs pixels, sync each frame it draws.
+
 An eighth, from the perch pass, and it is the expensive kind again: a
 tolerance is a place for a bug to live. `stairs carry the player onto a
 perch` passed a perch once the feet came within 0.7 m of the deck, which the

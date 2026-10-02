@@ -2518,7 +2518,11 @@ check('the fire nearest you is lit, and the light count never changes', async (p
       g.time += 1;                                     // past the quarter-second hand-over
       g.step(1 / 60);
       g.flickerFires(1 / 60);
-      g.render();
+      // Compiled, not drawn: `compile` builds whatever the scene now needs
+      // under its current lights, which is the question, and draws nothing.
+      // Ten drawn frames on the high tier queued half a minute of software
+      // rendering that the next check's page load had to wait out.
+      g.renderer.compile(g.scene, g.camera);
       if (programs === null) programs = g.renderer.info.programs.length;
       counts.add(visible());
       if (!b.light.visible) misses.push([+b.light.position.x.toFixed(0), +b.light.position.z.toFixed(0)]);
