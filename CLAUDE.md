@@ -183,7 +183,36 @@ These each cost real debugging time. Changing them needs a reason.
   as tall as they are, weeds excepted: 667 m² with `registerHeaps` taken
   out, 9.5 now, which is the low rim of the heaps at ankle height. Any new
   prop that stands off the ground has to pass that audit or be decoration
-  by the rules above. The route field skips heap boxes the way it skips a
+  by the rules above.
+- **A prop stands clear, level and on its floor, or it is not put down.**
+  Containers, wrecks, barriers, drums and lamps went down exactly where
+  their rolls put them, at street level, with nothing asked of the spot: a
+  container stood through the plaza's fountain on all three pinned seeds,
+  props stood in one another, and every prop rolled past the last lot was
+  half inside the perimeter wall — the kerb there is a metre from it, so
+  the street those rolls were aiming at does not exist. Anything that
+  landed on a pavement or a slab was sunk into it. `settle` in `city.js`
+  builds a prop where it was rolled, reads back the colliders it registered
+  as its footprint, and moves the whole thing to the nearest half-metre
+  offset (out to a `reach` per kind) that is inside the sector, 20 cm clear
+  of every collider standing, and on one floor level, then lifts it onto
+  that floor. A barricade passes `parts`, so each slab finds its own level
+  and a row can step off a kerb. If nowhere fits, everything the builder
+  added is taken back out — after its rolls and its `spend` were paid, so
+  the stream never sees the difference and every later roll gets the value
+  it always did. On seed 1 that drops 18 props, and all but one were
+  rolled into the perimeter wall. What it does change is the layout: props
+  move, and perches are placed round them, so the layout check was
+  re-measured once for it. The fountain went with it: it was an open tube
+  with a solid 6.8 m square deck for a collider, so you stood on air over
+  the basin and past the rim at every corner, and walked through the
+  plinth from the deck. It is a lathed basin now, the rim sixteen staves
+  round the circle, the plinth a collider. Note that `latheGeo` turns
+  about Z; a lathe that should stand up needs `rotateX(-π/2)`, and the
+  first render of the basin lay on its side. `every prop stands clear of
+  the rest, inside the sector, and on its floor` reads all of it,
+  including what is drawn: the lowest point of each prop's own meshes over
+  its floor has to be the same for every copy of a shape. The route field skips heap boxes the way it skips a
   kerb: every tier rises less than a step, so a hostile climbs a heap
   rather than walking round it, and baking them as walls cut 1.9% of seed
   1's walkable sector off into pockets — `the route field reaches the whole
@@ -2072,16 +2101,7 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Seat the props that stand on a floor.** Barricades, drums, terrace
-   crates and the containers in a ruin are all built from y=0, so on a lot
-   they are sunk 0.28-0.45 m into the floor, and their colliders' tops are
-   measured from the street rather than from the slab. Nothing walks through
-   anything — the collider still matches the visible top — but a barricade
-   on the pavement stands 28 cm shorter than one in the road, and its
-   foot is buried. Lifting each by `groundHeight` at its footprint is a
-   layout change (every top moves), and the stairs that end at a terrace's
-   deck have to move with it.
-2. **Instance hostiles per archetype and part.** A hostile is twelve meshes
+1. **Instance hostiles per archetype and part.** A hostile is twelve meshes
    drawn in three passes, 36 calls each, and a full wave is most of the
    frame's calls. Every raider's left shin is the same geometry and the same
    material, so an `InstancedMesh` per archetype and part, written per frame
@@ -2090,23 +2110,23 @@ Suggested next work, in the order I would do it:
    scene graph the way the city's solids do. If frame rate is still reported
    short after the pixel caps, this and the wide cascade's 2048 map on high
    are what is left.
-3. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
+2. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-4. **Finish what the rig made possible.** Hostiles now have knees, elbows,
+3. **Finish what the rig made possible.** Hostiles now have knees, elbows,
    a waist, a neck and a weapon their hands follow, so the rest is poses,
    not plumbing: a reload visible from across the street (drop the
    magazine's hold point and let the left hand follow it), a crouch behind
    cover, a hip-fire spray from a breaker, a turn of the head toward a
    sound. Each is a weapon pose plus maybe a waist angle; the arms come
    free.
-5. **Drop the kerbs at the crossings.** The street pass did everything on
+4. **Drop the kerbs at the crossings.** The street pass did everything on
    the ground but this, because a dropped kerb is a ramp in the pavement's
    floor: `registerFloors` would register a sloped or stepped apron corner,
    every crossing's footing moves, and the layout check's fingerprints have
    to be re-measured once. The tactile paving is already where the drops
    would go.
-6. **Keep wall decoration out of jumping reach of a perch.** Decoration is
+5. **Keep wall decoration out of jumping reach of a perch.** Decoration is
    built where you cannot stand, and a terrace can put you within a jump of
    some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
    1.15 m above it, which you would fall through. Perches are placed after
@@ -2114,7 +2134,7 @@ Suggested next work, in the order I would do it:
    occupied or the decoration is skipped near a perch; `decor` costs the
    stream nothing either way. `what stands on a perch holds you up` stops at
    the deck's footprint on purpose and would need widening to cover it.
-7. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+6. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make
