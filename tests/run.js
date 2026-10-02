@@ -2410,6 +2410,90 @@ check('rubble stops you and stops a bullet, and you can climb it', async (page) 
   return r;
 });
 
+check('every prop stands clear of the rest, inside the sector, and on its floor', async (page) => {
+  // Containers, wrecks, barriers, drums and lamps went down wherever their
+  // rolls put them: a container through the plaza's fountain on all three
+  // pinned seeds, cars and barriers through one another, every prop rolled
+  // past the last lot half inside the perimeter wall, and anything that
+  // landed on a pavement or a slab sunk into it by the slab's height.
+  // `settle` stands each one clear, level and on its floor. This reads it
+  // three ways: each prop's colliders against every other collider taller
+  // than a step; against the sector's edge; and what is drawn — the lowest
+  // point of each prop's own meshes over the floor its corners stand on,
+  // which has to be the same for every copy of a shape, on the road or off.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const W = g.world, B = W.boxes;
+    const corners = (b) => [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([u, v]) => {
+      const lx = u * b.hx, lz = v * b.hz;
+      return [b.cx + b.cos * lx + b.sin * lz, b.cz - b.sin * lx + b.cos * lz];
+    });
+    const depth = (a, b) => {
+      let d = Infinity;
+      const ca = corners(a), cb = corners(b);
+      for (const [ax, az] of [[a.cos, -a.sin], [a.sin, a.cos], [b.cos, -b.sin], [b.sin, b.cos]]) {
+        const pa = ca.map(([x, z]) => x * ax + z * az), pb = cb.map(([x, z]) => x * ax + z * az);
+        d = Math.min(d, Math.min(Math.max(...pa), Math.max(...pb)) - Math.max(Math.min(...pa), Math.min(...pb)));
+        if (d <= 0) return 0;
+      }
+      return d;
+    };
+    const floors = B.filter((b) => b.floor);
+    const floorAt = (x, z) => floors.reduce((y, f) => (x >= f.minX && x <= f.maxX && z >= f.minZ && z <= f.maxZ ? Math.max(y, f.top) : y), 0);
+    const props = B.filter((b) => b.prop);
+    let overlaps = 0, outside = 0, unlevel = 0;
+    const eg = [];
+    for (const a of props) {
+      if (Math.max(Math.abs(a.minX), Math.abs(a.maxX), Math.abs(a.minZ), Math.abs(a.maxZ)) > W.bounds) outside++;
+      const fs = corners(a).map(([x, z]) => floorAt(x, z));
+      if (Math.max(...fs) - Math.min(...fs) > 0.01) unlevel++;
+      for (const b of B) {
+        if (b === a || b.floor || b.heap || b.top <= 0.55 || b.prop === a.prop) continue;
+        if (a.maxX < b.minX || b.maxX < a.minX || a.maxZ < b.minZ || b.maxZ < a.minZ) continue;
+        const d = depth(a, b);
+        if (d > 0.05) { overlaps++; if (eg.length < 4) eg.push([+a.cx.toFixed(1), +a.cz.toFixed(1), +d.toFixed(2)]); }
+      }
+    }
+    // what is drawn: each prop mesh's lowest point over the floor under it,
+    // grouped by shape and finish, so a copy on a pavement is held to what
+    // the same shape does in the road
+    const lift = new Map();
+    for (const s of W.solids) {
+      const id = s.userData.prop;
+      if (!id) continue;
+      const e = s.matrixWorld.elements, p = s.geometry.attributes.position;
+      let lo = Infinity, sx = 0, sz = 0;
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+        lo = Math.min(lo, e[1] * x + e[5] * y + e[9] * z + e[13]);
+        sx += e[0] * x + e[4] * y + e[8] * z + e[12]; sz += e[2] * x + e[6] * y + e[10] * z + e[14];
+      }
+      sx /= p.count; sz /= p.count;
+      const key = s.geometry.id + '/' + s.material.id;
+      if (!lift.has(key)) lift.set(key, []);
+      lift.get(key).push({ off: lo - floorAt(sx, sz), on: floorAt(sx, sz) > 0.1 });
+    }
+    let spread = 0, onFloor = 0, worstKey = null;
+    for (const [key, list] of lift) {
+      const offs = list.map((q) => q.off);
+      const s = Math.max(...offs) - Math.min(...offs);
+      onFloor += list.filter((q) => q.on).length;
+      if (s > spread) { spread = s; worstKey = key; }
+    }
+    return {
+      props: new Set(props.map((b) => b.prop)).size, overlaps, outside, unlevel,
+      spread: +spread.toFixed(3), onFloor, shapes: lift.size, eg,
+    };
+  });
+  expect(r.props > 60, `only ${r.props} props settled`);
+  expect(r.overlaps === 0, `${r.overlaps} prop colliders stand inside another collider: ${JSON.stringify(r.eg)}`);
+  expect(r.outside === 0, `${r.outside} prop colliders past the edge of the sector`);
+  expect(r.unlevel === 0, `${r.unlevel} props straddle two floor levels`);
+  expect(r.onFloor > 10, `only ${r.onFloor} prop meshes stand on a floor, so the seating is barely measured`);
+  expect(r.spread < 0.03, `a prop shape stands ${r.spread} m differently on one floor than another — sunk or floating`);
+  return r;
+});
+
 check('what is set into the street lies flush on it, road or pavement', async (page) => {
   // Manhole covers and gully grates in the road, blister paving on the
   // pavement at each crossing, yellow lines and boxes: all decoration, laid a
