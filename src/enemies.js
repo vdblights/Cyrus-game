@@ -77,6 +77,23 @@ const COMMIT = 6;
 const PERCH_PATIENCE = 15;
 
 /**
+ * A hostile follows you up.
+ *
+ * The player could haul themselves onto a car roof, a crate or a low wall,
+ * and nothing could follow: `mantleTarget` was always entity-agnostic, but
+ * only the player called it. So a waist-high roof was a place to stand over
+ * a melee hostile that could only circle it until the stuck watchdog took it
+ * away. A hostile now climbs when it is coming for you, you stand at least
+ * `above` higher than its feet, you are within `near`, and there is a lip in
+ * front of it — the same lip the player would grip, asked the same way.
+ * Perch-holders never do: they never leave a perch, and a climb is leaving
+ * the ground for somewhere new. And a hostile climbs slower than you
+ * (`base` + `perM` a metre against 0.32 + 0.22), with its weapon off you for
+ * the duration, because a climb is the moment it cannot fight back.
+ */
+const CLIMB = { above: 0.5, near: 9, min: 0.6, max: 1.8, base: 0.6, perM: 0.4 };
+
+/**
  * Hostile archetypes. `preferred` is the range the AI tries to hold; melee
  * types simply close to contact.
  *
@@ -533,6 +550,7 @@ export class Enemy {
     this.blindFor = 0;
     this.stuckTimer = 0;
     this.noProgress = 0;
+    this.mantle = null;
     this.lastDistCheck = Infinity;
     this.watchX = this.pos.x;
     this.watchZ = this.pos.z;
@@ -638,6 +656,11 @@ export class Enemy {
   }
 
   die(fromDir) {
+    // killed halfway up a wall: fall to whatever is under it, not hang there
+    if (this.mantle) {
+      this.mantle = null;
+      this.pos.y = this.game.world.groundHeight(this.pos.x, this.pos.z, SUPPORT_RADIUS, this.pos.y + 0.05);
+    }
     this.alive = false;
     this.state = 'dead';
     this.deathT = 0;
@@ -727,6 +750,17 @@ export class Enemy {
     // one as busy, and the watchdog relocates rather than walks.
     const parked = onPerch && this.blindFor > PERCH_PATIENCE;
 
+    // A climb owns the body for its duration, the way a pull-up owns the
+    // player: no walking, no turning away, no firing.
+    if (this.mantle) {
+      this._advanceClimb(dt);
+      this.group.position.copy(this.pos);
+      this._updateLaser(player, false, time);
+      this._animate(dt, dist);
+      this.group.updateMatrixWorld(true);
+      return;
+    }
+
     const nav = this.game.nav;
     let moveDir = V2.set(0, 0, 0);
     if (!this.alerted) {
@@ -758,12 +792,34 @@ export class Enemy {
       }
     }
 
+    // ---- climbing ---------------------------------------------------------
+    // You are on something it could follow you onto: go straight at it, and
+    // up. Avoidance below would otherwise turn it aside two metres out, from
+    // every face it could climb, so it would never reach the lip.
+    // Only one already coming for you: a raider strafing at its range, or
+    // backing off to hold it, has no business charging a car.
+    let climbing = false;
+    if (this.alerted && !onPerch && moveDir.dot(toPlayer) > 0.7 * moveDir.length()
+        && player.feetY > this.pos.y + CLIMB.above && dist < CLIMB.near) {
+      const ahead = world.mantleTarget(this.pos.x, this.pos.z, this.radius, this.pos.y,
+        toPlayer.x, toPlayer.z, CLIMB.min, CLIMB.max, 1.8 + this.radius);
+      if (ahead) {
+        moveDir.copy(toPlayer);
+        climbing = true;
+        if (this._tryClimb(world, toPlayer)) {
+          this._animate(dt, dist);
+          this.group.updateMatrixWorld(true);
+          return;
+        }
+      }
+    }
+
     // ---- obstacle avoidance --------------------------------------------
     // The last few metres, which the route field is too coarse to see: a
     // wreck in the street, another hostile's corner, the kerb of the very
     // building being rounded. Probe the heading; if it is blocked, fan
     // outwards and take the first clear direction.
-    if (moveDir.lengthSq() > 1e-4) {
+    if (moveDir.lengthSq() > 1e-4 && !climbing) {
       moveDir.normalize();
       const probe = 1.8 + this.radius;
       const clear = (x, z) => !world.occupied(this.pos.x + x * probe, this.pos.z + z * probe, this.radius, this.pos.y + 0.9);
@@ -807,6 +863,20 @@ export class Enemy {
       } else {
         this.avoidDir = 0;
       }
+    }
+
+    // ---- edges -----------------------------------------------------------
+    // Up on something with you, it holds the deck. A melee hostile at its
+    // range strafes, and on a car roof a strafe is a step off the edge: of
+    // twelve that climbed after the player on seed 1, six were back in the
+    // street within the next few seconds and had the whole climb to do again.
+    // Following you down is still allowed — the guard is only for a drop you
+    // are not at the bottom of.
+    if (this.pos.y > CLIMB.min && player.feetY > this.pos.y - CLIMB.above && moveDir.lengthSq() > 1e-4) {
+      const k = (this.radius + 0.35) / moveDir.length();
+      const below = world.groundHeight(this.pos.x + moveDir.x * k, this.pos.z + moveDir.z * k,
+        SUPPORT_RADIUS, this.pos.y + 0.05);
+      if (below < this.pos.y - 0.55) { moveDir.set(0, 0, 0); this.vel.set(0, 0, 0); }
     }
 
     // ---- stuck watchdog --------------------------------------------------
@@ -1016,6 +1086,41 @@ export class Enemy {
    * (`reach`), so the hands are always on the gun whatever the gun is doing,
    * and an animation is only ever written once, for the gun.
    */
+  /** Start a climb toward `dir` if there is a lip within an arm's length. */
+  _tryClimb(world, dir) {
+    const ledge = world.mantleTarget(this.pos.x, this.pos.z, this.radius, this.pos.y,
+      dir.x, dir.z, CLIMB.min, CLIMB.max);
+    if (!ledge) return false;
+    this.mantle = {
+      t: 0, dur: CLIMB.base + (ledge.top - this.pos.y) * CLIMB.perM,
+      fromX: this.pos.x, fromZ: this.pos.z, fromY: this.pos.y,
+      x: ledge.x, z: ledge.z, top: ledge.top, land: ledge.land,
+    };
+    this.vel.set(0, 0, 0);
+    return true;
+  }
+
+  /**
+   * The same curve the player climbs on: up first, then over, then settled
+   * onto the deck if it sits lower than the lip.
+   */
+  _advanceClimb(dt) {
+    const m = this.mantle;
+    m.t = Math.min(1, m.t + dt / m.dur);
+    const smooth = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+    const rise = smooth(Math.min(1, m.t / 0.75));
+    const reach = smooth(Math.max(0, (m.t - 0.3) / 0.7));
+    const settle = smooth(Math.max(0, (m.t - 0.72) / 0.28));
+    this.pos.y = m.fromY + (m.top - m.fromY) * rise - (m.top - m.land) * settle;
+    this.pos.x = m.fromX + (m.x - m.fromX) * reach;
+    this.pos.z = m.fromZ + (m.z - m.fromZ) * reach;
+    if (m.t >= 1) {
+      this.mantle = null;
+      // the climb was its own walking: measure the next window from the top
+      this.markWatchdog();
+    }
+  }
+
   _animate(dt, dist) {
     const P = this.parts;
     const speed = Math.hypot(this.vel.x, this.vel.z);
@@ -1033,6 +1138,12 @@ export class Enemy {
       thigh.rotation.x = Math.sin(p) * swing * amp;
       shin.rotation.x = -(0.06 + Math.max(0, Math.cos(p)) * 1.05 * amp);
     }
+    // a climb: one knee up onto the lip, the other trailing, body over it
+    const haul = this.mantle ? Math.sin(Math.PI * this.mantle.t) : 0;
+    if (haul > 0) {
+      P.legL.rotation.x = 1.25 * haul; P.shinL.rotation.x = -1.6 * haul;
+      P.legR.rotation.x = 0.45 * haul; P.shinR.rotation.x = -0.7 * haul;
+    }
     // lowest with the feet furthest apart, highest as they pass
     const bob = 0.035 * amp * (0.5 + 0.5 * Math.cos(2 * ph));
 
@@ -1049,7 +1160,7 @@ export class Enemy {
     const up = P.upper;
     const breathe = Math.sin(this.idleT * 1.6) * 0.012 * (1 - amp);
     up.rotation.set(
-      -0.10 * amp * (1 - 0.5 * A) + breathe + 0.05 * this.kick + f.x,
+      -0.10 * amp * (1 - 0.5 * A) + breathe + 0.05 * this.kick + f.x - 0.55 * haul,
       -0.48 * A + Math.sin(ph) * 0.07 * amp * (1 - A) - 0.30 * (1 - A),
       Math.sin(ph) * 0.035 * amp + f.z,
     );

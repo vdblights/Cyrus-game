@@ -450,12 +450,17 @@ Anything between a step and chest height is climbed rather than walked around:
 hold `Space` facing a car roof, a planter or a low wall and you haul yourself
 up over about half a second, ducked and unable to shoot until you top out.
 Hold it through a jump and the reach extends to roughly two and a half metres.
-Hostiles still only walk — they climb the same half-metre steps and nothing
-taller — so a car roof is a spot a melee rusher has to go around while it can
-still be shot from.
+Hostiles climb after you. Stand on a car roof, a crate or a low wall and a
+hostile coming for you — a scavenger, or anything that has lost sight of you
+— walks to the face and hauls itself up the same way you did, only slower,
+and with its weapon off you until it tops out: a car roof buys you that
+second and a half, not the fight. Once up there with you it holds the deck
+rather than strafing off the edge. Marksmen never climb; they hold their
+roofs.
 
 The same rules apply to everyone: hostiles climb, stand on, and fall off the
-same surfaces, and a melee rusher cannot reach you across a height gap. Drops
+same surfaces, and a melee rusher cannot reach you across a height gap too
+tall to climb. Drops
 of more than about four metres hurt, and a long enough fall will kill you.
 
 The ground you see is the ground you stand on. The pavement round every block

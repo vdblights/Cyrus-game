@@ -2538,6 +2538,73 @@ check('the fire nearest you is lit, and the light count never changes', async (p
   return r;
 });
 
+check('a hostile follows you onto a car roof, and stays up there with you', async (page) => {
+  // The player could haul themselves onto a car roof, a crate or a low wall
+  // and nothing could follow: `mantleTarget` was always entity-agnostic, but
+  // only the player called it, so a waist-high roof was somewhere to stand
+  // over a scavenger that could only circle it. This stands the player on
+  // every such deck it can find on the pinned seed, starts a scavenger on
+  // open ground 3.5 m off it with a climbable face in between, and asks
+  // whether it came up — and whether it was still up there seconds later,
+  // because the first version climbed, strafed at its range, and walked
+  // straight back off the edge.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const W = g.world;
+    const out = [];
+    for (const b of W.boxes) {
+      if (out.length >= 8) break;
+      if (b.floor || b.top < 0.8 || b.top > 1.7) continue;
+      const cx = b.cx ?? (b.minX + b.maxX) / 2, cz = b.cz ?? (b.minZ + b.maxZ) / 2;
+      if (Math.abs(W.groundHeight(cx, cz, 0.42, 99) - b.top) > 0.05) continue;
+      // a start on open ground, with a climbable face between it and the deck
+      let start = null;
+      const R = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 2 + 3.5;
+      for (let k = 0; k < 8 && !start; k++) {
+        const a = k * Math.PI / 4, sx = cx + Math.cos(a) * R, sz = cz + Math.sin(a) * R;
+        const fy = W.groundHeight(sx, sz, 0.12, 0.6);
+        if (fy > 0.5 || W.occupied(sx, sz, 0.7, 0.6)) continue;
+        const dx = cx - sx, dz = cz - sz, l = Math.hypot(dx, dz);
+        if (!W.mantleTarget(sx, sz, 0.45, fy, dx / l, dz / l, 0.6, 1.8, R)) continue;
+        start = { sx, sz, fy };
+      }
+      if (!start) continue;
+      for (const e of g.enemies) { e.group.visible = false; g._recycle(e); }
+      g.enemies.length = 0;
+      g.player.reset(cx, cz);
+      const hold = () => {
+        g.player.feetY = b.top; g.player.onGround = true; g.player.velocity.set(0, 0, 0);
+        g.player.position.y = b.top + g.player.eyeHeight;
+        g.player.health = 100;
+      };
+      hold();
+      const e = g.spawnEnemy('scavenger');
+      e.pos.set(start.sx, start.fy, start.sz);
+      e.group.position.copy(e.pos);
+      e.markWatchdog(g.player);
+      e.alert(g.time, 0);
+      let upAt = null;
+      for (let t = 0; t < 7; t += 1 / 30) {
+        g.time += 1 / 30; hold();
+        g.step(1 / 30);
+        if (upAt === null && e.pos.y > b.top - 0.1) upAt = +t.toFixed(1);
+      }
+      out.push({ top: +b.top.toFixed(2), upAt, stayed: Math.abs(e.pos.y - b.top) < 0.1 });
+    }
+    return { decks: out.length, up: out.filter((o) => o.upAt !== null).length,
+      stayed: out.filter((o) => o.stayed).length, slowest: Math.max(...out.map((o) => o.upAt ?? 99)) };
+  });
+  // Measured on seed 1: 8 of 8 up within 1.3 s, 8 of 8 still up; 0 of 8
+  // with the climb taken out, and 4 of 8 still up without the edge guard.
+  expect(r.decks >= 6, `only ${r.decks} climbable decks to stand on`);
+  expect(r.up === r.decks, `${r.decks - r.up} of ${r.decks} scavengers never came up after the player`);
+  expect(r.stayed === r.decks, `${r.decks - r.stayed} of ${r.decks} climbed up and walked back off`);
+  return r;
+});
+
 check('the frame-rate readout shows on a key, and names the GPU', async (page) => {
   // Lag is reported from machines nobody here can see, so the game carries
   // its own numbers: the key left of 1 shows them, and the pause menu has

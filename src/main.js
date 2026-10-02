@@ -1123,6 +1123,7 @@ class Game {
     const { x, z } = spot;
     enemy.pos.set(x, spot.y || 0, z);
     enemy.vel.set(0, 0, 0);
+    enemy.mantle = null;
     enemy.group.position.copy(enemy.pos);
     // the watchdog now has to judge the next window from where it landed, not
     // from where it was pulled out of

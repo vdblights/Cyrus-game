@@ -634,6 +634,28 @@ These each cost real debugging time. Changing them needs a reason.
   alone) and `the fire nearest you is lit, and the light count never
   changes` (12 visible on the old code). High and medium gained about 10%
   from the pooling and the canvas (1537 → 1403 ms, 1396 → 1259).
+- **A hostile climbs after you, and then holds the deck.** `mantleTarget`
+  was always entity-agnostic and only the player called it, so a car roof
+  was somewhere to stand over a melee hostile that could only circle it
+  until the watchdog took it away. A hostile now climbs (`CLIMB` in
+  `enemies.js`) when it is alerted, off any perch, already heading for you
+  — its move direction within about 45 degrees of you, so a raider
+  strafing at its range or backing off to hold it never charges a car —
+  you stand at least half a metre above its feet, and you are within 9 m.
+  Three things make it work. Avoidance turns a hostile aside from anything
+  chest-high two metres out, so it never reached a lip: when there is a
+  climbable lip ahead (`mantleTarget` with a longer `reach`), avoidance
+  stands down and it walks to the face. The climb owns the body the way a
+  pull-up owns the player — the player's own curve, slower (0.6 s + 0.4 a
+  metre), no turning and no firing — and a hostile killed halfway up drops
+  to whatever is under it. And once up, it holds the deck: a melee hostile
+  at its range strafes, and of twelve that climbed after the player on seed
+  1, six strafed straight back off the edge within seconds. The edge guard
+  stops any step that drops more than a step height while the player is not
+  below it — following you down is still allowed. Perch-holders never climb.
+  `a hostile follows you onto a car roof, and stays up there with you` puts
+  the player on eight decks on seed 1: 8 of 8 up within 1.3 s and still up;
+  0 of 8 with the climb taken out and 4 of 8 still up without the guard.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -942,6 +964,13 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The climbing pass is the twelfth, and it was item 5 of the list: a car
+roof was a place hostiles could not follow you to. It is the invariant
+above, and one addition to the rig: a climb pose, one knee up onto the lip,
+the other trailing, the upper body leaning over it, riding a hump over the
+climb so it is gone by the time the hostile tops out. Rendered mid-climb
+from the street to confirm it reads as a haul rather than a lift.
 
 The low-tier pass is the eleventh, and it is the first that had numbers
 from the machine that reported the problem, because the readout from the
@@ -1833,23 +1862,20 @@ Suggested next work, in the order I would do it:
    beats holding the plaza is a play question, not a code one.
 4. **Positional audio** — sounds are mono, so you cannot hear which side fire
    is coming from. `PannerNode` in the already-centralised audio module.
-5. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
-   only the player calls it, so a car roof is still a place they cannot follow
-   you to.
-6. **Finish what the rig made possible.** Hostiles now have knees, elbows,
+5. **Finish what the rig made possible.** Hostiles now have knees, elbows,
    a waist, a neck and a weapon their hands follow, so the rest is poses,
    not plumbing: a reload visible from across the street (drop the
    magazine's hold point and let the left hand follow it), a crouch behind
    cover, a hip-fire spray from a breaker, a turn of the head toward a
    sound. Each is a weapon pose plus maybe a waist angle; the arms come
    free.
-7. **More on the ground now that paint is there.** The markings pass put a
+6. **More on the ground now that paint is there.** The markings pass put a
    geometry layer on the road and left the pavement alone: manhole covers,
    kerb drops at the crossings, hatched keep-clear boxes and painted parking
    bays all fall out of the same `roadMarkings` machinery and the same street
    grid. Drop them in the same merged mesh and they cost one more batch of
    nothing.
-8. **Keep wall decoration out of jumping reach of a perch.** Decoration is
+7. **Keep wall decoration out of jumping reach of a perch.** Decoration is
    built where you cannot stand, and a terrace can put you within a jump of
    some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
    1.15 m above it, which you would fall through. Perches are placed after
@@ -1857,7 +1883,7 @@ Suggested next work, in the order I would do it:
    occupied or the decoration is skipped near a perch; `decor` costs the
    stream nothing either way. `what stands on a perch holds you up` stops at
    the deck's footprint on purpose and would need widening to cover it.
-9. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+8. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make
