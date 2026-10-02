@@ -2207,6 +2207,99 @@ check('the gun in your hands is solid, held, and textured at its declared scale'
   return { ratios: r.ratios, tris: r.tris, inverted: r.inverted, held: r.held };
 });
 
+check('every grip rakes back toward the shooter', async (page) => {
+  // A pistol grip leans back from the trigger: the web of the hand sits under
+  // the slide and the heel of it further back, which is what points the
+  // muzzle where the forearm points. Every grip in the game was built as a box
+  // turned the other way, its bottom tucked forward under the gun, and nothing
+  // noticed — the hands were fitted to it, so it looked held, and wrong.
+  //
+  // Measured off what is drawn, not off a number in the builder: across two
+  // slices of the grip, how far back the rearmost surface of the gun is (the
+  // backstrap — a magazine is always in front of it, and the hands are not
+  // counted). Back, and further back lower down, is a rake toward the shooter.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const out = {};
+    for (const w of g.weapons.weapons) {
+      w.model.updateMatrixWorld(true);
+      const inv = w.model.matrixWorld.clone().invert();
+      const rear = { hi: -Infinity, lo: -Infinity };
+      const V = w.model.position.constructor;
+      const t = [new V(), new V(), new V()];
+      // where each facet crosses a level, so a grip that is two long faces
+      // with no vertex between its ends is still found
+      const cut = (level, key) => {
+        for (let e = 0; e < 3; e++) {
+          const a = t[e], b = t[(e + 1) % 3];
+          if ((a.y - level) * (b.y - level) > 0 || a.y === b.y) continue;
+          rear[key] = Math.max(rear[key], a.z + ((level - a.y) / (b.y - a.y)) * (b.z - a.z));
+        }
+      };
+      w.model.traverse((o) => {
+        if (!o.isMesh || o.userData.tile === 0.25 || o.userData.tile === 0.9) return;   // not the hands
+        const p = o.geometry.attributes.position, idx = o.geometry.index;
+        const n = idx ? idx.count : p.count;
+        const m = o.matrixWorld.clone().premultiply(inv);
+        for (let k = 0; k + 2 < n; k += 3) {
+          for (let c = 0; c < 3; c++) t[c].fromBufferAttribute(p, idx ? idx.getX(k + c) : k + c).applyMatrix4(m);
+          cut(-0.112, 'hi'); cut(-0.130, 'lo');
+        }
+      });
+      out[w.def.id] = +((rear.lo - rear.hi) / 0.018).toFixed(2);  // run per unit of drop
+    }
+    return out;
+  });
+  for (const [id, rake] of Object.entries(r)) {
+    expect(Number.isFinite(rake), `could not find the ${id}'s grip`);
+    expect(rake > 0.12, `the ${id}'s grip rakes ${rake} — ${rake < 0 ? 'forward, under the gun' : 'barely at all'}`);
+  }
+  return r;
+});
+
+check('a wreck fits the box you collide with, and stands on its wheels', async (page) => {
+  // A wreck's collider is 1.9 x 4.4 m and 1.5 m high, and the collider is what
+  // you stand on when you climb onto one. The lofted wreck stood 1.82 m tall
+  // over it, so a player on the roof had their boots 30 cm inside the steel,
+  // and a burnt one was dropped 0.2 m into the road with no wheels to stand
+  // on. Every shape a wreck is cut from has to fit inside the box, reach up
+  // to its top, and put a tyre on the ground.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const out = {};
+    for (const [kind, set] of Object.entries(g.propShapes.cars)) {
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (const geo of Object.values(set)) {
+        const p = geo.attributes.position;
+        for (let i = 0; i < p.count; i++) {
+          // the wells under the arches run below the road on purpose, hidden by it
+          const c = [p.getX(i), p.getY(i), p.getZ(i)];
+          for (let k = 0; k < 3; k++) {
+            if (k === 1 && geo === set.wheels && c[1] < -0.001) continue;
+            lo[k] = Math.min(lo[k], c[k]); hi[k] = Math.max(hi[k], c[k]);
+          }
+        }
+      }
+      // the lowest point of a tyre: wheels are the only thing that may touch the road
+      let tyre = Infinity;
+      const w = set.wheels.attributes.position;
+      for (let i = 0; i < w.count; i++) if (Math.abs(w.getX(i)) > 0.67) tyre = Math.min(tyre, w.getY(i));
+      out[kind] = {
+        x: +Math.max(-lo[0], hi[0]).toFixed(3), z: +Math.max(-lo[2], hi[2]).toFixed(3),
+        top: +hi[1].toFixed(3), tyre: +tyre.toFixed(3),
+      };
+    }
+    return out;
+  });
+  for (const [kind, b] of Object.entries(r)) {
+    expect(b.x <= 0.955 && b.z <= 2.205, `the ${kind} reaches ${b.x} m across and ${b.z} m along, past its 0.95 x 2.2 m collider`);
+    expect(b.top <= 1.505, `the ${kind}'s roof is at ${b.top} m, over a collider 1.5 m high`);
+    expect(b.top >= 1.44, `the ${kind}'s roof is at ${b.top} m, so standing on it you float over it`);
+    expect(Math.abs(b.tyre) < 0.01, `the ${kind}'s tyres reach ${b.tyre} m, not the road`);
+  }
+  return r;
+});
+
 check('lane paint lies on the road and faces the sky', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

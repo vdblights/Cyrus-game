@@ -59,7 +59,7 @@ builds, never to play.
 | `src/grenades.js` | Fuse, flight, bounce, detonation |
 | `src/effects.js` | Pooled tracers, impacts, blood, casings, explosions |
 | `src/textures.js` | Every texture, painted to canvas at boot |
-| `src/shapes.js` | Chamfers, lofted profiles, geometry merging — the shapes that are not boxes |
+| `src/shapes.js` | Chamfers, lofts, side profiles, lathes, creased normals, merging — the shapes that are not boxes |
 | `src/post.js` | Ambient occlusion, bloom, tone mapping, grade, vignette, grain |
 | `src/atmosphere.js` | The sky, the sun and the fog — one model, so they agree |
 | `src/shadows.js` | The sun's two shadow cascades, snapped to their texels |
@@ -483,6 +483,40 @@ These each cost real debugging time. Changing them needs a reason.
   inside out` measures the whole merged city, every prop shape and every
   hostile; restoring a hand-written order reports 21,198 of 142,754 city
   facets inside out.
+- **A gun and a car are drawn by their side view, and the side view is the
+  part.** `sideGeo` in `shapes.js` extrudes an outline in (z, y) across X
+  with its edges rolled over; `latheGeo` turns a profile about an axis;
+  both hand their output to `creaseNormals`, which averages a corner only
+  across facets that turn by less than the crease angle, so a grip comes out
+  round and the edge where it meets the frame stays an edge. Four things
+  about them are load-bearing. The bevel is taken *inside* the outline
+  (`bevelOffset = -bevel`), so the silhouette is exactly what was drawn and
+  the caps sit at ±width/2 — three's default grows the part by the bevel,
+  which would have pushed every wreck past its collider. A lathe profile is
+  walked with the material on its left, from the muzzle end, so a bore faces
+  in and a crown faces forward; three decides a lathe's winding from that
+  direction, so `latheGeo` checks its facets against three's own normals and
+  turns the lot round if most disagree, rather than trusting the order it
+  was given. UVs are planar off each facet's normal at the declared `TILE`,
+  or arc length round a lathe, so the texel-density checks cover all of it.
+  And a wheel is one lathe with two surfaces off one tile: `uv` sends facets
+  that face along the axle to the face painted in the middle of `TEX.tire`
+  and the rest to the tread in its bottom quarter, and the tire painter's
+  circles are drawn to the radii the lathe turns — change one and change the
+  other. **Every grip rakes back**, built by `gripOutline` from the same
+  centre and rake the hand is closed round, so the fingers fit what is
+  drawn. They all used to rake forward: the old grips were boxes turned by a
+  positive `rx`, which tips the bottom toward the muzzle, and the hands had
+  been fitted to that, so nothing looked unheld and every side view looked
+  wrong. `every grip rakes back toward the shooter` slices each gun where
+  its facets cross two levels of the grip and reads the backstrap: −0.22
+  with the old pistol. **A wreck fits its collider**: 1.9 x 4.4 m and 1.5 m
+  to the roof, which is the deck you stand on when you climb it. The lofted
+  wreck stood 1.82 m over a 1.5 m collider and its arches 0.98 m out from a
+  0.95 m one, and a burnt shell was dropped 0.2 m into the road with no
+  wheels; `a wreck fits the box you collide with, and stands on its wheels`
+  fails on all of it.
+
 - **What a prop costs the seeded stream is a bill it pays, not a side effect
   of how it is built.** Three spends four draws on a UUID for every object
   (see the `generateUUID` invariant above), so the *number of meshes* a wreck
@@ -1032,6 +1066,33 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The guns-and-vehicles pass is the sixteenth, asked for in one line: work
+on the vehicle and gun models. Rendered before touching anything, both were
+still stacks of boxes — a gun was twenty chamfered prisms with every grip
+raked forward, and a wreck was a slab with a dark box on it, half of them
+wearing a container's corrugated rust. Both are drawn by their side view
+now (invariant above): the four view models, every hostile's weapon, and
+the saloon and pickup. What it cost, seed 1, interleaved against the commit
+before under software rendering, best of two rounds each: high 1,621 →
+1,738 ms a frame (+7%), low 207 → 213 ms, and triangles drawn a frame on
+high 240k → 394k — measured with no hostiles in view, so before their guns. The layout fingerprints are
+unchanged; every shape is minted inside the `reserve` it always was, and a
+wreck still pays the same `spend`. A wreck went from about 750 triangles to
+about 4,000 — 8,000 in the first cut, which took the merged city from 228k
+to 606k, so the bevels, fillets and wheel were cut back until it did not
+read any worse from the street. The view models went from about 9,300 to
+13,500-17,000 triangles in the same six to nine meshes.
+
+Two things worth keeping from it. The first render of every new shape was
+right in outline and wrong in some detail only a render showed: a stock
+with no wrist under it, a pickup whose tail outline doubled back on itself
+and stuck 2.6 cm out of its collider, door handles 4 mm past it. And
+`every grip rakes back` first sliced the guns by their *vertices*, which on
+an extruded grip exist only at its two ends, so it found no grip at all;
+it slices facets now, and its two levels sit between the bottom of the
+shotgun's butt and the bottom of the shortest grip — the first levels read
+the butt as a backstrap and reported a rake of −10.
 
 The rain-and-litter pass is the fifteenth, and it is more of the
 fourteenth, asked for by name after the screenshots of that one: what else

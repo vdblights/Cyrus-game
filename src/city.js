@@ -3,7 +3,7 @@ import { World, randRange, pick } from './world.js';
 import * as TEX from './textures.js';
 import { TILE, FACADE_BAYS, FACADE_FLOORS, FACADE_VARIANTS } from './textures.js';
 import { reserve, spend, makeRandom, UUID_COST } from './rng.js';
-import { chamferGeo, loftGeo, loftGeoZ, mergeIntoOne } from './shapes.js';
+import { chamferGeo, loftGeo, mergeIntoOne, sideGeo, latheGeo, bend } from './shapes.js';
 import { cutWindows } from './windows.js';
 
 const BLOCK = 34;      // centre-to-centre distance between city lots
@@ -325,104 +325,129 @@ function shadeGeometry(geo, tint, occlusion, mottle = 0) {
 /**
  * The panels a wreck is cut from, minted once and shared by every car.
  *
- * A car used to be five boxes, and it read as five boxes: flat sides, a flat
- * top, square ends, and a cabin sitting on it like a crate. What actually
- * says "car" at fifty metres is the profile — sills tucked under, shoulders
- * at the waistline, a bonnet that falls away to the nose and a screen raked
- * back over it — and none of that is expensive, it is just not a box. The
- * parts that share a material are merged into one geometry, so the detail
- * costs meshes rather than draw calls, and the whole sector's wrecks are cut
- * from four geometries per silhouette instead of seven per car.
+ * A car is drawn the way a car designer draws one: by its side view. The
+ * body is one outline extruded across the car's width with its shoulders
+ * rolled over — wheel arches bitten out of it, a nose that drops to the
+ * bumper, a boot that falls away behind — and then pinched in plan toward
+ * both ends and tucked in at the sills, because a car seen from above is a
+ * lozenge, not a rectangle. The greenhouse is a second outline in glass,
+ * narrower and leaning in as it rises, and the pillars and roof are painted
+ * metal laid over it, so the windows read as windows in a frame rather than
+ * as a dark box sitting on a light one. Wheels are turned on a lathe: a tyre
+ * with a sidewall and a tread, and a dished rim inside it.
  *
- * Front is +Z, and the numbers are the collider: 1.9 m across, 4.4 m long.
+ * The lofted wreck this replaced stood 1.82 m tall over a collider 1.5 m
+ * high, so standing on a roof put your boots 30 cm inside it. Front is +Z,
+ * and the numbers are the collider: 1.9 m across, 4.4 m long, 1.5 m high.
  * Nothing here may reach past that, because the collider is what you feel.
  */
+const WHEEL = { r: 0.335, z: 1.36, x: 0.79, arch: 0.40, cy: 0.335 };
+
 function carShapes(pickup) {
-  const M = TILE.metal;
+  const M = TILE.metal, G = TILE.glass;
 
-  /**
-   * One band of the tub, tapered in plan at both ends.
-   *
-   * A profile stacked up Y cannot narrow the nose, and a flat wall across
-   * the front is what made the old wreck read as a crate from any angle in
-   * front of it. Stacking two of these instead gives the plan taper and a
-   * rocker inset under the doors, which is the line the side was missing.
-   */
-  const band = (lo, hi, wMid, wEnd, drop = 0) => {
-    const at = (hx, d) => ({ hx, hy: (hi - lo - d) / 2, cy: (lo + hi - d) / 2 });
-    return loftGeoZ([
-      { z: -2.20, ...at(wEnd, drop) },
-      { z: -1.86, ...at(wMid, 0) },
-      { z: 1.86, ...at(wMid, 0) },
-      { z: 2.20, ...at(wEnd, drop) },
-    ], M);
-  };
-
-  const panels = [
-    band(0.30, 0.66, 0.86, 0.68),             // rocker
-    band(0.60, 1.26, 0.95, 0.76, 0.10),       // body side, drooping at the ends
-    // bonnet: level over the wings, then falling away and narrowing at the nose
-    loftGeoZ([
-      { z: pickup ? 0.58 : 0.42, hx: 0.84, hy: 0.10, cy: 1.28 },
-      { z: 1.55, hx: 0.82, hy: 0.085, cy: 1.30 },
-      { z: 2.14, hx: 0.64, hy: 0.055, cy: 1.19 },
-    ], M),
-    // arches, standing a little proud of the tub: the line down the side
-    chamferGeo(1.96, 0.34, 1.02, 0.11, M, [0, 0.96, 1.34]),
-    chamferGeo(1.96, 0.34, 1.02, 0.11, M, [0, 0.96, -1.34]),
-  ];
-
-  if (pickup) {
-    // an open bed: two rails, a tailgate and a floor to see into
-    panels.push(
-      chamferGeo(0.16, 0.46, 1.30, 0.05, M, [-0.82, 1.46, -1.50]),
-      chamferGeo(0.16, 0.46, 1.30, 0.05, M, [0.82, 1.46, -1.50]),
-      chamferGeo(1.80, 0.46, 0.14, 0.05, M, [0, 1.46, -2.10]),
-      chamferGeo(1.72, 0.09, 1.30, 0.03, M, [0, 1.27, -1.50]),
-      chamferGeo(1.34, 0.11, 1.16, 0.04, M, [0, 1.80, -0.12]));       // cab roof
-  } else {
-    panels.push(
-      loftGeoZ([                                                       // boot lid
-        { z: -2.16, hx: 0.70, hy: 0.06, cy: 1.22 },
-        { z: -1.62, hx: 0.82, hy: 0.085, cy: 1.30 },
-        { z: -1.24, hx: 0.84, hy: 0.10, cy: 1.30 },
-      ], M),
-      chamferGeo(1.34, 0.11, 1.52, 0.04, M, [0, 1.76, -0.22]));        // roof
-  }
-
-  // The greenhouse, raked at both ends, and the lamps — everything on the
-  // car that is glass rather than steel, in one mesh. A burnt-out shell
-  // wears this in charred steel instead, which is what a car with no windows
-  // left actually looks like.
-  const G = TILE.glass;
-  const glass = [pickup
-    ? loftGeo([
-      { y: 1.20, hx: 0.80, hz: 0.72, cz: -0.10 },
-      { y: 1.58, hx: 0.76, hz: 0.64, cz: -0.14 },
-      { y: 1.78, hx: 0.66, hz: 0.52, cz: -0.18 },
-    ], G)
-    : loftGeo([
-      { y: 1.16, hx: 0.80, hz: 1.04, cz: -0.22 },
-      { y: 1.54, hx: 0.76, hz: 0.90, cz: -0.26 },
-      { y: 1.74, hx: 0.66, hz: 0.70, cz: -0.30 },
-    ], G)];
-  for (const sx of [-1, 1]) {
-    glass.push(chamferGeo(0.30, 0.16, 0.12, 0.03, G, [sx * 0.46, 1.04, 2.15]));
-    glass.push(chamferGeo(0.26, 0.13, 0.10, 0.03, G, [sx * 0.46, 1.04, -2.15]));
-  }
-
-  const trim = [
-    chamferGeo(1.72, 0.26, 0.22, 0.07, M, [0, 0.62, 2.08]),            // bumpers
-    chamferGeo(1.72, 0.26, 0.22, 0.07, M, [0, 0.62, -2.08]),
-    chamferGeo(1.16, 0.20, 0.14, 0.05, M, [0, 0.88, 2.12]),            // grille
-  ];
-
-  const wheels = [];
-  for (const wx of [-0.80, 0.80]) {
-    for (const wz of [-1.34, 1.34]) {
-      wheels.push(cylGeo(0.42, 0.42, 0.30, TILE.rubber, 12)
-        .rotateZ(Math.PI / 2).translate(wx, 0.44, wz));
+  // a wheel arch, from its rear foot over the top to its front foot
+  const arch = (cz, foot = 0.25) => {
+    const s = Math.asin((WHEEL.cy - foot) / WHEEL.arch), pts = [];
+    for (let k = 0; k <= 9; k++) {
+      const t = Math.PI + s - ((Math.PI + 2 * s) * k) / 9;
+      pts.push([cz + WHEEL.arch * Math.cos(t), WHEEL.cy + WHEEL.arch * Math.sin(t)]);
     }
+    return pts;
+  };
+  const smooth = (e) => { const t = Math.min(1, Math.max(0, e)); return t * t * (3 - 2 * t); };
+  // in plan, both ends draw in; in section, the sills tuck under
+  const plan = (v) => {
+    v.x *= 1 - 0.10 * smooth((Math.abs(v.z) - 1.5) / 0.7) - 0.05 * smooth((0.42 - v.y) / 0.16);
+  };
+  // the greenhouse leans in as it rises — the tumblehome
+  const lean = (v) => { v.x *= 1 - 0.15 * smooth((v.y - 1.0) / 0.48); };
+  // two bevel steps and two-step fillets: a wreck is seen from a few metres
+  // at closest, and there are fifty of them in the sector
+  const cut = { segs: 2, curve: 2 };
+  const paint = (outline, width, opts, shape = plan) => bend(sideGeo(outline, width, { tile: M, ...cut, ...opts }), shape);
+
+  const bottom = [
+    [-2.10, 0.28, 0.04], [-1.82, 0.25], ...arch(-WHEEL.z), [-0.90, 0.24], [0.90, 0.24], ...arch(WHEEL.z), [1.84, 0.25],
+    [2.10, 0.30, 0.05], [2.17, 0.42, 0.03], [2.185, 0.58, 0.02], [2.15, 0.70, 0.03], [2.09, 0.80, 0.04], [1.98, 0.88, 0.05],
+    [1.50, 0.95, 0.20], [0.86, 0.99],
+  ];
+  const tail = [[-2.10, 0.96, 0.05], [-2.17, 0.84, 0.04], [-2.185, 0.62, 0.02], [-2.15, 0.40, 0.04]];
+
+  const panels = [];
+  const glass = [];
+  let cab, roofLine, frame, windows;
+  if (pickup) {
+    // the body stops at the bed floor behind the cab; the bed is walls
+    panels.push(paint([...bottom, [-0.46, 1.00], [-0.46, 0.80], [-2.14, 0.80], [-2.185, 0.74, 0.03], ...tail.slice(2)], 1.9, { bevel: 0.10 }));
+    for (const sx of [-1, 1]) {
+      panels.push(paint([[-0.50, 0.78], [-2.18, 0.78], [-2.18, 1.10, 0.02], [-0.50, 1.10, 0.02]], 0.07,
+        { bevel: 0.02 }, (v) => { v.x += sx * 0.912; plan(v); }));
+    }
+    panels.push(paint([[-2.12, 0.80], [-2.185, 0.80], [-2.185, 1.08, 0.02], [-2.12, 1.08, 0.02]], 1.80, { bevel: 0.02 }));
+    panels.push(paint([[-0.46, 0.80], [-0.53, 0.80], [-0.53, 1.10, 0.02], [-0.46, 1.10, 0.02]], 1.80, { bevel: 0.02 }));
+    cab = [[0.94, 0.95], [0.88, 0.99, 0.02], [0.06, 1.43, 0.08], [-0.10, 1.475, 0.06], [-0.36, 1.47, 0.04], [-0.42, 1.40, 0.02], [-0.44, 0.95]];
+    roofLine = [[0.06, 1.445], [-0.10, 1.488, 0.06], [-0.36, 1.483, 0.03], [-0.43, 1.44], [-0.41, 1.40], [-0.30, 1.445, 0.04], [-0.08, 1.45, 0.04], [0.04, 1.41]];
+    frame = [[0.90, 0.96], [0.85, 0.995, 0.02], [0.07, 1.42, 0.06], [-0.10, 1.462, 0.05], [-0.35, 1.457, 0.03], [-0.40, 1.39, 0.02], [-0.42, 0.96]];
+    windows = [[[0.70, 1.04, 0.02], [0.10, 1.38, 0.03], [-0.30, 1.42, 0.03], [-0.30, 1.04, 0.02]]];
+  } else {
+    panels.push(paint([...bottom, [-1.30, 1.02], [-1.40, 1.02], [-1.90, 1.01, 0.15], ...tail], 1.9, { bevel: 0.10 }));
+    cab = [[0.94, 0.95], [0.88, 0.99, 0.02], [0.02, 1.43, 0.08], [-0.30, 1.475, 0.25], [-0.80, 1.465, 0.12], [-1.00, 1.40, 0.06], [-1.36, 1.03, 0.02], [-1.40, 0.95]];
+    roofLine = [[0.02, 1.445], [-0.30, 1.488, 0.25], [-0.80, 1.478, 0.12], [-0.97, 1.43, 0.03], [-0.95, 1.395], [-0.80, 1.44, 0.1], [-0.30, 1.45, 0.2], [0.0, 1.41]];
+    frame = [[0.90, 0.96], [0.85, 0.995, 0.02], [0.03, 1.42, 0.06], [-0.30, 1.462, 0.2], [-0.79, 1.452, 0.1], [-0.98, 1.39, 0.04], [-1.33, 1.03, 0.02], [-1.36, 0.96]];
+    windows = [
+      [[0.70, 1.04, 0.02], [0.06, 1.38, 0.03], [-0.40, 1.42, 0.03], [-0.40, 1.04, 0.02]],
+      [[-0.48, 1.04, 0.02], [-0.48, 1.42, 0.03], [-0.86, 1.40, 0.04], [-1.20, 1.06, 0.02]],
+    ];
+  }
+  glass.push(bend(sideGeo(cab, 1.60, { tile: G, bevel: 0.04, ...cut }), lean));
+  panels.push(paint(roofLine, 1.62, { bevel: 0.03 }, lean));
+  for (const sx of [-1, 1]) {
+    panels.push(paint(frame, 0.022, { holes: windows, bevel: 0.006, segs: 1 }, (v) => { v.x += sx * 0.796; lean(v); }));
+    // door mirror on a stalk at the foot of the pillar
+    panels.push(chamferGeo(0.13, 0.09, 0.06, 0.02, M, [sx * 0.87, 1.07, 0.70]));
+  }
+
+  // lamps: lenses proud of the nose and the tail
+  for (const sx of [-1, 1]) {
+    glass.push(bend(sideGeo([[2.11, 0.69], [2.165, 0.70, 0.01], [2.105, 0.80, 0.01], [2.05, 0.79]], 0.30, { tile: G, bevel: 0.02, ...cut, segs: 1 }),
+      (v) => { v.x += sx * 0.62; plan(v); }));
+    glass.push(bend(sideGeo([[-2.12, 0.82], [-2.19, 0.82], [-2.165, 0.93], [-2.10, 0.95]], 0.30, { tile: G, bevel: 0.02, ...cut, segs: 1 }),
+      (v) => { v.x += sx * 0.60; plan(v); }));
+  }
+
+  // bumpers swept back at the corners, a grille, door handles
+  const sweep = (dir) => (v) => { v.z -= dir * 0.10 * (v.x / 0.92) ** 2; };
+  const trim = [
+    bend(sideGeo([[2.06, 0.34, 0.03], [2.20, 0.36, 0.04], [2.20, 0.56, 0.04], [2.06, 0.58, 0.03]], 1.84, { tile: M, bevel: 0.05, ...cut }), sweep(1)),
+    bend(sideGeo([[-2.06, 0.34, 0.03], [-2.20, 0.36, 0.04], [-2.20, 0.56, 0.04], [-2.06, 0.58, 0.03]], 1.84, { tile: M, bevel: 0.05, ...cut }), sweep(-1)),
+    sideGeo([[2.12, 0.60], [2.188, 0.60, 0.01], [2.168, 0.70, 0.01], [2.10, 0.70]], 0.78, { tile: M, bevel: 0.015, ...cut, segs: 1 }),
+  ];
+  for (const sx of [-1, 1]) {
+    for (const z of pickup ? [0.22] : [0.22, -0.62]) trim.push(chamferGeo(0.012, 0.026, 0.13, 0.005, M, [sx * 0.942, 0.93, z]));
+  }
+
+  // Wheels. One lathe: inner face, tyre round to the tread and back, a lip,
+  // and the dish of the rim. The tread and the face are unwrapped to the two
+  // regions of the tyre tile — see `TEX.tire`.
+  const R = TILE.rubber;
+  const wheelUV = (x, y, z, fx, fy, fz, th) => {
+    if (Math.abs(fz) > 0.55 * Math.hypot(fx, fy, fz)) return [0.5 + x / R, 0.5 + y / R];
+    return [(th * Math.hypot(x, y)) / R, 0.03 + (z + 0.11) / R];
+  };
+  const wheel = latheGeo([
+    [0, -0.06], [0.22, -0.06], [0.235, -0.105], [0.305, -0.106], [0.335, -0.066], [0.335, 0.066],
+    [0.305, 0.106], [0.235, 0.100], [0.222, 0.085], [0.17, 0.052], [0.06, 0.050], [0, 0.060],
+  ], 12, R, { uv: wheelUV, crease: 44 });
+  const wheels = [];
+  for (const sx of [-1, 1]) {
+    for (const wz of [-WHEEL.z, WHEEL.z]) {
+      wheels.push(wheel.clone().rotateY(sx * Math.PI / 2).translate(sx * WHEEL.x, WHEEL.cy, wz));
+    }
+  }
+  // the dark of the wheel well, so the arch is a hole and not a window
+  for (const wz of [-WHEEL.z, WHEEL.z]) {
+    wheels.push(cylGeo(WHEEL.arch - 0.008, WHEEL.arch - 0.008, 1.30, R, 10, true).rotateZ(Math.PI / 2).translate(0, WHEEL.cy, wz));
   }
 
   return {
@@ -1051,6 +1076,18 @@ export const CITY_PAINT = [
           map: metalTex, normalMap: TEX.normalFrom(metalTex, 1.1, 'painted', 1),
           normalScale: new THREE.Vector2(0.4, 0.4), vertexColors: true,
         }));
+      // A rusted wreck wears its own paint and its own rust: a smooth panel
+      // gone to primer and oxide, not the container's corrugated sheet that
+      // half of them used to wear (see `TEX.carRust`).
+      m.carRustMats = [0, 1, 2, 3].map((v) => {
+        const tex = TEX.carRust(v);
+        const surface = TEX.surfaceFrom(tex, { dark: 0.95, lite: 0.5, metalDark: 0.15, metalLite: 0.55 }, 'carrust' + v);
+        return new THREE.MeshStandardMaterial({
+          color: 0xffffff, map: tex, normalMap: TEX.normalFrom(tex, 1.2, 'carrust' + v, 1),
+          normalScale: new THREE.Vector2(0.55, 0.55), roughnessMap: surface, metalnessMap: surface,
+          roughness: 1, metalness: 1, envMapIntensity: 0.7, vertexColors: true,
+        });
+      });
       // A burnt-out shell wears the same panels as a painted one, so it is
       // unwrapped at the same tile — what changed is the surface, not the car.
       const charTex = TEX.charred();
@@ -1167,6 +1204,7 @@ function labelMaterials(m) {
   const label = (mat, name, tile) => { mat.userData.name = name; mat.userData.tile = tile; };
   m.facades.forEach((mat, i) => label(mat, 'facade' + i, TILE.facade));
   m.carBodyMats.forEach((mat, i) => label(mat, 'car' + i, TILE.metal));
+  m.carRustMats.forEach((mat, i) => label(mat, 'carrust' + i, TILE.metal));
   label(m.concreteMat, 'concrete', TILE.concrete);
   label(m.darkConcrete, 'dark', TILE.concrete);
   m.rusts.forEach((mat, i) => label(mat, 'rust' + i, TILE.rust));
@@ -1199,7 +1237,7 @@ export function buildCity(scene, painted = null) {
   const mats = painted || paintCity();
   labelMaterials(mats);
   const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
-    asphaltMat, paintMat, carBodyMats, burntMat, tireMat, weedMat,
+    asphaltMat, paintMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
@@ -2234,7 +2272,9 @@ export function buildCity(scene, painted = null) {
     spend(UUID_COST);                                     // the group
     // the branch still draws exactly one number either way, so the seeded
     // stream — and every city it lays out — is unchanged by the palette
-    const bodyMat = Math.random() < 0.5 ? rustFor(x, z) : pick(carBodyMats);
+    const bodyMat = Math.random() < 0.5
+      ? carRustMats[Math.floor(hash2(Math.round(x), Math.round(z), 21) * carRustMats.length)]
+      : pick(carBodyMats);
     spend(3 * 2 * UUID_COST);                             // three panels
     const burnt = Math.random() < 0.4;
     if (!burnt) spend(4 * 2 * UUID_COST);                 // four wheels
@@ -2262,13 +2302,16 @@ export function buildCity(scene, painted = null) {
       // in the air above the wreck.
       const body = add(set.panels, burnt ? burntMat : bodyMat, burnt ? null : paint);
       const cabin = add(set.cabin, burnt ? burntMat : glass);
-      add(set.trim, metal);
-      if (!burnt) add(set.wheels, tireMat);
+      add(set.trim, burnt ? burntMat : metal);
+      add(set.wheels, tireMat);
 
       return { car, body, cabin };
     });
 
-    built.car.position.set(x, burnt ? -0.2 : 0, z);
+    // A burnt shell sits on its rims; the roof stays at the collider's height,
+    // so it does not drop the body — it used to, by 0.2 m, which put the roof
+    // of a burnt car at 1.62 m over a 1.5 m collider.
+    built.car.position.set(x, 0, z);
     built.car.rotation.y = yaw;
     built.car.rotation.z = roll;
     g.add(built.car);

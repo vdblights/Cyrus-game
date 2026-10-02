@@ -190,6 +190,216 @@ export function loftGeoZ(sections, tile) {
   return loftGeo(mapped, tile).rotateX(Math.PI / 2);
 }
 
+/* ------------------------------------------------------ profiles and lathes */
+
+/**
+ * Normals that are smooth across a curve and sharp across an edge.
+ *
+ * A curved part built of flat facets reads as a faceted pencil; the same
+ * part with every normal averaged reads as a balloon, because a crisp edge
+ * gets smoothed into the faces either side of it. The answer is the
+ * crease: each corner of each facet averages only the facets meeting it
+ * that turn by less than `angle` degrees from its own. A rounded grip comes
+ * out round and the edge where it meets the frame stays an edge.
+ *
+ * Every normal is derived from the facets' own winding, so a part built
+ * this way cannot disagree with itself about which way it faces.
+ */
+export function creaseNormals(geo, angle = 34) {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  const p = g.attributes.position.array;
+  const tris = p.length / 9;
+  const fn = new Float32Array(tris * 3);         // area-weighted
+  const un = new Float32Array(tris * 3);         // unit
+  for (let t = 0; t < tris; t++) {
+    const a = t * 9;
+    const ux = p[a + 3] - p[a], uy = p[a + 4] - p[a + 1], uz = p[a + 5] - p[a + 2];
+    const wx = p[a + 6] - p[a], wy = p[a + 7] - p[a + 1], wz = p[a + 8] - p[a + 2];
+    const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+    const l = Math.hypot(cx, cy, cz);
+    fn[t * 3] = cx; fn[t * 3 + 1] = cy; fn[t * 3 + 2] = cz;
+    if (l > 1e-14) { un[t * 3] = cx / l; un[t * 3 + 1] = cy / l; un[t * 3 + 2] = cz / l; }
+  }
+  // corners are welded by position at a twentieth of a millimetre
+  const key = (i) => `${Math.round(p[i] * 2e4)},${Math.round(p[i + 1] * 2e4)},${Math.round(p[i + 2] * 2e4)}`;
+  const buckets = new Map();
+  for (let v = 0; v < tris * 3; v++) {
+    const k = key(v * 3);
+    let b = buckets.get(k);
+    if (!b) buckets.set(k, (b = []));
+    b.push((v / 3) | 0);
+  }
+  const cos = Math.cos((angle * Math.PI) / 180);
+  const nor = new Float32Array(p.length);
+  for (let v = 0; v < tris * 3; v++) {
+    const t = (v / 3) | 0;
+    const ox = un[t * 3], oy = un[t * 3 + 1], oz = un[t * 3 + 2];
+    let x = 0, y = 0, z = 0;
+    for (const u of buckets.get(key(v * 3))) {
+      if (ox * un[u * 3] + oy * un[u * 3 + 1] + oz * un[u * 3 + 2] < cos) continue;
+      x += fn[u * 3]; y += fn[u * 3 + 1]; z += fn[u * 3 + 2];
+    }
+    const l = Math.hypot(x, y, z);
+    if (l > 1e-14) { nor[v * 3] = x / l; nor[v * 3 + 1] = y / l; nor[v * 3 + 2] = z / l; }
+    else { nor[v * 3] = ox; nor[v * 3 + 1] = oy || (ox || oz ? 0 : 1); nor[v * 3 + 2] = oz; }
+  }
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  return g;
+}
+
+/**
+ * Planar UVs off each facet's own dominant axis, at a declared tile — the
+ * same unwrap `facets` gives a chamfered box, for a geometry that arrived
+ * from somewhere else. Non-indexed input, so a facet owns its corners.
+ */
+export function planarUV(geo, tile) {
+  const p = geo.attributes.position.array;
+  const uv = new Float32Array((p.length / 3) * 2);
+  for (let a = 0; a < p.length; a += 9) {
+    const ux = p[a + 3] - p[a], uy = p[a + 4] - p[a + 1], uz = p[a + 5] - p[a + 2];
+    const wx = p[a + 6] - p[a], wy = p[a + 7] - p[a + 1], wz = p[a + 8] - p[a + 2];
+    const ax = Math.abs(uy * wz - uz * wy), ay = Math.abs(uz * wx - ux * wz), az = Math.abs(ux * wy - uy * wx);
+    for (let c = 0; c < 3; c++) {
+      const i = a + c * 3, o = (i / 3) * 2;
+      if (ay >= ax && ay >= az) { uv[o] = p[i] / tile; uv[o + 1] = p[i + 2] / tile; }
+      else if (ax >= az) { uv[o] = p[i + 2] / tile; uv[o + 1] = p[i + 1] / tile; }
+      else { uv[o] = p[i] / tile; uv[o + 1] = p[i + 1] / tile; }
+    }
+  }
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return geo;
+}
+
+/**
+ * Round the corners of an outline: each point may carry a third number, the
+ * radius of the fillet at that corner, which is swapped for a short curve
+ * through it. Most of what makes a machined part read as machined rather
+ * than cut out of card is that no corner of it is sharp.
+ */
+export function fillet(points, steps = 4) {
+  const out = [];
+  const n = points.length;
+  for (let i = 0; i < n; i++) {
+    const [px, py, r = 0] = points[i];
+    if (!r) { out.push([px, py]); continue; }
+    const [ax, ay] = points[(i + n - 1) % n], [bx, by] = points[(i + 1) % n];
+    const la = Math.hypot(ax - px, ay - py), lb = Math.hypot(bx - px, by - py);
+    if (la < 1e-9 || lb < 1e-9) { out.push([px, py]); continue; }
+    const ux = (ax - px) / la, uy = (ay - py) / la, vx = (bx - px) / lb, vy = (by - py) / lb;
+    const half = Math.acos(Math.max(-1, Math.min(1, ux * vx + uy * vy))) / 2;
+    const t = Math.min(r / Math.max(Math.tan(half), 1e-3), la * 0.45, lb * 0.45);
+    const s = [px + ux * t, py + uy * t], e = [px + vx * t, py + vy * t];
+    for (let k = 0; k <= steps; k++) {
+      const q = k / steps, w0 = (1 - q) * (1 - q), w1 = 2 * q * (1 - q), w2 = q * q;
+      out.push([s[0] * w0 + px * w1 + e[0] * w2, s[1] * w0 + py * w1 + e[1] * w2]);
+    }
+  }
+  return out;
+}
+
+/**
+ * A part described by its side view: an outline in (z, y), extruded across
+ * X to `width` and centred on it, with its edges rolled over by `bevel`.
+ *
+ * This is how a gunsmith or a car designer draws the thing, and it is what a
+ * box could never be — a trigger guard is a hole in the frame, a grip rakes
+ * back with a beavertail over the web of the hand, a car's wheel arch is a
+ * bite out of the body. `holes` are outlines too. Points may carry a fillet
+ * radius (see `fillet`). The bevel is taken *inside* the outline, so the
+ * silhouette is exactly what was drawn and the caps sit at ±width/2.
+ */
+export function sideGeo(outline, width, { holes = [], bevel = 0, segs = 2, tile = 1, crease = 34, curve = 4 } = {}) {
+  const v2 = (pts) => fillet(pts, curve).map(([z, y]) => new THREE.Vector2(-z, y));
+  const shape = new THREE.Shape(v2(outline));
+  for (const h of holes) shape.holes.push(new THREE.Path(v2(h)));
+  const b = Math.min(bevel, width * 0.45);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: width - 2 * b, steps: 1, curveSegments: 1,
+    bevelEnabled: b > 0, bevelThickness: b, bevelSize: b, bevelOffset: -b, bevelSegments: segs,
+  });
+  geo.deleteAttribute('uv');
+  geo.translate(0, 0, -(width - 2 * b) / 2);
+  geo.rotateY(Math.PI / 2);                 // shape x is -z, the extrusion is +x
+  return creaseNormals(planarUV(geo, tile), crease);
+}
+
+/**
+ * A part turned on a lathe: a profile of `[radius, along]` pairs revolved
+ * about the Z axis — a barrel, a muzzle brake, a buffer tube, a wheel.
+ *
+ * UVs run round the part by arc length at its own radius and along it by the
+ * profile's own length, so the machining marks are the size they are on
+ * every flat part. `uv`, if given, replaces that per corner: it receives the
+ * corner and the facet's normal, for a part that wants two surfaces off one
+ * tile (a tyre's tread and its sidewall).
+ */
+export function latheGeo(profile, sides, tile, { uv = null, crease = 40 } = {}) {
+  const pts = profile.map(([r, a]) => new THREE.Vector2(Math.max(r, 0), a));
+  const lathe = new THREE.LatheGeometry(pts, sides);
+  // arc length along the profile, for the default unwrap
+  const run = [0];
+  for (let j = 1; j < pts.length; j++) run.push(run[j - 1] + pts[j].distanceTo(pts[j - 1]));
+  const luv = lathe.attributes.uv;
+  for (let k = 0; k < luv.count; k++) {
+    const j = Math.round(luv.getY(k) * (pts.length - 1));
+    luv.setXY(k, luv.getX(k) * Math.PI * 2 * pts[j].x / tile, run[j] / tile);
+  }
+  let g = lathe.toNonIndexed();
+  const nRef = g.attributes.normal.array;   // three's own outward normals
+
+  // Which way three winds a lathe depends on which way the profile runs, so
+  // ask it rather than remember: compare each facet's winding with the
+  // outward normal three computed off the profile, and turn the lot round if
+  // most of them disagree.
+  const p = g.attributes.position.array, u = g.attributes.uv.array;
+  let agree = 0;
+  for (let a = 0; a < p.length; a += 9) {
+    const ux = p[a + 3] - p[a], uy = p[a + 4] - p[a + 1], uz = p[a + 5] - p[a + 2];
+    const wx = p[a + 6] - p[a], wy = p[a + 7] - p[a + 1], wz = p[a + 8] - p[a + 2];
+    const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+    const nx = nRef[a] + nRef[a + 3] + nRef[a + 6], ny = nRef[a + 1] + nRef[a + 4] + nRef[a + 7];
+    const nz = nRef[a + 2] + nRef[a + 5] + nRef[a + 8];
+    agree += Math.sign(cx * nx + cy * ny + cz * nz);
+  }
+  if (agree < 0) {
+    for (let a = 0; a < p.length; a += 9) {
+      for (let c = 0; c < 3; c++) { const t = p[a + 3 + c]; p[a + 3 + c] = p[a + 6 + c]; p[a + 6 + c] = t; }
+      const o = (a / 3) * 2;
+      for (let c = 0; c < 2; c++) { const t = u[o + 2 + c]; u[o + 2 + c] = u[o + 4 + c]; u[o + 4 + c] = t; }
+    }
+  }
+  g.rotateX(Math.PI / 2);                   // the lathe's Y axis becomes +Z
+  g = creaseNormals(g, crease);
+  if (uv) {
+    const P = g.attributes.position.array, N = g.attributes.normal.array, U = g.attributes.uv.array;
+    for (let a = 0; a < P.length; a += 9) {
+      // the facet's normal, so a corner on a crease is unwrapped with its facet
+      const fx = N[a] + N[a + 3] + N[a + 6], fy = N[a + 1] + N[a + 4] + N[a + 7], fz = N[a + 2] + N[a + 5] + N[a + 8];
+      const ang = [0, 1, 2].map((c) => Math.atan2(P[a + c * 3 + 1], P[a + c * 3]));
+      // a facet straddling the seam takes its corners from one side of it
+      if (Math.max(...ang) - Math.min(...ang) > Math.PI) for (let c = 0; c < 3; c++) if (ang[c] < 0) ang[c] += Math.PI * 2;
+      for (let c = 0; c < 3; c++) {
+        const i = a + c * 3;
+        const [s, t] = uv(P[i], P[i + 1], P[i + 2], fx, fy, fz, ang[c]);
+        U[(i / 3) * 2] = s; U[(i / 3) * 2 + 1] = t;
+      }
+    }
+  }
+  return g;
+}
+
+/** Move every vertex of a geometry through `fn(v)`, then redo its normals. */
+export function bend(geo, fn, crease = 34) {
+  const p = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    fn(v);
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  return creaseNormals(geo, crease);
+}
+
 /**
  * Concatenate geometries that are already in world space into one buffer.
  *

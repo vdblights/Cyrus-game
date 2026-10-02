@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import * as TEX from './textures.js';
 import { TILE } from './textures.js';
-import { chamferGeo, mergeIntoOne } from './shapes.js';
+import { chamferGeo, mergeIntoOne, sideGeo, latheGeo } from './shapes.js';
 import { audio } from './audio.js';
 
 /**
@@ -130,6 +130,78 @@ function tube(r1, r2, len, mat, x = 0, y = 0, z = 0, rx = Math.PI / 2) {
 }
 
 /**
+ * A part drawn by its side view, the way a gunsmith draws one — see
+ * `sideGeo`. Outline points are `[z, y]` with the muzzle toward -z, and may
+ * carry a fillet radius. Frames, slides, receivers, grips, stocks and
+ * magazines are all this: a box can be none of them, because none of them
+ * has a right angle anywhere a hand would notice.
+ */
+function side(outline, width, mat, { holes = [], bevel = null, x = 0, segs = 2 } = {}) {
+  const tile = tileOf(mat);
+  const geo = sideGeo(outline, width, { holes, bevel: bevel ?? Math.min(width * 0.2, 0.005), segs, tile });
+  const m = new THREE.Mesh(geo, mats()[mat]);
+  m.position.x = x;
+  m.userData.tile = tile;
+  return m;
+}
+
+/**
+ * A part turned about an axis parallel to the bore: `[radius, z]` pairs,
+ * listed from the muzzle end and walked out and back the way a lathe tool
+ * would cut it (material on the left), so a barrel's bore faces in and its
+ * crown faces forward. Barrels, buffer tubes, magazine tubes, handguards.
+ */
+function turned(profile, mat, y = 0, { sides = 20, x = 0, crease = 40, spin = 0 } = {}) {
+  const tile = tileOf(mat);
+  const geo = latheGeo(profile, sides, tile, { crease });
+  if (spin) geo.rotateZ(spin);
+  const m = new THREE.Mesh(geo, mats()[mat]);
+  m.position.set(x, y, 0);
+  m.userData.tile = tile;
+  return m;
+}
+
+/** A point `a` down a grip's axis and `f` out of its front, in (z, y). */
+function gripPoint({ c: [cz, cy], rx }, a, f) {
+  return [cz - Math.sin(rx) * a - Math.cos(rx) * f, cy - Math.cos(rx) * a + Math.sin(rx) * f];
+}
+
+/**
+ * The outline of a grip, and the frame the hand that holds it is built from.
+ *
+ * A grip is a raked band `len` long and `depth` deep about `c` (z, y). The
+ * rake is the same number `gripFrame` turns a hand by, so the fingers close
+ * round exactly the shape that is drawn — and it is *negative*: down the grip
+ * runs back toward the shooter. Every grip here used to rake the other way,
+ * the bottom of each one tucked forward under the gun, which nothing measured
+ * and every side view showed. `top` extends the band up to the frame it hangs
+ * from; `grooves` puts finger swells down the front strap.
+ */
+function gripOutline([cz, cy], rx, len, depth, { top = null, r = 0.006, grooves = 0 } = {}) {
+  const A = [-Math.sin(rx), -Math.cos(rx)];      // down the grip, in (z, y)
+  const F = [-Math.cos(rx), Math.sin(rx)];       // out of its front strap
+  const at = (a, f) => [cz + A[0] * a + F[0] * f, cy + A[1] * a + F[1] * f];
+  let a0f = -len / 2, a0b = -len / 2;
+  if (top != null) {
+    a0f = -len / 2 - (top - at(-len / 2, depth / 2)[1]) / Math.cos(rx);
+    a0b = -len / 2 - (top - at(-len / 2, -depth / 2)[1]) / Math.cos(rx);
+  }
+  const front = [];
+  // finger swells: the strap bulges between where three fingers lie
+  for (let k = 1; k <= grooves; k++) {
+    const a = a0f + ((len / 2 - a0f) * k) / (grooves + 1);
+    front.push([...at(a, depth / 2 + 0.004), 0.008]);
+  }
+  return [
+    [...at(a0f, depth / 2), r],
+    [...at(a0b, -depth / 2), r],
+    [...at(len / 2, -depth / 2), r * 1.6],
+    [...at(len / 2, depth / 2), r * 1.6],
+    ...front.reverse(),
+  ];
+}
+
+/**
  * Red-dot sight, shared by the long guns. The housing is a hollow frame —
  * the player aims *through* it, so the four bars are modelled separately
  * instead of as one solid block.
@@ -183,10 +255,28 @@ function digit(points, r, mat = GLOVE) {
 /** A tapered limb from `a` (radius ra) to `b` (radius rb): wrist, forearm. */
 function limb(a, b, ra, rb, mat) {
   const len = a.distanceTo(b);
-  const geo = new THREE.CylinderGeometry(rb, ra, len, 14, 1, true);
+  const cloth = mat === SLEEVE;
+  const geo = new THREE.CylinderGeometry(rb, ra, len, cloth ? 20 : 14, cloth ? 14 : 1, true);
   const tile = tileOf(mat), uv = geo.attributes.uv;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (Math.PI * (ra + rb)) / tile, uv.getY(i) * len / tile);
   uv.needsUpdate = true;
+  if (cloth) {
+    // A sleeve is not a pipe: it has a hem at the wrist, and it bunches in
+    // folds that run round and across the forearm. Each vertex is pushed out
+    // by a hem band and two crossing waves of fold — the same shape on every
+    // weapon, so it costs nothing to look at twice.
+    const p = geo.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      const t = y / len + 0.5, th = Math.atan2(z, x);
+      const hem = t < 0.07 ? 0.09 : t < 0.09 ? 0.03 : 0;
+      const fold = 0.05 * Math.sin(t * len * 52 + 1.6 * Math.sin(th * 2 + 0.5)) * (0.35 + 0.65 * t)
+        + 0.03 * Math.sin(th * 3 + t * 8);
+      const k = 1 + hem + fold;
+      p.setXYZ(i, x * k, y, z * k);
+    }
+    geo.computeVertexNormals();
+  }
   // open-ended, so it is seen from inside where it leaves the frame
   const m = new THREE.Mesh(geo, sided(mat));
   m.position.copy(a).add(b).multiplyScalar(0.5);
@@ -236,13 +326,19 @@ function hand(g, { c, A, U, F, hu, hf, stack, sweep = 3.6, r = 0.0088, index = n
   // the palm side of the grip
   const a0 = stack[0], a1 = stack[stack.length - 1], mid = (a0 + a1) / 2;
   const span = Math.abs(a1 - a0) + r * 3.2, length = 0.085, thick = 0.026;
-  const back = new THREE.Mesh(chamferGeo(thick, span, length, 0.009, TILE.glove), mats()[GLOVE]);
+  const back = new THREE.Mesh(chamferGeo(thick, span, length, 0.0105, TILE.glove), mats()[GLOVE]);
   back.userData.tile = TILE.glove;
   const centre = c.clone().addScaledVector(A, mid).addScaledVector(U, hu + thick / 2 + 0.002)
     .addScaledVector(F, hf * 0.55 - length / 2);
   back.position.copy(centre);
   back.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(U, A, F.clone().negate()));
   g.add(back);
+  // the knuckles, a ridge across the front of it where the fingers leave
+  const knuckle = (a) => c.clone().addScaledVector(A, a).addScaledVector(U, hu + thick * 0.62)
+    .addScaledVector(F, hf * 0.55 - 0.004);
+  const kn = [];
+  for (let k = 0; k <= 4; k++) kn.push(knuckle(a0 + (a1 - a0) * (k / 4)));
+  for (const m of digit(kn, 0.0098)) g.add(m);
 
   // wrist and arm, from the heel of the hand to the elbow
   const heel = centre.clone().addScaledVector(F, -length / 2 + 0.01);
@@ -278,64 +374,121 @@ function supportHand(g, { c, hu, hf, stack, thumb, elbow = v3(-0.30, -0.46, 0.12
 
 /* ------------------------------------------------------------------ models */
 
+/**
+ * An M9: a slide with the nose cut back, a frame whose trigger guard is a
+ * hole in it, and a grip raked back with a tang over the web of the hand.
+ */
 function buildPistol() {
   const g = new THREE.Group();
-  g.add(box(0.045, 0.075, 0.24, METAL, 0, 0.02, -0.06));        // slide
-  g.add(box(0.042, 0.05, 0.20, POLY, 0, -0.04, -0.04));         // frame
-  g.add(box(0.05, 0.115, 0.075, POLY, 0, -0.115, 0.045, 0.22, 0, 0, 0.016)); // grip
-  // trigger guard as a loop, and a trigger inside it
-  g.add(box(0.012, 0.008, 0.058, POLY, 0, -0.088, -0.012, 0, 0, 0, 0.003));   // guard, bottom
-  g.add(box(0.012, 0.03, 0.008, POLY, 0, -0.075, -0.039, 0.2, 0, 0, 0.003));  // guard, front
-  g.add(box(0.006, 0.026, 0.007, DARK, 0, -0.072, -0.008, 0.28, 0, 0, 0.002)); // trigger
-  // slide: rear serrations, ejection port, hammer, decocker
-  for (let i = 0; i < 7; i++) g.add(box(0.0465, 0.05, 0.0028, DARK, 0, 0.022, 0.048 - i * 0.0065, 0, 0, 0, 0.0008));
-  g.add(box(0.013, 0.012, 0.034, DARK, 0.016, 0.054, -0.035, 0, 0, 0, 0.002));   // ejection port
-  g.add(box(0.012, 0.024, 0.012, DARK, 0, 0.046, 0.066, -0.4, 0, 0, 0.003));     // hammer
-  g.add(box(0.052, 0.008, 0.016, DARK, 0, 0.036, 0.042, 0, 0, 0, 0.002));        // decocker
-  g.add(box(0.03, 0.01, 0.05, POLY, 0, -0.07, -0.11));                          // dust cover
-  g.add(box(0.046, 0.012, 0.07, DARK, 0, -0.177, 0.031, 0.22, 0, 0, 0.004));     // mag baseplate
-  g.add(tube(0.012, 0.012, 0.05, DARK, 0, 0.02, -0.19));        // muzzle
-  g.add(box(0.007, 0.016, 0.008, DARK, 0, 0.070, -0.16));       // front post
-  g.add(box(0.010, 0.016, 0.012, DARK, -0.017, 0.070, 0.04));   // rear notch, left
-  g.add(box(0.010, 0.016, 0.012, DARK, 0.017, 0.070, 0.04));    // rear notch, right
+  // slide, with the front cut back at an angle the way a Beretta's is
+  g.add(side([
+    [-0.188, 0.002, 0.002], [-0.190, 0.034, 0.003], [-0.174, 0.0575, 0.006],
+    [0.046, 0.0575, 0.008], [0.062, 0.050, 0.005], [0.064, 0.008, 0.003], [0.060, 0.0, 0.002],
+  ], 0.034, METAL, { bevel: 0.004 }));
+  // rear serrations, cut across the slide's flanks
+  for (let i = 0; i < 8; i++) g.add(box(0.0352, 0.036, 0.0024, DARK, 0, 0.026, 0.053 - i * 0.0056, 0, 0, 0, 0.0006));
+  g.add(box(0.002, 0.013, 0.036, DARK, 0.0172, 0.045, -0.034, 0, 0, 0, 0.0006));   // ejection port
+  g.add(box(0.040, 0.009, 0.016, DARK, 0, 0.042, 0.040, 0, 0, 0, 0.002));           // decocker
+  // the barrel's crown standing proud of the slide, bore and all
+  g.add(turned([[0, -0.180], [0.0045, -0.180], [0.0045, -0.195], [0.0085, -0.195], [0.0085, -0.178]], METAL, 0.028));
+
+  // frame: dust cover, trigger guard and grip in one piece
+  const GRIP = { c: [0.057, -0.085], rx: -0.26, len: 0.12, depth: 0.068 };
+  const grip = gripOutline(GRIP.c, GRIP.rx, GRIP.len, GRIP.depth, { top: -0.028 });
+  g.add(side([
+    [-0.150, 0.0, 0.002], [0.050, 0.0], [0.074, -0.004, 0.006], [0.088, -0.014, 0.005],
+    [grip[1][0], -0.028, 0.004], grip[2], grip[3],
+    [grip[3][0] + (grip[0][0] - grip[3][0]) * 0.62, -0.071, 0.004],
+    [-0.050, -0.071, 0.010], [-0.066, -0.048, 0.010], [-0.064, -0.022, 0.003], [-0.152, -0.022, 0.003],
+  ], 0.030, DARK, {
+    bevel: 0.0035,
+    holes: [[[0.006, -0.014, 0.003], [0.014, -0.063, 0.004], [-0.047, -0.063, 0.008], [-0.058, -0.046, 0.008], [-0.056, -0.014, 0.003]]],
+  }));
+  // grip panels, standing proud of the frame
+  g.add(side(gripOutline(GRIP.c, GRIP.rx, GRIP.len - 0.022, GRIP.depth - 0.012, { top: -0.032, r: 0.008 }),
+    0.044, POLY, { bevel: 0.007 }));
+  const base = gripPoint(GRIP, GRIP.len / 2 + 0.004, 0);
+  g.add(box(0.034, 0.010, 0.074, DARK, 0, base[1], base[0], GRIP.rx, 0, 0, 0.003));          // mag baseplate
+  // trigger: a curved blade hung in the guard
+  g.add(side([[-0.020, -0.012], [-0.012, -0.012], [-0.016, -0.034, 0.006], [-0.026, -0.052, 0.003],
+    [-0.032, -0.050, 0.002], [-0.024, -0.032, 0.006]], 0.006, DARK, { bevel: 0.0015 }));
+  // hammer spur, slide stop
+  g.add(side([[0.058, 0.040], [0.068, 0.046], [0.078, 0.066, 0.003], [0.070, 0.070, 0.003], [0.060, 0.058]], 0.010, DARK, { bevel: 0.002 }));
+  g.add(box(0.003, 0.006, 0.034, DARK, -0.0158, -0.006, -0.030, 0, 0, 0, 0.001));
+  // sights
+  g.add(box(0.006, 0.017, 0.008, DARK, 0, 0.066, -0.165, 0, 0, 0, 0.0015));
+  g.add(box(0.010, 0.017, 0.012, DARK, -0.017, 0.066, 0.040, 0, 0, 0, 0.0015));
+  g.add(box(0.010, 0.017, 0.012, DARK, 0.017, 0.066, 0.040, 0, 0, 0, 0.0015));
+
   shootingHand(g, {
-    c: v3(0, -0.115, 0.045), rx: 0.22, hu: 0.025, hf: 0.0375, stack: [-0.05, -0.028, -0.004, 0.02],
-    index: [v3(0.031, -0.062, 0.03), v3(0.03, -0.054, -0.015), v3(0.027, -0.05, -0.06)],
-    thumb: [v3(0.018, -0.05, 0.085), v3(-0.006, -0.046, 0.088), v3(-0.029, -0.05, 0.05), v3(-0.031, -0.048, 0.005)],
+    c: v3(0, GRIP.c[1], GRIP.c[0]), rx: GRIP.rx, hu: 0.022, hf: GRIP.depth / 2, stack: [-0.046, -0.022, 0.0, 0.022],
+    // trigger finger laid along the frame above the guard, off the trigger
+    index: [v3(0.027, -0.034, 0.028), v3(0.024, -0.013, -0.020), v3(0.022, -0.010, -0.070)],
+    thumb: [v3(0.018, -0.030, 0.090), v3(-0.004, -0.026, 0.094), v3(-0.031, -0.030, 0.064), v3(-0.025, -0.018, 0.018)],
   });
   // the support hand closes over the shooting hand's fingers from the left
-  const { A, F } = gripFrame(0.22);
+  const { A, F } = gripFrame(GRIP.rx);
   hand(g, {
-    c: v3(0, -0.12, 0.045), A, U: v3(-1, 0, 0), F, hu: 0.044, hf: 0.056,
-    stack: [-0.02, 0.003, 0.026, 0.047], sweep: 3.0,
-    thumb: [v3(-0.036, -0.08, 0.05), v3(-0.036, -0.066, 0.005), v3(-0.032, -0.06, -0.04)],
+    c: v3(0, GRIP.c[1] - 0.006, GRIP.c[0]), A, U: v3(-1, 0, 0), F, hu: 0.040, hf: 0.052,
+    stack: [-0.020, 0.003, 0.026, 0.047], sweep: 3.0,
+    thumb: [v3(-0.034, -0.050, 0.060), v3(-0.033, -0.034, 0.018), v3(-0.029, -0.028, -0.028)],
     elbow: v3(-0.26, -0.44, 0.44),
   });
-  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.02, -0.215); g.add(muzzle);
+  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.028, -0.200); g.add(muzzle);
   return { model: g, muzzle };
 }
 
+/**
+ * An MP5K: a stamped receiver round a cocking tube, a curved magazine raked
+ * forward, a vertical grip with a lip to stop the hand riding onto the
+ * muzzle, and a trigger housing slung under the back of it all.
+ */
 function buildSMG() {
   const g = new THREE.Group();
-  g.add(box(0.055, 0.10, 0.34, POLY, 0, 0.01, -0.08));          // receiver
-  g.add(tube(0.016, 0.016, 0.10, METAL, 0, 0.03, -0.28));       // barrel shroud
-  g.add(box(0.04, 0.14, 0.055, DARK, 0, -0.10, 0.0, -0.30));    // magazine
-  g.add(box(0.05, 0.10, 0.06, POLY, 0, -0.10, 0.10, 0.18, 0, 0, 0.015)); // pistol grip
-  g.add(box(0.035, 0.075, 0.05, POLY, 0, -0.075, -0.19, -0.15, 0, 0, 0.012)); // vertical foregrip
-  g.add(box(0.04, 0.05, 0.13, ACCENT, 0, 0.0, 0.19));           // folding stock
-  g.add(box(0.055, 0.02, 0.05, DARK, 0, 0.062, 0.06));
-  g.add(tube(0.010, 0.010, 0.14, DARK, 0, 0.058, -0.18));       // cocking tube
-  g.add(box(0.024, 0.01, 0.012, DARK, -0.022, 0.058, -0.215, 0, 0, 0, 0.003)); // cocking handle
-  g.add(box(0.057, 0.006, 0.26, DARK, 0, 0.032, -0.09, 0, 0, 0, 0.002));        // receiver rib
-  g.add(box(0.003, 0.02, 0.05, DARK, 0.028, 0.03, 0.0));                        // ejection port
-  g.add(box(0.012, 0.007, 0.06, POLY, 0, -0.062, 0.045, 0, 0, 0, 0.003));       // guard, bottom
-  g.add(box(0.012, 0.024, 0.008, POLY, 0, -0.05, 0.015, 0.2, 0, 0, 0.003));     // guard, front
-  g.add(box(0.006, 0.024, 0.006, DARK, 0, -0.048, 0.055, 0.25, 0, 0, 0.002));   // trigger
+  // receiver, with the cocking tube's housing running out over the barrel
+  g.add(side([
+    [-0.236, -0.004, 0.006], [-0.236, 0.050, 0.010], [-0.205, 0.058, 0.004], [0.112, 0.058, 0.010],
+    [0.126, 0.046, 0.006], [0.126, -0.024], [-0.150, -0.024], [-0.165, -0.004, 0.004],
+  ], 0.044, DARK, { bevel: 0.008 }));
+  g.add(box(0.0462, 0.004, 0.27, ACCENT, 0, 0.030, -0.06, 0, 0, 0, 0.0012));         // weld seam
+  g.add(box(0.002, 0.020, 0.050, DARK, 0.0232, 0.028, -0.005, 0, 0, 0, 0.0006));     // ejection port
+  g.add(turned([[0, -0.262], [0.0105, -0.262], [0.0105, -0.234]], DARK, 0.044));      // cocking tube cap
+  g.add(box(0.026, 0.010, 0.012, DARK, -0.024, 0.046, -0.220, 0, -0.5, 0, 0.003));   // cocking handle
+  // barrel, its three-lug nut, and the crown
+  g.add(turned([[0, -0.250], [0.0045, -0.250], [0.0045, -0.300], [0.0095, -0.300], [0.0095, -0.270],
+    [0.0135, -0.268], [0.0135, -0.250], [0.0095, -0.248], [0.0095, -0.230]], METAL, 0.012));
+  // magazine well and the curved magazine in it
+  g.add(side([[-0.104, -0.022], [-0.032, -0.022], [-0.030, -0.048, 0.004], [-0.106, -0.048, 0.004]], 0.040, DARK, { bevel: 0.004 }));
+  g.add(side([
+    [-0.096, -0.040], [-0.040, -0.040], [-0.044, -0.092, 0.03], [-0.070, -0.160, 0.004],
+    [-0.074, -0.172, 0.003], [-0.134, -0.164, 0.003], [-0.130, -0.152, 0.004], [-0.102, -0.094, 0.03],
+  ], 0.030, DARK, { bevel: 0.005 }));
+  // vertical foregrip, with its hand stop
+  g.add(side([
+    [-0.226, -0.002], [-0.166, -0.002], [-0.170, -0.040, 0.004], [-0.158, -0.110, 0.006],
+    [-0.163, -0.121, 0.004], [-0.214, -0.129, 0.004], [-0.228, -0.124, 0.003], [-0.213, -0.112, 0.004],
+    [-0.222, -0.046, 0.006],
+  ], 0.036, POLY, { bevel: 0.008 }));
+  // trigger housing: guard as a hole, grip raked back
+  const GRIP = { c: [0.104, -0.100], rx: -0.20, len: 0.10, depth: 0.060 };
+  const grip = gripOutline(GRIP.c, GRIP.rx, GRIP.len, GRIP.depth, { top: -0.040 });
+  g.add(side([
+    [-0.034, -0.022], [0.124, -0.022], [0.128, -0.034, 0.004], grip[1],
+    ...grip.slice(2),
+    [0.068, -0.076, 0.004], [-0.010, -0.076, 0.010], [-0.028, -0.056, 0.008], [-0.032, -0.036, 0.004],
+  ], 0.034, POLY, {
+    bevel: 0.007,
+    holes: [[[0.056, -0.034, 0.003], [0.060, -0.066, 0.004], [-0.004, -0.066, 0.008], [-0.018, -0.052, 0.006], [-0.020, -0.034, 0.003]]],
+  }));
+  g.add(side([[0.020, -0.030], [0.026, -0.030], [0.024, -0.048, 0.006], [0.016, -0.062, 0.002],
+    [0.010, -0.060, 0.002], [0.018, -0.046, 0.006]], 0.006, DARK, { bevel: 0.0015 }));   // trigger
+  g.add(box(0.050, 0.010, 0.014, ACCENT, 0, -0.010, 0.080, 0, 0, 0, 0.003));             // selector
+  g.add(side([[0.120, -0.020], [0.132, -0.016, 0.004], [0.132, 0.050, 0.006], [0.120, 0.056]], 0.046, DARK, { bevel: 0.004 })); // end cap
   optic(g, 0.02);
   shootingHand(g, {
-    c: v3(0, -0.10, 0.10), rx: 0.18, hu: 0.025, hf: 0.03, stack: [-0.042, -0.02, 0.003, 0.026],
-    index: [v3(0.032, -0.062, 0.075), v3(0.032, -0.052, 0.03), v3(0.03, -0.048, -0.01)],
-    thumb: [v3(0.02, -0.045, 0.14), v3(-0.004, -0.04, 0.145), v3(-0.03, -0.045, 0.11), v3(-0.032, -0.04, 0.07)],
+    c: v3(0, GRIP.c[1], GRIP.c[0]), rx: GRIP.rx, hu: 0.025, hf: GRIP.depth / 2, stack: [-0.042, -0.02, 0.003, 0.026],
+    index: [v3(0.031, -0.056, 0.080), v3(0.030, -0.040, 0.034), v3(0.028, -0.034, -0.010)],
+    thumb: [v3(0.020, -0.040, 0.150), v3(-0.004, -0.034, 0.156), v3(-0.030, -0.040, 0.120), v3(-0.032, -0.034, 0.078)],
   });
   // the support hand round the vertical foregrip, palm on its left
   const fg = gripFrame(-0.15);
@@ -345,77 +498,149 @@ function buildSMG() {
     thumb: [v3(-0.024, -0.04, -0.16), v3(-0.006, -0.032, -0.19), v3(0.014, -0.036, -0.215)],
     elbow: v3(-0.30, -0.46, 0.10),
   });
-  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.03, -0.34); g.add(muzzle);
+  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.012, -0.302); g.add(muzzle);
   return { model: g, muzzle };
 }
 
+/**
+ * An M4: flat-top upper with its rail, a lower whose magazine well flares
+ * and whose trigger guard is a hole, a raked grip with finger swells, an
+ * octagonal handguard, the A-frame front sight, a birdcage, and a stock
+ * riding a buffer tube.
+ */
 function buildRifle() {
   const g = new THREE.Group();
-  g.add(box(0.052, 0.05, 0.30, DARK, 0, 0.042, -0.025, 0, 0, 0, 0.008));  // upper receiver
-  g.add(box(0.05, 0.056, 0.22, POLY, 0, -0.01, 0.03, 0, 0, 0, 0.010));    // lower receiver
-  g.add(box(0.054, 0.042, 0.074, POLY, 0, -0.047, 0.012, 0, 0, 0, 0.008)); // magwell
-  g.add(box(0.003, 0.022, 0.07, ACCENT, 0.0275, 0.04, -0.01));            // ejection port cover
-  g.add(tube(0.009, 0.009, 0.03, METAL, 0.027, 0.052, 0.075));            // forward assist
-  g.add(box(0.05, 0.008, 0.016, DARK, 0, 0.071, 0.13, 0, 0, 0, 0.003));   // charging handle
-  g.add(box(0.012, 0.007, 0.07, POLY, 0, -0.064, 0.07, 0, 0, 0, 0.003));  // guard, bottom
-  g.add(box(0.012, 0.026, 0.008, POLY, 0, -0.05, 0.036, 0.2, 0, 0, 0.003)); // guard, front
-  g.add(box(0.006, 0.024, 0.006, DARK, 0, -0.05, 0.075, 0.25, 0, 0, 0.002)); // trigger
-  // front sight: base on the barrel, post between two wings
-  g.add(box(0.02, 0.014, 0.03, DARK, 0, 0.042, -0.44, 0, 0, 0, 0.003));
-  g.add(box(0.006, 0.042, 0.008, DARK, 0, 0.066, -0.44, 0, 0, 0, 0.002));
-  for (const sx of [-1, 1]) g.add(box(0.004, 0.05, 0.022, DARK, sx * 0.011, 0.064, -0.44, 0, 0, sx * 0.12, 0.0015));
-  g.add(box(0.06, 0.07, 0.26, DARK, 0, 0.02, -0.28, 0, 0, 0, 0.010)); // handguard
-  for (let i = 0; i < 4; i++) g.add(box(0.062, 0.008, 0.012, ACCENT, 0, 0.055, -0.20 - i * 0.05));
-  g.add(tube(0.013, 0.013, 0.20, METAL, 0, 0.025, -0.46));      // barrel
-  g.add(tube(0.021, 0.024, 0.06, DARK, 0, 0.025, -0.57));       // flash hider
-  g.add(box(0.042, 0.16, 0.06, DARK, 0, -0.11, 0.02, -0.12));   // STANAG mag
-  g.add(box(0.05, 0.10, 0.06, POLY, 0, -0.10, 0.12, 0.22, 0, 0, 0.015)); // grip
-  g.add(tube(0.016, 0.016, 0.20, DARK, 0, 0.022, 0.24));        // buffer tube
-  g.add(box(0.046, 0.072, 0.12, POLY, 0, 0.0, 0.29, 0, 0, 0, 0.012));  // collapsible stock
-  g.add(box(0.03, 0.012, 0.05, ACCENT, 0, -0.03, 0.24, 0, 0, 0, 0.004)); // stock latch
-  g.add(box(0.035, 0.06, 0.02, POLY, 0, -0.06, -0.16, -0.5));   // angled grip
+  // upper receiver, and the rail along it
+  g.add(side([
+    [-0.176, 0.014, 0.003], [-0.176, 0.060, 0.004], [0.124, 0.060, 0.004], [0.128, 0.052, 0.003],
+    [0.128, 0.020, 0.003], [0.104, 0.014],
+  ], 0.046, DARK, { bevel: 0.004 }));
+  g.add(side([[0.050, 0.020], [0.078, 0.020, 0.006], [0.084, 0.042, 0.006], [0.050, 0.046]], 0.054, DARK, { bevel: 0.004 })); // brass deflector
+  g.add(box(0.022, 0.006, 0.30, DARK, 0, 0.063, -0.025, 0, 0, 0, 0.0015));
+  for (let i = 0; i < 29; i++) g.add(box(0.026, 0.0045, 0.0052, DARK, 0, 0.0675, -0.168 + i * 0.0102, 0, 0, 0, 0.0012));
+  g.add(box(0.003, 0.022, 0.072, ACCENT, 0.0238, 0.036, -0.012, 0, 0, 0, 0.0008));     // ejection port cover
+  g.add(turned([[0, 0.060], [0.0085, 0.060], [0.0085, 0.092], [0, 0.092]], METAL, 0.050, { x: 0.026 })); // forward assist
+  g.add(box(0.048, 0.010, 0.022, DARK, 0, 0.054, 0.137, 0, 0, 0, 0.003));             // charging handle
+  // lower: magazine well, trigger guard, buffer tower
+  g.add(side([
+    [-0.080, 0.016, 0.003], [0.140, 0.016, 0.003], [0.144, -0.006, 0.006], [0.128, -0.030, 0.006],
+    [0.114, -0.032], [0.112, -0.068, 0.004], [0.058, -0.068, 0.005], [0.056, -0.074],
+    [0.060, -0.084, 0.003], [-0.032, -0.084, 0.003], [-0.028, -0.074], [-0.032, -0.030, 0.006],
+    [-0.080, -0.014, 0.006],
+  ], 0.044, DARK, {
+    bevel: 0.004,
+    holes: [[[0.098, -0.034, 0.003], [0.097, -0.061, 0.003], [0.062, -0.061, 0.003], [0.062, -0.034, 0.003]]],
+  }));
+  g.add(side([[0.072, -0.030], [0.078, -0.030], [0.077, -0.046, 0.006], [0.070, -0.058, 0.002],
+    [0.065, -0.056, 0.002], [0.071, -0.044, 0.006]], 0.006, DARK, { bevel: 0.0015 }));   // trigger
+  g.add(box(0.052, 0.008, 0.018, ACCENT, 0, -0.010, 0.112, 0, 0, 0, 0.003));             // selector
+  // grip, raked back, with swells between the fingers
+  const GRIP = { c: [0.156, -0.098], rx: -0.38, len: 0.10, depth: 0.056 };
+  g.add(side(gripOutline(GRIP.c, GRIP.rx, GRIP.len, GRIP.depth, { top: -0.026, grooves: 2 }), 0.048, POLY, { bevel: 0.009 }));
+  // STANAG magazine, its few degrees of curve forward
+  g.add(side([
+    [-0.024, -0.040], [0.054, -0.040], [0.050, -0.100, 0.04], [0.034, -0.182, 0.004],
+    [0.038, -0.194, 0.003], [-0.052, -0.194, 0.003], [-0.048, -0.182, 0.004], [-0.030, -0.100, 0.04],
+  ], 0.024, DARK, { bevel: 0.004 }));
+  // buffer tube and the stock riding it
+  g.add(turned([[0, 0.140], [0.0145, 0.140], [0.0145, 0.372], [0, 0.372]], DARK, 0.020, { sides: 18 }));
+  g.add(turned([[0, 0.142], [0.0175, 0.142], [0.0175, 0.158], [0, 0.158]], DARK, 0.020, { sides: 14 })); // castle nut
+  g.add(side([
+    [0.228, 0.042, 0.006], [0.366, 0.042, 0.006], [0.378, 0.036, 0.004], [0.378, -0.082, 0.006],
+    [0.360, -0.090, 0.008], [0.250, -0.004, 0.012], [0.224, -0.002, 0.006],
+  ], 0.042, POLY, {
+    bevel: 0.008,
+    holes: [[[0.282, -0.002, 0.004], [0.342, -0.002, 0.006], [0.342, -0.050, 0.006]]],
+  }));
+  g.add(box(0.046, 0.128, 0.012, DARK, 0, -0.022, 0.382, 0, 0, 0, 0.004));            // butt pad
+  // handguard: octagonal, with slots down its flanks and a delta ring behind
+  g.add(turned([[0, -0.405], [0.026, -0.405], [0.0355, -0.395], [0.0355, -0.170], [0.040, -0.166],
+    [0.040, -0.152], [0, -0.152]], POLY, 0.022, { sides: 8, crease: 30, spin: Math.PI / 8 }));
+  for (const sx of [-1, 1]) for (let i = 0; i < 4; i++) {
+    g.add(box(0.002, 0.012, 0.030, DARK, sx * 0.0331, 0.022, -0.200 - i * 0.050, 0, 0, 0, 0.0008));
+  }
+  // barrel, gas block and A-frame front sight, birdcage
+  g.add(turned([[0, -0.548], [0.0108, -0.548], [0.0108, -0.400], [0, -0.400]], METAL, 0.025, { sides: 16 }));
+  g.add(side([
+    [-0.455, 0.010, 0.003], [-0.430, 0.010, 0.003], [-0.430, 0.044], [-0.437, 0.086, 0.004],
+    [-0.449, 0.086, 0.004], [-0.455, 0.044],
+  ], 0.024, DARK, {
+    bevel: 0.003,
+    holes: [[[-0.436, 0.050, 0.002], [-0.440, 0.080, 0.002], [-0.446, 0.080, 0.002], [-0.450, 0.050, 0.002]]],
+  }));
+  g.add(box(0.004, 0.030, 0.004, DARK, 0, 0.064, -0.443, 0, 0, 0, 0.001));             // the post
+  g.add(turned([[0, -0.580], [0.0065, -0.580], [0.0065, -0.612], [0.0125, -0.612], [0.0125, -0.552], [0.0108, -0.546],
+    [0.0108, -0.540], [0, -0.540]], DARK, 0.025, { sides: 12, crease: 50 }));
   optic(g, 0.06);
   shootingHand(g, {
-    c: v3(0, -0.10, 0.12), rx: 0.22, hu: 0.025, hf: 0.03, stack: [-0.042, -0.02, 0.003, 0.026],
-    index: [v3(0.032, -0.064, 0.095), v3(0.032, -0.054, 0.05), v3(0.03, -0.05, 0.01)],
-    thumb: [v3(0.02, -0.045, 0.16), v3(-0.004, -0.04, 0.165), v3(-0.03, -0.045, 0.13), v3(-0.032, -0.04, 0.09)],
+    c: v3(0, GRIP.c[1], GRIP.c[0]), rx: GRIP.rx, hu: 0.024, hf: GRIP.depth / 2, stack: [-0.044, -0.020, 0.003, 0.026],
+    index: [v3(0.031, -0.044, 0.104), v3(0.030, -0.022, 0.060), v3(0.029, -0.018, 0.012)],
+    thumb: [v3(0.020, -0.034, 0.168), v3(-0.004, -0.028, 0.174), v3(-0.030, -0.034, 0.140), v3(-0.032, -0.030, 0.098)],
   });
   supportHand(g, {
-    c: v3(0, 0.02, -0.31), hu: 0.035, hf: 0.03, stack: [-0.028, -0.009, 0.01, 0.028],
-    thumb: [v3(-0.036, -0.012, -0.27), v3(-0.042, 0.004, -0.31), v3(-0.04, 0.016, -0.35)],
+    c: v3(0, 0.022, -0.31), hu: 0.036, hf: 0.034, stack: [-0.028, -0.009, 0.01, 0.028],
+    thumb: [v3(-0.038, -0.010, -0.27), v3(-0.044, 0.006, -0.31), v3(-0.042, 0.018, -0.35)],
   });
-  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.025, -0.60); g.add(muzzle);
+  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.025, -0.615); g.add(muzzle);
   return { model: g, muzzle };
 }
 
+/**
+ * An M1014: an alloy receiver, a long barrel over a magazine tube, a forend
+ * wrapped round both, and a pistol-grip stock in one piece of polymer.
+ */
 function buildShotgun() {
   const g = new THREE.Group();
-  g.add(box(0.06, 0.10, 0.30, POLY, 0, 0.01, -0.02));           // receiver
-  g.add(tube(0.021, 0.021, 0.46, METAL, 0, 0.035, -0.40));      // barrel
-  g.add(tube(0.019, 0.019, 0.36, DARK, 0, -0.015, -0.35));      // magazine tube
-  g.add(box(0.055, 0.06, 0.16, POLY, 0, -0.005, -0.26, 0, 0, 0, 0.012)); // pump / forend
-  for (let i = 0; i < 7; i++) g.add(box(0.058, 0.063, 0.005, DARK, 0, -0.005, -0.32 + i * 0.02, 0, 0, 0, 0.0015)); // pump grooves
-  g.add(box(0.03, 0.006, 0.08, DARK, 0, -0.04, -0.06));                    // loading port
-  g.add(box(0.003, 0.024, 0.07, DARK, 0.031, 0.02, -0.02));                // ejection port
-  g.add(box(0.012, 0.007, 0.06, POLY, 0, -0.06, 0.06, 0, 0, 0, 0.003));    // guard, bottom
-  g.add(box(0.012, 0.026, 0.008, POLY, 0, -0.047, 0.03, 0.2, 0, 0, 0.003)); // guard, front
-  g.add(box(0.006, 0.024, 0.006, DARK, 0, -0.046, 0.068, 0.25, 0, 0, 0.002)); // trigger
-  g.add(box(0.012, 0.01, 0.02, ACCENT, 0, 0.064, 0.09));                   // safety
-  g.add(box(0.052, 0.10, 0.06, POLY, 0, -0.095, 0.11, 0.20, 0, 0, 0.015)); // grip
-  g.add(box(0.055, 0.11, 0.22, POLY, 0, -0.03, 0.24, -0.12, 0, 0, 0.016)); // stock
-  g.add(box(0.010, 0.022, 0.012, DARK, 0, 0.072, -0.56));       // bead sight
-  g.add(box(0.012, 0.018, 0.014, DARK, -0.018, 0.072, 0.10));   // ghost ring, left
-  g.add(box(0.012, 0.018, 0.014, DARK, 0.018, 0.072, 0.10));    // ghost ring, right
+  g.add(side([
+    [-0.172, -0.040, 0.004], [-0.172, 0.048, 0.006], [-0.150, 0.060, 0.008], [0.096, 0.060, 0.010],
+    [0.128, 0.046, 0.008], [0.132, 0.008, 0.004], [0.132, -0.040, 0.004],
+  ], 0.050, DARK, { bevel: 0.007 }));
+  g.add(box(0.003, 0.026, 0.072, DARK, 0.0255, 0.022, -0.030, 0, 0, 0, 0.0008));    // ejection port
+  g.add(box(0.008, 0.012, 0.036, ACCENT, 0.027, 0.004, -0.030, 0, 0, 0, 0.002));    // bolt handle
+  g.add(box(0.032, 0.006, 0.090, DARK, 0, -0.042, -0.070, 0, 0, 0, 0.002));         // loading port
+  // trigger group: guard as a hole
+  g.add(side([
+    [-0.020, -0.036], [0.112, -0.036], [0.108, -0.050], [0.100, -0.050], [0.098, -0.080, 0.005],
+    [0.020, -0.080, 0.010], [0.004, -0.058, 0.008], [0.002, -0.038],
+  ], 0.032, POLY, {
+    bevel: 0.006,
+    holes: [[[0.084, -0.044, 0.003], [0.083, -0.072, 0.004], [0.026, -0.072, 0.008], [0.014, -0.056, 0.006], [0.014, -0.044, 0.003]]],
+  }));
+  g.add(side([[0.054, -0.040], [0.060, -0.040], [0.058, -0.056, 0.006], [0.050, -0.070, 0.002],
+    [0.044, -0.068, 0.002], [0.052, -0.054, 0.006]], 0.006, DARK, { bevel: 0.0015 }));   // trigger
+  g.add(box(0.012, 0.010, 0.020, ACCENT, 0, 0.066, 0.090, 0, 0, 0, 0.003));              // safety
+  // stock and pistol grip, one moulding
+  const GRIP = { c: [0.136, -0.098], rx: -0.32, len: 0.10, depth: 0.058 };
+  const grip = gripOutline(GRIP.c, GRIP.rx, GRIP.len, GRIP.depth, { top: -0.036, grooves: 0 });
+  g.add(side([
+    [0.126, 0.050, 0.004], [0.200, 0.046, 0.04], [0.372, 0.040, 0.010], [0.386, 0.032, 0.004],
+    [0.386, -0.098, 0.006], [0.370, -0.108, 0.010],
+    // the underside sweeps up to a wrist behind the grip, then down its backstrap
+    [...gripPoint(GRIP, -0.032, -GRIP.depth / 2), 0.016],
+    grip[2], grip[3], grip[0], [0.126, -0.036],
+  ], 0.044, POLY, { bevel: 0.009 }));
+  g.add(box(0.048, 0.140, 0.014, DARK, 0, -0.033, 0.392, 0, 0, 0, 0.005));            // recoil pad
+  // barrel and magazine tube, and the forend wrapped round both
+  g.add(turned([[0, -0.610], [0.0092, -0.610], [0.0092, -0.632], [0.0135, -0.632], [0.0135, -0.168], [0, -0.168]], METAL, 0.035));
+  g.add(turned([[0, -0.560], [0.0150, -0.560], [0.0160, -0.548], [0.0160, -0.534], [0.0130, -0.532],
+    [0.0130, -0.170], [0, -0.170]], DARK, -0.012));
+  g.add(side([
+    [-0.362, -0.034, 0.012], [-0.362, 0.026, 0.010], [-0.174, 0.030, 0.006], [-0.174, -0.036, 0.008],
+  ], 0.056, POLY, { bevel: 0.012 }));
+  for (let i = 0; i < 7; i++) g.add(box(0.0575, 0.050, 0.004, DARK, 0, -0.004, -0.320 + i * 0.020, 0, 0, 0, 0.0012));
+  // ghost ring, and the blade at the muzzle
+  for (const sx of [-1, 1]) g.add(side([[0.080, 0.058], [0.104, 0.058], [0.100, 0.078, 0.003], [0.088, 0.080, 0.003]], 0.006, DARK, { bevel: 0.0015, x: sx * 0.010 }));
+  g.add(side([[-0.606, 0.045], [-0.586, 0.045], [-0.592, 0.060, 0.003], [-0.602, 0.060, 0.002]], 0.004, DARK, { bevel: 0.001 }));
   shootingHand(g, {
-    c: v3(0, -0.095, 0.11), rx: 0.20, hu: 0.026, hf: 0.03, stack: [-0.042, -0.02, 0.003, 0.026],
-    index: [v3(0.033, -0.06, 0.085), v3(0.033, -0.05, 0.04), v3(0.031, -0.046, 0.0)],
-    thumb: [v3(0.02, -0.04, 0.15), v3(-0.004, -0.035, 0.155), v3(-0.031, -0.04, 0.12), v3(-0.033, -0.035, 0.08)],
+    c: v3(0, GRIP.c[1], GRIP.c[0]), rx: GRIP.rx, hu: 0.026, hf: GRIP.depth / 2, stack: [-0.044, -0.020, 0.003, 0.026],
+    index: [v3(0.032, -0.052, 0.092), v3(0.031, -0.044, 0.046), v3(0.030, -0.040, 0.004)],
+    thumb: [v3(0.020, -0.034, 0.160), v3(-0.004, -0.028, 0.166), v3(-0.031, -0.034, 0.130), v3(-0.033, -0.030, 0.088)],
   });
   supportHand(g, {
-    c: v3(0, -0.005, -0.27), hu: 0.03, hf: 0.0275, stack: [-0.03, -0.01, 0.01, 0.03],
-    thumb: [v3(-0.034, -0.03, -0.23), v3(-0.04, -0.012, -0.27), v3(-0.038, 0.002, -0.31)],
+    c: v3(0, -0.004, -0.27), hu: 0.032, hf: 0.029, stack: [-0.03, -0.01, 0.01, 0.03],
+    thumb: [v3(-0.036, -0.030, -0.23), v3(-0.042, -0.012, -0.27), v3(-0.040, 0.002, -0.31)],
   });
-  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.035, -0.63); g.add(muzzle);
+  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.035, -0.636); g.add(muzzle);
   return { model: g, muzzle };
 }
 

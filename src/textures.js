@@ -834,14 +834,56 @@ export function paintedMetal() {
 }
 
 /**
+ * A car left out for a decade: faded paint, primer where it has flaked, and
+ * rust eating through both.
+ *
+ * Half the wrecks used to wear `rustMetal`, which is a container's
+ * corrugated sheet — a fold every 12 cm and a rivet line — so every rusted
+ * car in the sector was ribbed like a shed. A car's panel is smooth; what a
+ * decade does to it is take the paint off in patches, with a ring of grey
+ * primer between the paint and the bare oxide. The paint colour is in the
+ * texture rather than on the material, because the rust is not that colour.
+ */
+export function carRust(variant = 0) {
+  return make('carrust' + variant, () => {
+    const s = 512, c = canvas(s), ctx = c.getContext('2d');
+    const paints = ['#405560', '#62342b', '#7c735e', '#474c35'];
+    ctx.fillStyle = paints[variant % paints.length];
+    ctx.fillRect(0, 0, s, s);
+    // sun-faded unevenly, chalky where it has oxidised
+    mottle(ctx, s, 16, 'rgba(190,184,170,0.10)', 18, 70);
+    mottle(ctx, s, 12, 'rgba(0,0,0,0.12)', 14, 56);
+    // primer showing round the rust, then the rust inside it
+    mottle(ctx, s, 22, 'rgba(104,102,98,0.50)', 10, 46);
+    mottle(ctx, s, 20, 'rgba(104,54,24,0.82)', 8, 40);
+    mottle(ctx, s, 14, 'rgba(62,32,16,0.70)', 6, 26);
+    splotches(ctx, s, 70, 'rgba(150,86,40,0.45)', 2, 9);
+    splotches(ctx, s, 50, 'rgba(40,22,14,0.5)', 1.5, 6);
+    // streaks running down from every patch
+    for (let i = 0; i < 40; i++) runoff(ctx, rr(0, s), rr(0, s), rr(2, 7), rr(18, 80), '96,52,24', rr(0.08, 0.24));
+    for (let i = 0; i < 80; i++) {
+      ctx.strokeStyle = `rgba(${chance(0.5) ? '196,190,182' : '30,22,18'},${rr(0.06, 0.22)})`;
+      ctx.lineWidth = rr(0.5, 1.4);
+      const x = rr(0, s), y = rr(0, s), a = rr(0, Math.PI * 2), len = rr(8, 50);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); ctx.stroke();
+    }
+    grit(ctx, s, 1600, '200,192,180', '20,16,14', 1.3);
+    noise(ctx, s, 12);
+    return c;
+  });
+}
+
+/**
  * A wheel: tread and hub on one tile.
  *
- * A wheel is a cylinder, and `cylGeo` unwraps the two parts of one to
- * different places — which is the whole trick here. The barrel runs around
- * the circumference and up the width, so a 0.3 m wide wheel on a 1.2 m tile
- * only ever shows `v` from 0 to 0.25: the bottom quarter. The end caps are
- * unwrapped across their own diameter about the middle of the tile, so a
- * 0.42 m wheel shows a disc of radius 0.35 centred on (0.5, 0.5).
+ * A wheel's tread and its face unwrap to different places — which is the
+ * whole trick here. The tread runs around the circumference and across the
+ * width, so a 0.22 m tyre on a 1.2 m tile only ever shows `v` from 0 to 0.25:
+ * the bottom quarter. The face is unwrapped flat across its own diameter
+ * about the middle of the tile, so a 0.335 m tyre shows a disc of radius
+ * 0.28 centred on (0.5, 0.5): the rim inside 0.19 of it, the sidewall out to
+ * there. The wheel is turned on a lathe now, rim and tyre in one profile, and
+ * the circles here are drawn to the radii it is turned to.
  *
  * Those two regions barely touch, so one texture paints both and a wheel is
  * one mesh instead of a tyre plus a rim. The tread lives in the bottom
@@ -857,14 +899,14 @@ export function tire() {
     ctx.fillRect(0, 0, s, s);
 
     // sidewall: shallow concentric moulding, so the cap is not a black disc
-    for (let r = s * 0.35; r > s * 0.2; r -= s * 0.022) {
+    for (let r = s * 0.275; r > s * 0.195; r -= s * 0.016) {
       ctx.strokeStyle = `rgba(${chance(0.5) ? '58,58,62' : '10,10,12'},0.5)`;
       ctx.lineWidth = rr(0.6, 1.8);
       ctx.beginPath(); ctx.arc(s / 2, s / 2, r, 0, Math.PI * 2); ctx.stroke();
     }
     // raised lettering round the sidewall, at the size it would really be
     for (let k = 0; k < 26; k++) {
-      const a = (k / 26) * Math.PI * 2, r = s * 0.30;
+      const a = (k / 26) * Math.PI * 2, r = s * 0.24;
       ctx.fillStyle = 'rgba(96,96,100,0.35)';
       ctx.beginPath();
       ctx.ellipse(s / 2 + Math.cos(a) * r, s / 2 + Math.sin(a) * r, 2.6, 1.3, a, 0, Math.PI * 2);
@@ -872,17 +914,17 @@ export function tire() {
     }
 
     // the rim: a dished steel disc with a bolt circle and a centre cap
-    const hub = ctx.createRadialGradient(s / 2 - 8, s / 2 - 8, 2, s / 2, s / 2, s * 0.21);
+    const hub = ctx.createRadialGradient(s / 2 - 8, s / 2 - 8, 2, s / 2, s / 2, s * 0.19);
     hub.addColorStop(0, '#8d9096');
     hub.addColorStop(0.7, '#5d6066');
     hub.addColorStop(1, '#3a3c40');
     ctx.fillStyle = hub;
-    ctx.beginPath(); ctx.arc(s / 2, s / 2, s * 0.21, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(s / 2, s / 2, s * 0.19, 0, Math.PI * 2); ctx.fill();
     for (let k = 0; k < 5; k++) {        // lightening holes, then the studs
       const a = (k / 5) * Math.PI * 2 + 0.3;
       ctx.fillStyle = 'rgba(14,14,16,0.85)';
       ctx.beginPath();
-      ctx.arc(s / 2 + Math.cos(a) * s * 0.135, s / 2 + Math.sin(a) * s * 0.135, s * 0.035, 0, Math.PI * 2);
+      ctx.arc(s / 2 + Math.cos(a) * s * 0.12, s / 2 + Math.sin(a) * s * 0.12, s * 0.032, 0, Math.PI * 2);
       ctx.fill();
     }
     for (let k = 0; k < 5; k++) {
