@@ -254,6 +254,105 @@ function registerFloors(world, slabs) {
 }
 
 /**
+ * Give every heap of rubble and every fallen slab a collider shaped like it.
+ *
+ * They were drawn and registered nowhere — or, for the leaning slabs, in the
+ * raycast list and not the box list — so a mound a metre and a half high was
+ * something you walked straight through, and the piles stopped no bullets
+ * either. Reported from play as objects you can clip right through.
+ *
+ * A box with the heap's height and footprint would make every mound a flat
+ * topped pillar you stood on in mid-air over its slopes. So each one is cut
+ * into tiers a third of a metre deep, and each tier is the rectangle that
+ * best fits the heap's own cross-section at the middle of that tier: a mound
+ * comes out a stepped cone you scramble up, a fallen slab a ramp of steps.
+ * The rectangle is the smallest of sixteen turns round the section's hull,
+ * shrunk to the hull's own area, so a round section claims no more ground
+ * than it covers and a flat one claims all of it.
+ *
+ * Registered after the floors and after everything else is placed, the same
+ * way and for the same reason: nothing placed earlier saw them, so every
+ * other collider in a seed is where it was, and only the boxes appended here
+ * are new. The piles join the raycast list too; the slabs were already in it.
+ */
+function registerHeaps(world, heaps) {
+  const TIER = 0.33;
+  for (const m of heaps) {
+    m.updateMatrixWorld(true);
+    const geo = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry;
+    const p = geo.attributes.position;
+    const v = new THREE.Vector3();
+    const pts = [];
+    for (let i = 0; i < p.count; i++) pts.push(v.fromBufferAttribute(p, i).applyMatrix4(m.matrixWorld).toArray());
+    const cx = m.position.x, cz = m.position.z;
+    const base = world.groundHeight(cx, cz, 0.12, 0.5);
+    const top = Math.max(...pts.map((q) => q[1]));
+    if (top - base < 0.15) continue;
+    const tiers = Math.min(6, Math.max(1, Math.round((top - base) / TIER)));
+    for (let t = 1; t <= tiers; t++) {
+      const level = base + ((t - 0.5) / tiers) * (top - base);
+      // where the surface crosses this level: an edge of each facet it cuts
+      const cut = [];
+      for (let k = 0; k + 2 < pts.length; k += 3) {
+        for (let e = 0; e < 3; e++) {
+          const a = pts[k + e], b = pts[k + (e + 1) % 3];
+          if ((a[1] - level) * (b[1] - level) > 0 || a[1] === b[1]) continue;
+          const f = (level - a[1]) / (b[1] - a[1]);
+          cut.push([a[0] + f * (b[0] - a[0]), a[2] + f * (b[2] - a[2])]);
+        }
+      }
+      if (cut.length < 3) continue;
+      const hull = convexHull(cut);
+      let area = 0;
+      for (let i = 0; i < hull.length; i++) {
+        const [x0, z0] = hull[i], [x1, z1] = hull[(i + 1) % hull.length];
+        area += x0 * z1 - x1 * z0;
+      }
+      area = Math.abs(area) / 2;
+      // the tightest of sixteen turns
+      let best = null;
+      for (let j = 0; j < 16; j++) {
+        const rot = (j / 16) * (Math.PI / 2), c = Math.cos(rot), s = Math.sin(rot);
+        let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+        for (const [x, z] of hull) {
+          const u = c * x + s * z, w = -s * x + c * z;
+          a0 = Math.min(a0, u); a1 = Math.max(a1, u); b0 = Math.min(b0, w); b1 = Math.max(b1, w);
+        }
+        const rect = (a1 - a0) * (b1 - b0);
+        if (!best || rect < best.rect) best = { rect, rot, c, s, a0, a1, b0, b1 };
+      }
+      const shrink = Math.sqrt(Math.min(1, area / Math.max(best.rect, 1e-6)));
+      const hu = ((best.a1 - best.a0) / 2) * shrink, hw = ((best.b1 - best.b0) / 2) * shrink;
+      if (hu < 0.08 || hw < 0.08) continue;
+      const mu = (best.a0 + best.a1) / 2, mw = (best.b0 + best.b1) / 2;
+      // back from the turned frame; `addRotatedBox` turns by -rot in its own convention
+      const wx = best.c * mu - best.s * mw, wz = best.s * mu + best.c * mw;
+      world.addRotatedBox(wx, wz, hu, hw, -best.rot, base + (t / tiers) * (top - base));
+      world.boxes[world.boxes.length - 1].heap = true;     // so the layout check can see past them
+    }
+    if (!world.solids.includes(m)) world.solids.push(m);
+  }
+}
+
+/** Andrew's monotone chain, for a heap's cross-section. */
+function convexHull(points) {
+  const pts = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const q of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const q = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  upper.pop(); lower.pop();
+  return lower.concat(upper);
+}
+
+/**
  * UV options for a wall wearing a facade: floors and window bays snapped to
  * the wall's own extent so nothing is cut at a corner, the tile slid along by
  * a whole bay or floor so two buildings do not show the same window in the
@@ -1442,6 +1541,8 @@ export function buildCity(scene, painted = null) {
   // rubble lot's broken floor, a ruin's courtyard — recorded as it is laid
   // and registered once the rest of the city is (see `registerFloors`).
   const floors = [];
+  // every heap of rubble and fallen slab, given a collider once the city is placed
+  const heaps = [];
 
   // sidewalks: a raised concrete apron around every lot
   const walkMat = concreteMat;
@@ -1606,6 +1707,7 @@ export function buildCity(scene, painted = null) {
   }
 
   registerFloors(world, floors);
+  registerHeaps(world, heaps);
 
   // Last, so it sees every collider and every floor it might grow against —
   // and inside `decor`, so where it grows costs the layout nothing.
@@ -1783,6 +1885,7 @@ export function buildCity(scene, painted = null) {
       m.userData.tint = tintAt(m.position.x, m.position.z, 7, 0.12);
       g.add(m);
       w.solids.push(m);
+      heaps.push(m);
     }
     if (Math.random() < 0.6) container(g, w, cx + randRange(-7, 7), cz + randRange(-7, 7), Math.random() * Math.PI);
   }
@@ -2580,5 +2683,6 @@ export function buildCity(scene, painted = null) {
     m.scale.y = randRange(0.35, 0.7);
     m.receiveShadow = m.castShadow = true;
     g.add(m);
+    heaps.push(m);
   }
 }

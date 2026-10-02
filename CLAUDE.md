@@ -163,6 +163,27 @@ These each cost real debugging time. Changing them needs a reason.
   a perch's pavement before its stairs and walked into its deck. What still
   assumes y=0 is wrong now: an effect that lands, a pickup, an objective
   ring and a test that says "on the street" all ask the floor instead.
+- **Anything you can see at body height is something you can bump into.**
+  Every heap of rubble (`rubblePile`) and every fallen slab in a rubble lot
+  was drawn and registered nowhere — the slabs were in the raycast list and
+  not the box list, the heaps in neither — so on seed 1 about 660 m² of the
+  city stood between 0.3 and 2 m off the street with nothing under it:
+  reported from play as rubble you clip right through. `registerHeaps` in
+  `city.js` gives each one a stack of colliders cut to its own shape: tiers
+  a third of a metre deep, each the tightest of sixteen turned rectangles
+  round the heap's cross-section at that height, shrunk to the section's
+  own area. A box the size of the heap would have been a pillar you stood
+  on in mid-air over its slopes; tiers under `STEP_HEIGHT` make it a mound
+  you scramble up. Heaps are registered after the floors, appended to
+  everything else, and flagged `heap`, so the layout check still measures
+  the old fingerprint over every other box — 476 boxes more on seed 1, and
+  the game step did not move (0.2 ms median either way). `rubble stops you
+  and stops a bullet, and you can climb it` audits the whole merged city
+  for facets at body height further than a body's width from any collider
+  as tall as they are, weeds excepted: 667 m² with `registerHeaps` taken
+  out, 9.5 now, which is the low rim of the heaps at ankle height. Any new
+  prop that stands off the ground has to pass that audit or be decoration
+  by the rules above.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -1145,6 +1166,15 @@ every 8 m of road; they are ragged polygons with a rim that follows the
 pit's own outline and a scatter of kicked-out gravel. The layout is
 untouched (all three pinned fingerprints), because everything placed is
 placed by `decor`.
+
+The rubble fix came from play, the day after the street pass, as one
+line: objects around that you can clip right through, rubble and the like.
+An audit of everything drawn at body height with no collider under it found
+exactly two things, both in the rubble — the heaps and the leaning slabs —
+and nothing else in the sector. The invariant above has the fix and the
+check that keeps it. The same report said the frame rate was much improved
+from the last one, which is the first word from a real machine since the
+low-tier pass.
 
 The street pass is the seventeenth, and it was two things asked for at
 once: footsteps for the hostiles, and more on the ground. Both are in the
