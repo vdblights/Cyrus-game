@@ -3,7 +3,7 @@ import { audio } from './audio.js';
 import { randRange, SUPPORT_RADIUS } from './world.js';
 import * as TEX from './textures.js';
 import { TILE, blobShadow } from './textures.js';
-import { chamferGeo, mergeIntoOne } from './shapes.js';
+import { chamferGeo, mergeIntoOne, sideGeo, latheGeo } from './shapes.js';
 import { reserve } from './rng.js';
 
 const V1 = new THREE.Vector3();
@@ -175,6 +175,83 @@ const AT = {
   waist: [0, 0.88, 0],
 };
 
+/**
+ * A hostile's weapon, drawn by its side view the way the player's are (see
+ * `sideGeo`). Seen at twenty metres in a stranger's hands, what says "rifle"
+ * is the outline — a receiver, a magazine curving forward, a grip raked back,
+ * a stock, a barrel with something on the end of it — and a stack of boxes
+ * had none of it. Chunkier than the view models, because it is read from
+ * across a street; cut with fewer bevel steps, because twelve of them are
+ * drawn three times a frame. The hand-holds (`hold`) and the muzzle point are
+ * where they always were, so the pose and the shot are untouched.
+ */
+function hostileGun(kind) {
+  const T = TILE.gunMetal;
+  const cut = { tile: T, segs: 1, curve: 2 };
+  const side = (outline, width, opts = {}) => sideGeo(outline, width, { bevel: Math.min(0.012, width * 0.2), ...cut, ...opts });
+  const turned = (profile, y, sides = 10) => latheGeo(profile, sides, T, { crease: 50 }).translate(0, y, 0);
+  const gun = [];
+  if (kind === 'hook') {
+    gun.push(turned([[0, -0.68], [0.026, -0.68], [0.026, 0.06], [0.034, 0.07], [0.034, 0.10], [0, 0.10]], 0, 8));
+    // the hook itself: a blade swept back from the head of the shaft
+    gun.push(side([[-0.60, 0.02], [-0.68, 0.02, 0.02], [-0.70, -0.06, 0.03], [-0.66, -0.20, 0.02],
+      [-0.62, -0.19], [-0.645, -0.07, 0.03], [-0.62, -0.02]], 0.03));
+    return gun;
+  }
+  const long = kind === 'long', shotgun = kind === 'shotgun', drum = kind === 'drum';
+  // upper receiver running into the handguard
+  gun.push(side([[-0.47, -0.036, 0.012], [-0.47, 0.046, 0.014], [-0.44, 0.062, 0.01], [0.05, 0.062, 0.012],
+    [0.08, 0.040, 0.01], [0.08, -0.030], [-0.47, -0.036]], 0.072));
+  // lower: magazine well, trigger guard as a hole
+  gun.push(side([[-0.21, -0.030], [0.076, -0.030], [0.076, -0.060, 0.01], [0.036, -0.062], [0.032, -0.100, 0.008],
+    [-0.074, -0.100, 0.012], [-0.104, -0.080, 0.01], [-0.104, -0.062], [-0.21, -0.062, 0.012]], 0.066,
+  { holes: [[[0.024, -0.064], [0.022, -0.090, 0.006], [-0.034, -0.090, 0.008], [-0.046, -0.064]]] }));
+  // grip, raked back, about the shooting hand's hold
+  const rx = -0.30, A = [-Math.sin(rx), -Math.cos(rx)], F = [-Math.cos(rx), Math.sin(rx)];
+  const at = (a, f) => [0.064 + A[0] * a + F[0] * f, -0.122 + A[1] * a + F[1] * f];
+  gun.push(side([[...at(-0.075, 0.034), 0.01], [...at(-0.075, -0.034), 0.01], [...at(0.06, -0.034), 0.014],
+    [...at(0.06, 0.034), 0.014]], 0.054));
+  // magazine: a curve forward, or a drum
+  if (drum) {
+    gun.push(turned([[0, -0.03], [0.12, -0.03], [0.125, -0.02], [0.125, 0.02], [0.12, 0.03], [0, 0.03]], 0, 14)
+      .rotateY(Math.PI / 2).translate(0, -0.17, -0.15));
+  } else if (!shotgun) {
+    gun.push(side([[-0.205, -0.06], [-0.125, -0.06], [-0.13, -0.15, 0.06], [-0.16, -0.25, 0.008],
+      [-0.25, -0.24, 0.008], [-0.22, -0.15, 0.06]], 0.050));
+  }
+  // stock
+  if (long) {
+    gun.push(side([[0.07, 0.044], [0.20, 0.036, 0.02], [0.33, 0.030, 0.01], [0.34, 0.010], [0.34, -0.12, 0.012],
+      [0.31, -0.13, 0.012], [0.15, -0.05, 0.04], [0.07, -0.04]], 0.058, { holes: [[[0.17, -0.01], [0.27, -0.01], [0.27, -0.065, 0.01]]] }));
+  } else {
+    gun.push(side([[0.07, 0.034], [0.27, 0.026, 0.008], [0.28, 0.012], [0.28, -0.10, 0.01], [0.26, -0.11, 0.01],
+      [0.12, -0.036, 0.02], [0.07, -0.030]], 0.056, { holes: [[[0.14, -0.004], [0.23, -0.004], [0.23, -0.06, 0.008]]] }));
+  }
+  // barrel and what is on the end of it
+  const muzzle = long ? -0.86 : -0.74;
+  if (shotgun) {
+    gun.push(turned([[0, muzzle], [0.024, muzzle], [0.024, -0.46], [0, -0.46]], 0.016));
+    gun.push(turned([[0, -0.70], [0.018, -0.70], [0.018, -0.46], [0, -0.46]], -0.026));
+    gun.push(side([[-0.62, -0.050, 0.012], [-0.62, 0.006, 0.01], [-0.44, 0.008, 0.01], [-0.44, -0.052, 0.012]], 0.072));
+  } else {
+    gun.push(turned([[0, muzzle + 0.05], [0.015, muzzle + 0.05], [0.015, -0.46], [0, -0.46]], 0.012));
+    gun.push(turned([[0, muzzle], [0.022, muzzle], [0.022, muzzle + 0.06], [0.015, muzzle + 0.07], [0, muzzle + 0.07]], 0.012));
+    gun.push(side([[-0.53, 0.012], [-0.49, 0.012], [-0.495, 0.075, 0.006], [-0.525, 0.075, 0.006]], 0.03));   // front sight
+  }
+  if (drum) {
+    // a heavy barrel shroud, and a bipod folded up under it
+    gun.push(turned([[0, -0.66], [0.03, -0.66], [0.03, -0.47], [0, -0.47]], 0.012, 12));
+    for (const sx of [-1, 1]) gun.push(chamferGeo(0.016, 0.016, 0.26, 0.005, T, [sx * 0.022, -0.035, -0.56]));
+  }
+  if (long) {
+    // a scope on rings
+    gun.push(turned([[0, -0.32], [0.034, -0.32], [0.034, -0.27], [0.024, -0.24], [0.024, -0.04],
+      [0.03, -0.02], [0.03, 0.02], [0, 0.02]], 0.115, 12));
+    for (const z of [-0.20, -0.08]) gun.push(chamferGeo(0.04, 0.05, 0.022, 0.006, T, [0, 0.085, z]));
+  }
+  return gun;
+}
+
 /** Upper arm to elbow, elbow to the middle of the fist; thigh, shin. */
 const ARM = { upper: 0.28, fore: 0.30 };
 const LEG = { thigh: 0.43 };
@@ -318,31 +395,7 @@ function makeKit(type) {
   if (heavy) shin.push(box(0.22, 0.16, 0.12, [0, -0.01, -0.10], 0.03));  // knee plate
 
   // ---------------------------------------------------------- the weapon
-  const gun = [];
-  if (k.weapon === 'hook') {
-    gun.push(chamferGeo(0.055, 0.055, 0.76, 0.015, TILE.gunMetal, [0, 0, -0.30]));
-    gun.push(chamferGeo(0.05, 0.20, 0.05, 0.012, TILE.gunMetal, [0, -0.09, -0.63]));
-    gun.push(chamferGeo(0.07, 0.07, 0.14, 0.02, TILE.gunMetal, [0, 0, 0.02]));
-  } else {
-    const long = k.weapon === 'long';
-    gun.push(chamferGeo(0.075, 0.15, 0.50, 0.02, TILE.gunMetal, [0, 0, -0.18]));
-    gun.push(chamferGeo(0.05, 0.19, 0.075, 0.015, TILE.gunMetal, [0, -0.15, -0.16]));   // magazine
-    gun.push(chamferGeo(0.05, 0.11, 0.09, 0.015, TILE.gunMetal, [0, -0.11, 0.06]));     // grip
-    const barrel = new THREE.CylinderGeometry(
-      k.weapon === 'shotgun' ? 0.032 : 0.022, 0.022, long ? 0.48 : 0.34, 8);
-    barrel.rotateX(Math.PI / 2).translate(0, 0.01, long ? -0.62 : -0.55);
-    gun.push(barrel);
-    if (long) {
-      gun.push(chamferGeo(0.05, 0.05, 0.22, 0.015, TILE.gunMetal, [0, 0.11, -0.18]));   // scope
-      gun.push(chamferGeo(0.03, 0.06, 0.03, 0.01, TILE.gunMetal, [0, 0.06, -0.10]));
-      gun.push(chamferGeo(0.05, 0.14, 0.14, 0.02, TILE.gunMetal, [0, -0.03, 0.22]));    // stock
-    }
-    if (k.weapon === 'drum') {
-      const drum = new THREE.CylinderGeometry(0.11, 0.11, 0.06, 10);
-      drum.rotateX(Math.PI / 2).translate(0, -0.16, -0.14);
-      gun.push(drum);
-    }
-  }
+  const gun = hostileGun(k.weapon);
 
   // Where the two hands close on the weapon, in the weapon's own frame: the
   // shooting hand on the grip, the support hand under the front of the

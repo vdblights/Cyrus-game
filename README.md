@@ -344,12 +344,18 @@ image a little *less* saturated than life — dust takes colour out of
 everything — vignettes, and lays a fine grain over the top.
 
 Nothing in the sector is a plain box any more, and that is mostly about
-shape rather than pixels. A wrecked car is a profile: the rocker tucks under
-the doors, the body narrows in plan toward the nose, the bonnet falls away,
-the screen rakes back, the arches stand proud of the tub and the wheels wear
-tread and a dished steel rim. Half of them are pickups with an open bed, and
-the burnt-out ones are the same panels in charred steel with no glass left,
-sitting on their rims. A jersey barrier has the splayed foot and the kink at
+shape rather than pixels. A wrecked car is drawn the way a car designer draws
+one, by its side view: one outline with the wheel arches bitten out of it, a
+nose that drops to the bumper and a boot that falls away, extruded across the
+car with its shoulders rolled over and then pinched in toward both ends and
+tucked in at the sills. The greenhouse is glass leaning in as it rises, with
+painted pillars and a roof laid over it, so the windows sit in frames; the
+wheels are turned on a lathe, a tyre with a sidewall and a tread round a
+dished rim, under a dark wheel well. The rusted ones wear their own paint
+gone to primer and oxide rather than a container's corrugated sheet, and the
+whole car fits the box you climb onto — its roof is the deck you stand on.
+Half of them are pickups with an open bed, and the burnt-out ones are the
+same panels in charred steel with no glass left. A jersey barrier has the splayed foot and the kink at
 knee height that make it a jersey barrier; a shipping container has corner
 castings, sill and roof rails and doors with locking bars; a burning drum has
 its rolling hoops.
@@ -360,7 +366,10 @@ juggernaut plate everywhere and a pack, a scavenger whatever was to hand
 strapped on one side, a marksman a hood and a coat that hangs past the belt.
 That is not decoration: a wave is read at forty metres against a dusk skyline
 where the archetype's colour is barely a colour, and the outline is what tells
-you what is coming. The kit is merged into the parts that already take hits,
+you what is coming. So are their weapons, drawn by their side view like
+yours: a rifle with its magazine curving forward and a stock, a breaker's
+shotgun over its magazine tube, a marksman's scoped rifle, a juggernaut's
+drum-fed gun with its bipod folded, a scavenger's hook. The kit is merged into the parts that already take hits,
 so what you can see is what you can shoot. The cloth, the webbing and the
 cases they drop are painted pale on purpose, because a texture multiplies the
 colour on the material — put a mid-grey weave under an olive drab coat and
@@ -500,7 +509,7 @@ src/objectives.js   objective sites, channels, markers and waypoints
 src/grenades.js     thrown frags: fuse, bounce physics, detonation
 src/effects.js      pooled tracers, impacts, blood, casings, explosions
 src/textures.js     canvas-painted textures (asphalt, facades, rust, cloth, sky)
-src/shapes.js       chamfers, lofted profiles, geometry merging
+src/shapes.js       chamfers, lofts, side profiles, lathes, creased normals, merging
 src/post.js         ambient occlusion, bloom, tone mapping, grade, vignette, grain
 src/atmosphere.js   the sky, the sun and the fog, as one model
 src/shadows.js      the sun's two shadow cascades
@@ -555,15 +564,21 @@ A few notes on the implementation:
   cylinders pushed out along the shallowest axis. Line of sight uses a slab
   test against the same boxes, so shots can pass over low cover.
 - **The view model renders in its own scene** over the world with a cleared
-  depth buffer, so the weapon never clips into geometry. Every part of it is a
-  chamfered box carrying stippled polymer or parkerised steel at its own tile
-  scale — an untextured cube lit by one sun is two faces and two values, which
-  is what "boxy" means, and the gun is the one surface always within reach.
+  depth buffer, so the weapon never clips into geometry. It is drawn the way
+  a gunsmith draws one, by its side view: a pistol's frame is one outline
+  with the trigger guard cut out of it and the grip raked back under a
+  beavertail, a rifle's lower flares at the magazine well, a stock has its
+  lightening cut, and barrels, muzzle devices and buffer tubes are turned on
+  a lathe. Every part carries stippled polymer or parkerised steel at its own
+  tile scale — an untextured cube lit by one sun is two faces and two values,
+  which is what "boxy" means, and the gun is the one surface always within
+  reach.
   It is held: two gloved hands closed round its own grips, the trigger finger
   laid along the frame, sleeved forearms running off the bottom of the
   frame. Each finger is an arc round the grip's cross-section, so one
   function closes a hand on a pistol grip, a handguard, a vertical foregrip
-  and a pump. Each gun carries the parts that make it that gun — a trigger in
+  and a pump; the sleeves have a hem and bunch in folds. Each gun carries the
+  parts that make it that gun — a curved trigger in
   a real guard, ejection port, magwell, charging handle and forward assist,
   slide serrations, a pump's grooves — and is merged by material into six to
   nine meshes, fewer than it was before it had hands.
