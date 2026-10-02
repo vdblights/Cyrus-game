@@ -583,6 +583,7 @@ export class Enemy {
     this.strafe = Math.random() < 0.5 ? 1 : -1;
     this.strafeTimer = randRange(1, 3);
     this.walkPhase = Math.random() * 6.28;
+    this.footfall = null;     // which half-stride the last footfall was in
     this.deathT = 0;
     this.hurtFlash = 0;
     this.swingT = 0;
@@ -1183,6 +1184,16 @@ export class Enemy {
     this.idleT += dt;
     const amp = Math.min(speed / 3.6, 1);
     const ph = this.walkPhase;
+
+    // A footfall each time a leg reaches the front of its swing — twice a
+    // stride, off the same phase the legs are drawn from, so what you hear
+    // keeps time with what you see. Only walking counts: the phase creeps
+    // even standing still, and a climb is its own sound.
+    const fall = Math.floor((ph - Math.PI / 2) / Math.PI);
+    if (fall !== this.footfall) {
+      if (this.footfall !== null && amp > 0.3 && !this.mantle) this.game.onFootfall?.(this);
+      this.footfall = fall;
+    }
 
     // ---- legs: hip swing, and the knee folding through the swing phase
     const swing = 0.5 + 0.12 * amp;

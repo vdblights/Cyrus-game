@@ -692,6 +692,118 @@ function overgrowth(group, world, mat) {
 }
 
 /**
+ * What a street has set into it besides paint: manhole covers in the lanes,
+ * gully grates in the gutter against each kerb, and blister paving on the
+ * pavement at both ends of every zebra crossing.
+ *
+ * All of it is decoration by the flush rule — it lies a centimetre over a
+ * surface you already walk on and shoot at, and registers nothing — which
+ * holds only if every corner finds the same ground the centre does. So this
+ * runs after the floors are registered, asks `groundHeight` at every corner,
+ * and lays nothing that would hang over a kerb. The crossings it pads are
+ * found by the same roll `roadMarkings` paints them by.
+ */
+function streetIron(group, world, coverMat, grateMat, tactileMat) {
+  const r = (a, b, salt) => hash2(Math.round(a), Math.round(b), salt);
+  const ground = (x, z) => world.groundHeight(x, z, 0.01, 0.5);
+  const LIFT = 0.012;
+  const kit = () => ({ pos: [], uv: [] });
+  const covers = kit(), grates = kit(), pads = kit();
+
+  // one corner of a flat quad, in the street's frame (u across, v along)
+  const toWorld = (axisX, u, v) => (axisX ? [v, u] : [u, v]);
+  /** A flat rectangle `w` across by `d` along, if all four corners agree on the ground. */
+  const flat = (into, axisX, u, v, w, d, tile, spin = 0) => {
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([su, sv]) => toWorld(axisX, u + su * w / 2, v + sv * d / 2));
+    const hs = corners.map(([x, z]) => ground(x, z));
+    if (Math.max(...hs) - Math.min(...hs) > 0.004) return false;
+    const y = hs[0] + LIFT;
+    const [cx, cz] = toWorld(axisX, u, v);
+    const c = Math.cos(spin), s = Math.sin(spin);
+    const at = ([x, z]) => {
+      into.pos.push(x, y, z);
+      const lx = x - cx, lz = z - cz;
+      into.uv.push(0.5 + (lx * c - lz * s) / tile, 0.5 + (lx * s + lz * c) / tile);
+    };
+    // wound to face the sky whichever way the street's frame maps
+    const [a, b, c2, e] = corners;
+    const up = ((b[0] - a[0]) * (c2[1] - a[1]) - (b[1] - a[1]) * (c2[0] - a[0])) < 0;
+    for (const k of up ? [a, b, c2, a, c2, e] : [a, c2, b, a, e, c2]) at(k);
+    return true;
+  };
+  /** A cover: a fan of `n` facets, its texture turned by `spin`. */
+  const disc = (x, z, R, spin) => {
+    const n = 20;
+    const rim = [];
+    for (let k = 0; k <= n; k++) { const a = (k / n) * Math.PI * 2; rim.push([x + Math.cos(a) * R, z + Math.sin(a) * R]); }
+    const hs = rim.map(([px, pz]) => ground(px, pz)).concat(ground(x, z));
+    if (Math.max(...hs) - Math.min(...hs) > 0.004) return;
+    const y = hs[hs.length - 1] + LIFT;
+    const c = Math.cos(spin), s = Math.sin(spin);
+    const at = (px, pz) => {
+      covers.pos.push(px, y, pz);
+      const lx = px - x, lz = pz - z;
+      covers.uv.push(0.5 + (lx * c - lz * s) / TILE.cover, 0.5 + (lx * s + lz * c) / TILE.cover);
+    };
+    for (let k = 0; k < n; k++) { at(x, z); at(...rim[k + 1]); at(...rim[k]); }   // (centre, next, this) faces up
+  };
+
+  for (const axisX of [true, false]) {
+    for (const across of STREETS) {
+      const nodes = [-STREET_END, ...STREETS, STREET_END];
+      for (let k = 0; k + 1 < nodes.length; k++) {
+        const lo = nodes[k] + (k > 0 ? ROAD_HALF : 0), hi = nodes[k + 1] - (k + 2 < nodes.length ? ROAD_HALF : 0);
+        // the crossings `roadMarkings` laid on this span, by the same roll
+        const crossings = [];
+        for (const [node, dir, junction] of [[nodes[k], 1, k > 0], [nodes[k + 1], -1, k + 2 < nodes.length]]) {
+          if (!junction || r(node, across, axisX ? 91 : 92) > 0.45) continue;
+          const clear = node + dir * (ROAD_HALF + 0.3);
+          crossings.push({ v: clear + dir * 1.1, dir });
+        }
+        const clearOf = (v, pad) => crossings.every((c) => Math.abs(v - c.v) > 1.1 + pad);
+
+        // covers in the lanes, none, one or two to a span
+        const count = Math.floor(r(lo + hi, across, 101) * 2.6);
+        for (let i = 0; i < count; i++) {
+          const v = lo + 4 + (hi - lo - 8) * r(lo + i * 13, across, 102 + i);
+          const lane = r(v, across, 104) < 0.5 ? -1 : 1;
+          const u = across + lane * (ROAD_HALF / 2 + (r(v, across, 105) - 0.5) * 0.5);
+          if (!clearOf(v, 0.8)) continue;
+          const [x, z] = toWorld(axisX, u, v);
+          disc(x, z, 0.37, r(x, z, 106) * Math.PI * 2);
+        }
+
+        // a gully grate at each kerb every fifteen metres or so
+        for (const side of [-1, 1]) {
+          for (let v = lo + 5 + r(lo, across + side, 107) * 6; v < hi - 3; v += 13 + r(v, across, 108) * 6) {
+            if (!clearOf(v, 0.6)) continue;
+            flat(grates, axisX, across + side * (ROAD_HALF - 0.135), v, 0.24, 0.6, TILE.grate);
+          }
+        }
+
+        // blister paving on the pavement, the width of the crossing, at both ends
+        for (const c of crossings) {
+          for (const side of [-1, 1]) flat(pads, axisX, across + side * (ROAD_HALF + 0.62), c.v, 1.1, 2.2, TILE.tactile);
+        }
+      }
+    }
+  }
+
+  for (const [buf, mat] of [[covers, coverMat], [grates, grateMat], [pads, tactileMat]]) {
+    if (!buf.pos.length) continue;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(buf.pos.length).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uv, 2));
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.receiveShadow = true;
+    mesh.userData.tint = [1, 1, 1];
+    mesh.userData.mottle = 0.1;
+    group.add(mesh);
+  }
+}
+
+/**
  * Standing water: in the gutters, where a road's camber sends it, and in the
  * odd dip in the carriageway and the plaza. Each is a ragged outline lying on
  * the surface, never across a kerb — every vertex of it has to find the same
@@ -1186,6 +1298,35 @@ export const CITY_PAINT = [
       });
     },
   },
+  {
+    label: 'Lifting the drains',
+    weight: 1,
+    run(m) {
+      // Ironwork and paving laid flush on what is already there, pulled
+      // forward by the same polygon offset as the paint so it never fights
+      // the road or the flags under it.
+      const flush = { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, vertexColors: true };
+      const iron = (tex, key) => {
+        const surface = TEX.surfaceFrom(tex, { dark: 1, lite: 0.32, metalDark: 0.2, metalLite: 0.85 }, key);
+        return new THREE.MeshStandardMaterial({
+          color: 0xffffff, map: tex, normalMap: TEX.normalFrom(tex, 1.6, key, 1),
+          normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: surface, metalnessMap: surface,
+          roughness: 1, metalness: 1, envMapIntensity: 0.7, ...flush,
+        });
+      };
+      m.coverMat = iron(TEX.manhole(), 'manhole');
+      m.grateMat = iron(TEX.grate(), 'grate');
+      const tac = TEX.tactile();
+      m.tactileMat = new THREE.MeshStandardMaterial({
+        map: tac, normalMap: TEX.normalFrom(tac, 1.8, 'tactile', 1), normalScale: new THREE.Vector2(1, 1),
+        roughnessMap: TEX.surfaceFrom(tac, { dark: 1, lite: 0.72 }, 'tactile'),
+        roughness: 1, metalness: 0, envMapIntensity: 0.5, ...flush,
+      });
+      // yellow road paint: the white paint's maps, a yellow coat
+      m.yellowMat = m.paintMat.clone();
+      m.yellowMat.color.set(0xd6a93a);
+    },
+  },
 ];
 
 /** Every step of `CITY_PAINT` at once, for a caller with nothing to show. */
@@ -1212,6 +1353,10 @@ function labelMaterials(m) {
   label(m.glassMat, 'glass', TILE.glass);
   label(m.asphaltMat, 'asphalt', TILE.asphalt);
   label(m.paintMat, 'paint', TILE.paint);
+  label(m.yellowMat, 'paint-yellow', TILE.paint);
+  label(m.coverMat, 'cover', TILE.cover);
+  label(m.grateMat, 'grate', TILE.grate);
+  label(m.tactileMat, 'tactile', TILE.tactile);
   label(m.burntMat, 'burnt', TILE.metal);
   label(m.tireMat, 'tire', TILE.rubber);
   // cards and water, not surfaces: no tile, so the density check skips them
@@ -1237,7 +1382,7 @@ export function buildCity(scene, painted = null) {
   const mats = painted || paintCity();
   labelMaterials(mats);
   const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
-    asphaltMat, paintMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
+    asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
@@ -1315,7 +1460,7 @@ export function buildCity(scene, painted = null) {
   // Lane paint down every street. Decoration, and therefore free — see the
   // note on `decor` — but it is laid off the same grid the lots are, so it
   // lands on the roads and nowhere else.
-  roadMarkings(group, paintMat);
+  roadMarkings(group, paintMat, yellowMat);
 
   // ------------------------------------------------------------- buildings
   const fireBarrels = [];
@@ -1468,6 +1613,7 @@ export function buildCity(scene, painted = null) {
     overgrowth(group, world, weedMat);
     puddles(group, world, waterMat, dampMat);
     debris(group, world, litterMat, [concreteMat, darkConcrete]);
+    streetIron(group, world, coverMat, grateMat, tactileMat);
   });
 
   const batches = bakeStatic(group, world);
@@ -2086,10 +2232,11 @@ export function buildCity(scene, painted = null) {
    * carriageway, `v` along it — and mapped onto whichever axis the street
    * runs on at the last moment, so one description serves both grids.
    */
-  function roadMarkings(gr, mat) {
+  function roadMarkings(gr, mat, yellowMat) {
     decor(() => {
       const Y = 0.02;
-      const pos = [], nor = [], uv = [];
+      const white = { pos: [], nor: [], uv: [] }, yellow = { pos: [], nor: [], uv: [] };
+      let into = white;                 // which paint the next quad is laid in
       const r = (a, b, salt) => hash2(Math.round(a), Math.round(b), salt);
 
       // Mapping (u, v) onto (z, x) for one axis and onto (x, z) for the other
@@ -2109,10 +2256,10 @@ export function buildCity(scene, painted = null) {
           const pu = u + lu * c - lv * s;
           const pv = v + lu * s + lv * c;
           const px = axisX ? pv : pu, pz = axisX ? pu : pv;
-          pos.push(px, Y, pz);
-          nor.push(0, 1, 0);
+          into.pos.push(px, Y, pz);
+          into.nor.push(0, 1, 0);
           // planar off the world, so no two dashes wear the same square metre
-          uv.push(px / TILE.paint, pz / TILE.paint);
+          into.uv.push(px / TILE.paint, pz / TILE.paint);
         }
       };
 
@@ -2198,31 +2345,77 @@ export function buildCity(scene, painted = null) {
               }
             }
 
-            // edge lines, the length of the span but broken at the crossings
+            // What runs along each kerb: an edge line, most often; on some
+            // spans a run of parking bays marked off from the kerb, and on
+            // others double yellow lines. All of it broken at the crossings.
+            const clearOf = (v, pad) => !zones.some(([lo, hi]) => v > lo - pad && v < hi + pad);
             for (const side of [-1, 1]) {
-              const u = across + side * (ROAD_HALF - 0.35);
-              const n = Math.max(1, Math.round((spanHi - spanLo) / 3.2));
-              const step = (spanHi - spanLo) / n;
-              for (let i = 0; i < n; i++) {
-                const v = spanLo + step * (i + 0.5);
-                if (zones.some(([lo, hi]) => v > lo - step / 2 && v < hi + step / 2)) continue;
-                if (r(v, u, 94) < 0.18) continue;                  // worn through
-                quad(axisX, u, v, 0.1, step * 0.94);
+              const kerbside = r(spanLo + spanHi, across + side, axisX ? 98 : 99);
+              if (kerbside < 0.2) {
+                // bays: a tick out from the kerb every 5.6 m
+                for (let v = spanLo + 2.5; v < spanHi - 2.0; v += 5.6) {
+                  if (!clearOf(v, 1.2) || r(v, across + side, 100) < 0.12) continue;
+                  quad(axisX, across + side * (ROAD_HALF - 1.0), v, 1.9, 0.11);
+                }
+                continue;
               }
+              const lines = kerbside < 0.42
+                ? [ROAD_HALF - 0.38, ROAD_HALF - 0.56]    // double yellow, clear of the gutter
+                : [ROAD_HALF - 0.35];                      // edge line
+              into = lines.length > 1 ? yellow : white;
+              for (const off of lines) {
+                const u = across + side * off;
+                const n = Math.max(1, Math.round((spanHi - spanLo) / 3.2));
+                const step = (spanHi - spanLo) / n;
+                for (let i = 0; i < n; i++) {
+                  const v = spanLo + step * (i + 0.5);
+                  if (!clearOf(v, step / 2)) continue;
+                  if (r(v, u, 94) < 0.18) continue;                // worn through
+                  quad(axisX, u, v, lines.length > 1 ? 0.09 : 0.1, step * 0.94);
+                }
+              }
+              into = white;
             }
           }
         }
       }
 
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.receiveShadow = true;      // or the paint glows in a building's shade
-      mesh.userData.tint = [1, 1, 1];
-      mesh.userData.mottle = 0.14;
-      gr.add(mesh);
+      // Yellow boxes on a few junctions: a border round the square where the
+      // two carriageways cross, and the criss-cross hatching inside it. Each
+      // stripe is the chord of the square at its distance from the centre,
+      // so the hatching meets the border all the way round.
+      into = yellow;
+      const H = ROAD_HALF - 0.25;
+      for (const x0 of STREETS) {
+        for (const z0 of STREETS) {
+          if (r(x0, z0, 97) > 0.22) continue;
+          for (const s of [-1, 1]) {
+            quad(true, z0 + s * H, x0, 0.15, 2 * H + 0.15);
+            quad(true, z0, x0 + s * H, 2 * H + 0.15, 0.15);
+          }
+          for (const turn of [Math.PI / 4, -Math.PI / 4]) {
+            const c = Math.cos(turn), sn = Math.sin(turn);
+            for (let o = -(H * Math.SQRT2 - 0.35); o <= H * Math.SQRT2 - 0.35; o += 0.85) {
+              const len = 2 * (H * Math.SQRT2 - Math.abs(o)) - 0.3;
+              if (len < 0.4 || r(x0 + o * 5, z0 + turn, 102) < 0.1) continue;
+              quad(true, z0 + o * c, x0 + o * sn, 0.12, len, turn);
+            }
+          }
+        }
+      }
+      into = white;
+
+      for (const [buf, material] of [[white, mat], [yellow, yellowMat]]) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
+        geo.setAttribute('normal', new THREE.Float32BufferAttribute(buf.nor, 3));
+        geo.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uv, 2));
+        const mesh = new THREE.Mesh(geo, material);
+        mesh.receiveShadow = true;      // or the paint glows in a building's shade
+        mesh.userData.tint = [1, 1, 1];
+        mesh.userData.mottle = 0.14;
+        gr.add(mesh);
+      }
     });
   }
 

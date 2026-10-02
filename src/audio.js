@@ -11,7 +11,8 @@
  * says *where*; how loud is still the caller's distance gain, as it always
  * was (`rolloffFactor` 0), so placing a sound never made the game quieter.
  * What is yours — your own gun, your steps, the HUD's ticks — stays in your
- * head, unpanned.
+ * head, unpanned. A hostile's steps are not yours, and are placed like its
+ * shots (`footfall`).
  */
 class Audio {
   constructor() {
@@ -212,6 +213,22 @@ class Audio {
   step(crouch = false) {
     if (!this.ctx) return;
     this._noise(0.09, 'bandpass', crouch ? 500 : 900, 1.2, crouch ? 0.05 : 0.10, 260);
+  }
+
+  /**
+   * A hostile's footfall, placed at its feet: a gritty scuff and the heel
+   * behind it, deeper and harder for the armoured archetypes, and a hollow
+   * knock over it when the boot comes down on a car roof or a crate. `n`
+   * varies the pitch from step to step without touching `Math.random`,
+   * which is the city's seed.
+   */
+  footfall(at, gain = 1, heavy = false, deck = false, n = 0) {
+    if (!this.ctx) return;
+    const out = this._out(at);
+    const v = 1 + (((n * 0.618034) % 1) - 0.5) * 0.24;
+    this._noise(0.08, 'bandpass', (heavy ? 620 : 880) * v, 1.1, 0.10 * gain, 240, out);
+    this._tone('sine', (heavy ? 68 : 96) * v, 44, 0.07, (heavy ? 0.16 : 0.08) * gain, 0, out);
+    if (deck) this._tone('triangle', 290 * v, 160, 0.10, 0.07 * gain, 0, out);
   }
 
   /** Hauling yourself over a ledge: boots scraping, then a landing scuff. */

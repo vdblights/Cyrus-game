@@ -2300,6 +2300,57 @@ check('a wreck fits the box you collide with, and stands on its wheels', async (
   return r;
 });
 
+check('what is set into the street lies flush on it, road or pavement', async (page) => {
+  // Manhole covers and gully grates in the road, blister paving on the
+  // pavement at each crossing, yellow lines and boxes: all decoration, laid a
+  // centimetre over a surface you walk on and shoot at and registered nowhere,
+  // which is only honest while every corner of every one finds the ground it
+  // was laid on. A pad half off a kerb would hang in the air; one laid at road
+  // height on a pavement would vanish into the flags. This reads the merged
+  // city and asks the footing what is under every corner.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const out = {};
+    for (const name of ['cover', 'grate', 'tactile', 'paint-yellow']) {
+      const meshes = g.city.children.filter((m) => m.isMesh && m.material.userData.name === name);
+      let tris = 0, down = 0, worst = 0, wrongSurface = 0;
+      for (const m of meshes) {
+        const p = m.geometry.attributes.position, idx = m.geometry.index;
+        const n = idx ? idx.count : p.count;
+        const at = (k) => (idx ? idx.getX(k) : k);
+        for (let k = 0; k + 2 < n; k += 3) {
+          const a = at(k), b = at(k + 1), c = at(k + 2);
+          const cy = (p.getZ(b) - p.getZ(a)) * (p.getX(c) - p.getX(a)) - (p.getX(b) - p.getX(a)) * (p.getZ(c) - p.getZ(a));
+          if (Math.abs(cy) < 1e-10) continue;
+          tris++;
+          if (cy <= 0) down++;
+          for (const v of [a, b, c]) {
+            const x = p.getX(v), y = p.getY(v), z = p.getZ(v);
+            const floor = g.world.groundHeight(x, z, 0.001, y);
+            const gap = y - floor;
+            worst = Math.max(worst, gap < 0 ? 1 : gap);
+            // paving belongs on a pavement, everything else on the road
+            if ((name === 'tactile') !== (floor > 0.2)) wrongSurface++;
+          }
+        }
+      }
+      out[name] = { tris, down, worst: +worst.toFixed(3), wrongSurface };
+    }
+    return out;
+  });
+  // seed 1: 53 covers of 20 facets, 198 grates, 60 pads of two each
+  expect(r.cover.tris >= 400, `only ${r.cover.tris} facets of manhole cover in the sector`);
+  expect(r.grate.tris >= 100, `only ${r.grate.tris} facets of grate`);
+  expect(r.tactile.tris >= 40, `only ${r.tactile.tris} facets of tactile paving`);
+  expect(r['paint-yellow'].tris >= 100, `only ${r['paint-yellow'].tris} facets of yellow paint`);
+  for (const [name, s] of Object.entries(r)) {
+    expect(s.down === 0, `${s.down} of ${s.tris} ${name} facets face the ground`);
+    expect(s.worst < 0.03, `a ${name} corner stands ${s.worst} m off what is under it`);
+    expect(s.wrongSurface === 0, `${s.wrongSurface} ${name} corners are on the wrong side of a kerb`);
+  }
+  return r;
+});
+
 check('lane paint lies on the road and faces the sky', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -2760,6 +2811,84 @@ check('a shot from your right is heard on your right', async (page) => {
   expect(r.right > 1.8, `a shot from the right came out ${r.right}x louder on the right`);
   expect(r.left < 0.55, `a shot from the left came out ${r.left}x louder on the right`);
   expect(Math.abs(r.nowhere - 1) < 0.1, `a sound with no place was panned (${r.nowhere})`);
+  return r;
+});
+
+check('a hostile is heard walking, where it walks, and only while it walks', async (page) => {
+  // A flanker was silent until it fired. Its steps come off the same stride
+  // its legs are drawn from — two a stride — and are placed at its feet. This
+  // walks a raider on the spot at the player's left, then stands it still,
+  // then walks it out of earshot, counting what the game asked the audio for;
+  // then plays one of its steps through the real chain into an offline
+  // context, from where the game placed it and from the mirror of that.
+  const r = await page.evaluate(async () => {
+    const { audio } = await import('/src/audio.js');
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const { target, px, pz } = window.__place(8);
+    g.player.reset(px, pz);
+    const dx = target.x - px, dz = target.z - pz;
+    g.player.yaw = Math.atan2(-dx, -dz) - Math.PI / 2;     // the hostile on the left
+    g.player.pitch = 0;
+    g.step(0);
+    const e = g.spawnEnemy('raider');
+    e.pos.set(target.x, g.world.groundHeight(target.x, target.z, 0.12, 0.6), target.z);
+    e.group.position.copy(e.pos);
+
+    const heard = [];
+    const real = audio.footfall.bind(audio);
+    audio.footfall = (at, gain) => heard.push({ x: at.x, y: at.y, z: at.z, gain, ex: e.pos.x, ey: e.pos.y, ez: e.pos.z });
+    const walk = (speed, seconds) => {
+      const from = heard.length;
+      for (let i = 0; i < seconds * 60; i++) {
+        g.time += 1 / 60;
+        e.vel.set(speed, 0, 0);
+        e._animate(1 / 60, 8);
+      }
+      return heard.slice(from);
+    };
+    let walking, standing, far;
+    try {
+      walking = walk(2.4, 2);
+      standing = walk(0, 2);
+      e.pos.x += 60;
+      far = walk(2.4, 2);
+    } finally { audio.footfall = real; }
+    const off = walking.reduce((m, h) => Math.max(m, Math.hypot(h.x - h.ex, h.y - h.ey, h.z - h.ez)), 0);
+    if (!walking.length) return { walking: 0, standing: standing.length, far: far.length };
+
+    // one of those steps, played: where it was placed, and mirrored through the ears
+    const cam = g.camera.position, fwd = g.camera.getWorldDirection(new (cam.constructor)());
+    const step = walking[0];
+    const saved = { ctx: audio.ctx, master: audio.master, noiseBuf: audio.noiseBuf };
+    const render = async (at) => {
+      audio.ctx = null;
+      const ctx = new OfflineAudioContext(2, 44100 * 0.3, 44100);
+      audio.init(ctx);
+      audio.listen(cam.x, cam.y, cam.z, fwd);
+      audio.footfall(at, 1);
+      const buf = await ctx.startRendering();
+      const energy = (ch) => buf.getChannelData(ch).reduce((a, v) => a + v * v, 0);
+      return +(energy(1) / energy(0)).toFixed(2);            // right over left
+    };
+    try {
+      return {
+        walking: walking.length, standing: standing.length, far: far.length, off: +off.toFixed(3),
+        gain: +walking[0].gain.toFixed(2),
+        left: await render(step),
+        right: await render({ x: 2 * cam.x - step.x, y: step.y, z: 2 * cam.z - step.z }),
+      };
+    } finally { Object.assign(audio, saved); }
+  });
+  // two seconds at 2.4 m/s carries the stride through about four half-cycles
+  expect(r.walking >= 3 && r.walking <= 5, `a hostile walking for two seconds made ${r.walking} footfalls`);
+  expect(r.standing === 0, `a hostile standing still made ${r.standing} footfalls`);
+  expect(r.far === 0, `a hostile 60 m off was heard walking (${r.far} footfalls)`);
+  expect(r.off < 0.05, `a footfall was placed ${r.off} m from the hostile's feet`);
+  expect(r.left < 0.6, `a step on the left came out ${r.left}x louder on the right`);
+  expect(r.right > 1.6, `a step on the right came out ${r.right}x louder on the right`);
   return r;
 });
 
