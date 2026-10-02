@@ -449,6 +449,20 @@ These each cost real debugging time. Changing them needs a reason.
   city so a gust is seen to travel. `puddles and litter lie on the ground
   they are drawn on` and `weeds move in the wind, and are still when time
   is` guard them.
+- **What is set into the street asks the ground under every corner.**
+  `streetIron` in `city.js` lays manhole covers in the lanes, gully grates
+  in the gutters and blister paving on the pavement at both ends of every
+  zebra crossing, and `roadMarkings` lays yellow paint — double lines along
+  some kerbs, boxes on some junctions — beside the white. All of it is
+  decoration by the flush rule, and the flush rule only holds if every
+  corner finds the surface the centre does: the ironwork and paving run
+  after the floors are registered, ask `groundHeight` at each corner with a
+  ceiling under every prop (0.5 m), and are not laid where the answers
+  disagree. The crossings the paving pads are found by the same roll the
+  paint laid them by. `what is set into the street lies flush on it, road
+  or pavement` reads the merged city: paving at road height reports 360
+  corners on the wrong side of a kerb, and grates pushed onto the kerb with
+  the corner test taken out stand 0.292 m off what is under them.
 - **Weathering is a thresholded fractal, never a filled shape.** Every large
   stain goes through `mottle`, which used to fill ellipses into a low-res
   layer. Upscaled, they came out soft-edged and still round, and a surface
@@ -757,7 +771,20 @@ These each cost real debugging time. Changing them needs a reason.
   shot and the ears, and plays that shot through the real chain into an
   `OfflineAudioContext` (`audio.init(ctx)` takes one): right over left 2.42,
   0.42 from the mirror position, 1.03 unplaced; 1.0 with the panner taken
-  out, and no place at all with the muzzle not passed.
+  out, and no place at all with the muzzle not passed. A hostile's
+  footfalls go the same way (`onFootfall` in `main.js`, `footfall` in
+  `audio.js`): one each time a leg reaches the front of its swing, off the
+  same `walkPhase` the legs are drawn from, so the sound keeps time with the
+  picture. Two things keep them from being noise. The phase creeps even
+  standing still, so only a hostile actually walking (`amp` over 0.3) makes
+  a sound; and a wave is a crowd, so steps carry 26 m (`FOOTFALL_RANGE`)
+  and at most four play in any quarter second (`FOOTFALL_VOICES`). The pitch
+  varies off a counter, never `Math.random`. `a hostile is heard walking,
+  where it walks, and only while it walks` counts four footfalls in two
+  seconds at 2.4 m/s and none standing or 60 m off, and plays one through
+  the real chain: 0.30 right-over-left from the left, 3.4 from the right;
+  1.01 with the step left unplaced, and none at all with the stride's
+  footfall taken out.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -1119,11 +1146,23 @@ pit's own outline and a scatter of kicked-out gravel. The layout is
 untouched (all three pinned fingerprints), because everything placed is
 placed by `decor`.
 
+The street pass is the seventeenth, and it was two things asked for at
+once: footsteps for the hostiles, and more on the ground. Both are in the
+invariants above. Footsteps were what the sound pass left for next time —
+a flanker was silent until it fired. The ground got manhole covers, gully
+grates, tactile paving at the crossings, parking bays, double yellow lines
+and yellow box junctions; kerb drops at the crossings were left out,
+because a dropped kerb is a change to a floor's collider and so to the
+layout, and flush paving says "crossing" without it. On seed 1: 53 covers,
+198 grates, 60 pads and 544 facets of yellow paint, four new materials,
+each one batch. Layout fingerprints unchanged. Measured interleaved against `main`
+under software rendering, best of two rounds each: high 1,689 → 1,668 ms
+a frame and low 219 → 228 ms, which is noise either way, and triangles on
+high 394k → 397k.
+
 The sound pass is the thirteenth, and it was item 4 of the list: you could
-not hear which side fire was coming from. The invariant above has it. One
-thing worth knowing for next time: hostiles make no footsteps, so a flanker
-is still silent until it shoots — placed footsteps per hostile are the
-obvious next sound, and the panner is already there for them.
+not hear which side fire was coming from. The invariant above has it, and
+the street pass added the hostiles' footsteps to it.
 
 The climbing pass is the twelfth, and it was item 5 of the list: a car
 roof was a place hostiles could not follow you to. It is the invariant
@@ -2027,12 +2066,12 @@ Suggested next work, in the order I would do it:
    cover, a hip-fire spray from a breaker, a turn of the head toward a
    sound. Each is a weapon pose plus maybe a waist angle; the arms come
    free.
-5. **More on the ground now that paint is there.** The markings pass put a
-   geometry layer on the road and left the pavement alone: manhole covers,
-   kerb drops at the crossings, hatched keep-clear boxes and painted parking
-   bays all fall out of the same `roadMarkings` machinery and the same street
-   grid. Drop them in the same merged mesh and they cost one more batch of
-   nothing.
+5. **Drop the kerbs at the crossings.** The street pass did everything on
+   the ground but this, because a dropped kerb is a ramp in the pavement's
+   floor: `registerFloors` would register a sloped or stepped apron corner,
+   every crossing's footing moves, and the layout check's fingerprints have
+   to be re-measured once. The tactile paving is already where the drops
+   would go.
 6. **Keep wall decoration out of jumping reach of a perch.** Decoration is
    built where you cannot stand, and a terrace can put you within a jump of
    some — seed 1 has a fire escape platform 1.4 m off a terrace edge and

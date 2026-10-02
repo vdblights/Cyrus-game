@@ -53,6 +53,12 @@ const START_BUDGET_MS = 12.5;
 const MAX_STEP = 0.05;
 /** …and the longest frame it will catch up on rather than drop. */
 const MAX_FRAME = 0.2;
+/** How far off a hostile's steps carry, in metres… */
+const FOOTFALL_RANGE = 26;
+/** …how many of them play in any quarter second… */
+const FOOTFALL_VOICES = 4;
+/** …and the feet height above which it is on a prop, not the ground (every floor is under it). */
+const DECK_HEIGHT = 0.55;
 /** The hemisphere light under the sky's environment… */
 const HEMI = 0.28;
 /**
@@ -1444,6 +1450,30 @@ class Game {
         this.pickups.splice(i, 1);
       }
     }
+  }
+
+  /**
+   * A hostile's boot coming down, heard where it came down.
+   *
+   * A flanker used to be silent until it fired. Its steps are placed at its
+   * feet through the same panner as its shots, at a loudness that falls
+   * with distance and stops at `FOOTFALL_RANGE`, so a hostile working round
+   * behind you is heard behind you. A wave is a crowd, and a crowd's feet
+   * are a texture rather than a count: at most `FOOTFALL_VOICES` in any
+   * quarter second, nearest first by arrival. Nothing here draws on the
+   * seeded stream — the variation between steps is off a counter.
+   */
+  onFootfall(e) {
+    const p = this.player.position;
+    const d = Math.hypot(e.pos.x - p.x, e.pos.z - p.z);
+    if (d > FOOTFALL_RANGE) return;
+    const quarter = Math.floor(this.time * 4);
+    if (quarter !== this.footfallQuarter) { this.footfallQuarter = quarter; this.footfallVoices = 0; }
+    if (this.footfallVoices >= FOOTFALL_VOICES) return;
+    this.footfallVoices++;
+    const armour = e.type.kit && e.type.kit.armour;
+    audio.footfall(e.pos, Math.min(1, 3.5 / Math.max(1, d)),
+      armour === 'heavy' || armour === 'plated', e.pos.y > DECK_HEIGHT, (this.footfallN = (this.footfallN || 0) + 1));
   }
 
   damagePlayer(amount, fromPos) {

@@ -55,6 +55,12 @@ export const TILE = {
   // The hands holding it, at the same distance: a glove's weave at 0.25 m a
   // tile, and the sleeve behind it at the kit's own scale.
   glove: 0.25,
+  // Street ironwork and the paving at a crossing, each one tile across the
+  // thing: a 0.74 m cover drawn in the middle of a 0.8 m tile, a gully grate,
+  // and blister paving whose 7 cm studs need the small tile to be studs.
+  cover: 0.8,
+  grate: 0.6,
+  tactile: 0.8,
 };
 
 /** Windows per facade tile. `city.js` snaps wall UVs to these. */
@@ -868,6 +874,106 @@ export function carRust(variant = 0) {
       ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); ctx.stroke();
     }
     grit(ctx, s, 1600, '200,192,180', '20,16,14', 1.3);
+    noise(ctx, s, 12);
+    return c;
+  });
+}
+
+/**
+ * A cast-iron manhole cover, drawn in the middle of its tile so a disc
+ * unwrapped about the tile's centre lands on it: a worn frame ring, the
+ * cover's own rim, and a field of raised studs that the traffic has polished
+ * on top and the rain has rusted between.
+ */
+export function manhole() {
+  return make('manhole', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    const R = (0.37 / TILE.cover) * s, r = (0.33 / TILE.cover) * s, m = s / 2;
+    ctx.fillStyle = '#1c1b1a';
+    ctx.fillRect(0, 0, s, s);
+    // the frame: a ring of bright, scuffed steel
+    ctx.fillStyle = '#5b5852';
+    ctx.beginPath(); ctx.arc(m, m, R, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#121212';
+    ctx.beginPath(); ctx.arc(m, m, r + 2.5, 0, Math.PI * 2); ctx.fill();    // the gap
+    ctx.fillStyle = '#34322f';
+    ctx.beginPath(); ctx.arc(m, m, r, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.beginPath(); ctx.arc(m, m, r - 6, 0, Math.PI * 2); ctx.clip();
+    // studs on a square grid, each lit on the top edge and shadowed below
+    for (let y = m - r; y < m + r; y += 11) {
+      for (let x = m - r; x < m + r; x += 11) {
+        ctx.fillStyle = 'rgba(8,8,8,0.6)'; ctx.fillRect(x + 1, y + 2, 7, 7);
+        ctx.fillStyle = 'rgba(122,118,110,0.85)'; ctx.fillRect(x, y, 7, 7);
+        ctx.fillStyle = 'rgba(176,170,160,0.5)'; ctx.fillRect(x, y, 7, 2);
+      }
+    }
+    // a band across the middle where the maker's name was cast
+    ctx.fillStyle = '#2c2a27';
+    ctx.fillRect(m - r, m - 13, r * 2, 26);
+    ctx.fillStyle = 'rgba(140,134,124,0.7)';
+    for (let k = -4; k <= 4; k++) ctx.fillRect(m + k * 12 - 4, m - 6, 8, 12);
+    ctx.restore();
+    // the cover's rim, and two lifting keyholes in it
+    ctx.strokeStyle = 'rgba(150,144,134,0.6)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(m, m, r - 3, 0, Math.PI * 2); ctx.stroke();
+    for (const sx of [-1, 1]) { ctx.fillStyle = '#080808'; ctx.fillRect(m + sx * (r - 18) - 4, m - 2, 8, 4); }
+    mottle(ctx, s, 10, 'rgba(110,62,30,0.45)', 8, 30);        // rust in the low ground
+    grit(ctx, s, 700, '170,166,158', '10,10,10', 1.2);
+    noise(ctx, s, 10);
+    return c;
+  });
+}
+
+/** A gully grate at the kerb: a frame and the bars across it, black beneath. */
+export function grate() {
+  return make('grate', () => {
+    const s = 128, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#060606';
+    ctx.fillRect(0, 0, s, s);
+    // bright where the traffic has polished it: a grate is read by its bars
+    ctx.fillStyle = '#6f6b63';
+    ctx.fillRect(0, 0, s, 8); ctx.fillRect(0, s - 8, s, 8);
+    ctx.fillRect(0, 0, 8, s); ctx.fillRect(s - 8, 0, 8, s);
+    for (let x = 13; x < s - 9; x += 10) {
+      ctx.fillStyle = '#7d786e'; ctx.fillRect(x, 8, 5, s - 16);
+      ctx.fillStyle = 'rgba(206,200,188,0.55)'; ctx.fillRect(x, 8, 2, s - 16);
+    }
+    ctx.fillStyle = '#6f6b63'; ctx.fillRect(0, s / 2 - 3, s, 6);   // the cross-rib
+    mottle(ctx, s, 8, 'rgba(110,60,28,0.5)', 6, 20);
+    grit(ctx, s, 260, '160,156,148', '8,8,8', 1);
+    noise(ctx, s, 10);
+    return c;
+  });
+}
+
+/**
+ * Blister paving at a crossing: buff concrete flags covered in 7 cm studs,
+ * so a cane finds the kerb — and a player reads the crossing from the
+ * pavement before reaching the road.
+ */
+export function tactile() {
+  return make('tactile', () => {
+    const s = 128, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#9a8a62';
+    ctx.fillRect(0, 0, s, s);
+    const step = s / 12;
+    for (let y = 0; y < 12; y++) {
+      for (let x = 0; x < 12; x++) {
+        const cx = (x + 0.5) * step, cy = (y + 0.5) * step;
+        ctx.fillStyle = 'rgba(40,34,22,0.45)';
+        ctx.beginPath(); ctx.arc(cx + 1, cy + 1.2, step * 0.3, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#b3a273';
+        ctx.beginPath(); ctx.arc(cx, cy, step * 0.28, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(222,210,170,0.5)';
+        ctx.beginPath(); ctx.arc(cx - 1, cy - 1, step * 0.12, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    // the joints between flags, and a decade of dirt in them
+    ctx.fillStyle = 'rgba(30,26,18,0.5)';
+    ctx.fillRect(0, s / 2 - 1, s, 2); ctx.fillRect(s / 2 - 1, 0, 2, s);
+    mottle(ctx, s, 8, 'rgba(40,36,28,0.30)', 6, 24);
+    grit(ctx, s, 300, '210,200,170', '30,26,20', 1);
     noise(ctx, s, 12);
     return c;
   });

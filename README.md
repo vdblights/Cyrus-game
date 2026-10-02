@@ -268,9 +268,15 @@ crossings on the junction approaches with a stop bar behind each one and an
 arrow in the lane that gives way. The texture underneath carries only how
 worn the paint is — chalked edges, tyre scuffs, stretches rubbed back to the
 aggregate — and roughly one marking in six is missing outright, which is what
-a decade without maintenance looks like. It costs the layout nothing: like
-the rest of the decorative pass it draws from its own generator, so a seed
-lays out exactly the city it did before.
+a decade without maintenance looks like. Some kerbs carry parking bays or
+double yellow lines instead of an edge line, and a few junctions are yellow
+boxes, hatched corner to corner. Set into the road are cast-iron manhole
+covers and gully grates in the gutter; on the pavement at each end of every
+zebra, a patch of buff blister paving. Every piece of it asks the ground
+under each of its corners and is only laid where they agree, so nothing
+hangs off a kerb. It costs the layout nothing: like the rest of the
+decorative pass it draws from its own generator, so a seed lays out exactly
+the city it did before.
 
 A window is a hole in the wall, not a picture of one. The facade's own
 shader knows where every opening is — the same four-by-three grid the walls
@@ -528,9 +534,12 @@ A few notes on the implementation:
 - **You hear where things are.** A hostile's shot, a round striking a wall, a
   hit, a blast, a grenade skittering and a hostile's shout are each placed
   where they happened, through an HRTF panner, with the listener riding the
-  camera — so fire from behind you sounds like it, best on headphones. Your
-  own gun and footsteps stay centred, and the echo off the buildings comes
-  from everywhere.
+  camera — so fire from behind you sounds like it, best on headphones. So
+  are their footsteps, twice a stride off the same phase their legs are
+  drawn from, heavier for the armoured ones and hollow on a car roof: a
+  flanker is heard working round behind you before it shoots. Your own gun
+  and footsteps stay centred, and the echo off the buildings comes from
+  everywhere.
 - **Normal maps are generated, not authored.** A Sobel pass over each
   texture's own luminance becomes its normal map, so painted detail lights
   like geometry without shipping a second set of images.
