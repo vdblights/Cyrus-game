@@ -581,6 +581,302 @@ function bakeStatic(group, world) {
   return buckets.size;
 }
 
+/**
+ * Weeds, where weeds grow: along the kerb on both sides of it, against the
+ * foot of every building, and in the cracks of the pavement, the plaza and
+ * the rubble — a city nobody has swept in years. This is the strongest single
+ * cue that the place is abandoned rather than merely empty, and it was the
+ * one the city did not have.
+ *
+ * Decoration by the rules in the invariant: in neither `world.boxes` nor
+ * `world.solids`, so you walk through it and shoot through it, which is what
+ * grass is; placed by `decor`'s own generator, so no seed moves; and only
+ * ever where it can stand — on a floor or the street, clear of anything
+ * taller than a kerb. A tuft is two crossed cards, each built twice with
+ * opposite winding and its own normal (tilted up, so a blade is lit like the
+ * ground it grows from), rather than one card drawn double-sided: three
+ * flips a double-sided face's normal on its back, which turned the back of
+ * every card into the dark side of a downward-facing surface. One mesh per
+ * lot, so the bake files each into its patch and they cull with the city.
+ */
+function overgrowth(group, world, mat) {
+  const byLot = new Map();
+  const add = (x, z, scale) => {
+    // standing room: on a floor or the street, not inside anything taller
+    if (Math.abs(x) > world.bounds - 1 || Math.abs(z) > world.bounds - 1) return;
+    if (world.occupied(x, z, 0.12, 0.6)) return;
+    const y = world.groundHeight(x, z, 0.05, 0.6);
+    const key = `${Math.round(x / BLOCK)},${Math.round(z / BLOCK)}`;
+    let geos = byLot.get(key);
+    if (!geos) byLot.set(key, geos = []);
+    geos.push(tuft(x, y, z, scale));
+  };
+
+  const apron = (LOT + 6) / 2;
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      const cx = lotCenter(i), cz = lotCenter(j);
+      // the kerb line, both sides of it, in clumps with gaps between
+      for (const [ax, az, along] of [[0, -1, 'x'], [0, 1, 'x'], [-1, 0, 'z'], [1, 0, 'z']]) {
+        for (let t = -apron; t < apron; t += randRange(0.8, 2.4)) {
+          if (Math.random() < 0.3) continue;
+          const side = Math.random() < 0.6 ? -1 : 1;          // pavement side, mostly
+          const off = apron + side * randRange(0.08, 0.45);
+          const x = cx + (along === 'x' ? t : ax * off);
+          const z = cz + (along === 'z' ? t : az * off);
+          for (let k = Math.random() < 0.5 ? 3 : 2; k > 0; k--) {
+            add(x + randRange(-0.35, 0.35), z + randRange(-0.35, 0.35), randRange(0.75, 1.3));
+          }
+        }
+      }
+      // cracks across the lot: a scatter, denser where nothing is built
+      for (let k = 0; k < 24; k++) {
+        add(cx + randRange(-apron, apron), cz + randRange(-apron, apron), randRange(0.55, 1.1));
+      }
+    }
+  }
+
+  // against the foot of every building and wall, where the sweepings gather
+  for (const b of world.boxes) {
+    if (b.floor || b.top < 2.5 || b.sin) continue;
+    const pad = 0.22;
+    const edges = [
+      [b.minX - pad, b.minZ - pad, b.maxX + pad, b.minZ - pad],
+      [b.minX - pad, b.maxZ + pad, b.maxX + pad, b.maxZ + pad],
+      [b.minX - pad, b.minZ - pad, b.minX - pad, b.maxZ + pad],
+      [b.maxX + pad, b.minZ - pad, b.maxX + pad, b.maxZ + pad],
+    ];
+    for (const [x0, z0, x1, z1] of edges) {
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      for (let t = randRange(0, 1.5); t < len; t += randRange(0.6, 2.0)) {
+        if (Math.random() < 0.3) continue;
+        const f = t / len;
+        // tallest against the wall, where the wind leaves the dust
+        add(x0 + (x1 - x0) * f, z0 + (z1 - z0) * f, randRange(0.95, 1.6));
+      }
+    }
+  }
+
+  for (const [key, geos] of byLot) {
+    const [li, lj] = key.split(',').map(Number);
+    const mesh = new THREE.Mesh(mergeIntoOne(geos), mat);
+    mesh.receiveShadow = true;           // a card's shadow is a smear; skip casting
+    mesh.userData.tint = tintAt(li * BLOCK, lj * BLOCK, 31, 0.22);
+    group.add(mesh);
+  }
+}
+
+/**
+ * Standing water: in the gutters, where a road's camber sends it, and in the
+ * odd dip in the carriageway and the plaza. Each is a ragged outline lying on
+ * the surface, never across a kerb — every vertex of it has to find the same
+ * ground the centre does — with a larger damp ring under it. Decoration by
+ * the flush rule: a centre and a ring a centimetre up, walked over and shot
+ * through like the paint.
+ */
+function puddles(group, world, waterMat, dampMat) {
+  const water = [], damp = [];
+  const lay = (x, z, r, squash, turn) => {
+    if (Math.abs(x) > world.bounds - 2 || Math.abs(z) > world.bounds - 2) return false;
+    // clear of anything standing; the floors are what it lies on, and the
+    // level test below is what keeps it off a kerb
+    if (world.occupied(x, z, r * 1.4, 0.6)) return false;
+    const y = world.groundHeight(x, z, 0.05, 0.6);
+    const outline = (grow) => {
+      const n = 14, pts = [];
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * Math.PI * 2;
+        const rad = r * grow * (0.7 + 0.3 * Math.sin(a * 2 + turn * 3) + randRange(-0.12, 0.12));
+        const px = Math.cos(a) * rad, pz = Math.sin(a) * rad * squash;
+        pts.push([x + px * Math.cos(turn) - pz * Math.sin(turn), z + px * Math.sin(turn) + pz * Math.cos(turn)]);
+      }
+      return pts;
+    };
+    const ring = outline(1.35), pool = outline(1);
+    // the whole of it on one level surface, or not at all
+    for (const [px, pz] of ring) {
+      if (Math.abs(world.groundHeight(px, pz, 0.02, 0.6) - y) > 0.01) return false;
+    }
+    damp.push(fan(x, y + 0.008, z, ring));
+    water.push(fan(x, y + 0.012, z, pool));
+    return true;
+  };
+
+  const apron = (LOT + 6) / 2;
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      const cx = lotCenter(i), cz = lotCenter(j);
+      // gutters: just off the kerb, long and thin along it
+      for (const [ax, az, along] of [[0, -1, 'x'], [0, 1, 'x'], [-1, 0, 'z'], [1, 0, 'z']]) {
+        for (let k = 0; k < 2; k++) {
+          if (Math.random() < 0.35) continue;
+          // far enough off the kerb that the damp ring stays on the road
+          const r = randRange(0.9, 2.2), squash = randRange(0.3, 0.5);
+          const t = randRange(-apron + 2, apron - 2), off = apron + r * squash * 1.5 + 0.12;
+          lay(cx + (along === 'x' ? t : ax * off), cz + (along === 'z' ? t : az * off),
+            r, squash, along === 'x' ? 0 : Math.PI / 2);
+        }
+      }
+      // a dip somewhere on the lot or the road beside it
+      for (let k = 0; k < 3; k++) {
+        lay(cx + randRange(-apron - 3, apron + 3), cz + randRange(-apron - 3, apron + 3),
+          randRange(0.7, 1.8), randRange(0.5, 0.95), randRange(0, Math.PI));
+      }
+    }
+  }
+  for (const [list, mat, name] of [[water, waterMat, 'water'], [damp, dampMat, 'damp']]) {
+    if (!list.length) continue;
+    const mesh = new THREE.Mesh(mergeIntoOne(list), mat);
+    mesh.receiveShadow = true;
+    mesh.userData.puddles = name;
+    group.add(mesh);
+  }
+}
+
+/** A flat fan facing up, from a centre and a closed outline. */
+function fan(x, y, z, pts) {
+  const pos = [x, y, z], nor = [0, 1, 0], uv = [0.5, 0.5], idx = [];
+  for (const [px, pz] of pts) { pos.push(px, y, pz); nor.push(0, 1, 0); uv.push(0.5, 0.5); }
+  for (let k = 0; k < pts.length; k++) {
+    // centre, next, this: wound to face the sky (a fan in angle order viewed
+    // from above faces the ground the other way round)
+    idx.push(0, 1 + ((k + 1) % pts.length), 1 + k);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+
+/**
+ * What drifts against a kerb and a wall in a city nobody sweeps: sheets of
+ * paper, card and plastic, and chips of brick and concrete off the buildings
+ * above. Paper lies flat on the ground, flush; the chips are under a tenth of
+ * a metre tall and half sunk, small enough that walking through one is
+ * nothing anyone notices, and cut from the city's own concrete at its
+ * declared tile so the density check holds them to it like everything else.
+ */
+function debris(group, world, litterMat, chipMats) {
+  const byLot = new Map();
+  const bucket = (x, z, mat) => {
+    const key = `${Math.round(x / BLOCK)},${Math.round(z / BLOCK)},${mat.id}`;
+    let b = byLot.get(key);
+    if (!b) byLot.set(key, b = { mat, x, z, geos: [] });
+    return b.geos;
+  };
+  const clear = (x, z) => Math.abs(x) < world.bounds - 1 && Math.abs(z) < world.bounds - 1
+    && !world.occupied(x, z, 0.1, 0.4);
+
+  const sheet = (x, z) => {
+    if (!clear(x, z)) return;
+    const y = world.groundHeight(x, z, 0.05, 0.6) + 0.006;
+    const q = (Math.random() * 4) | 0, u0 = (q % 2) * 0.5, v0 = q < 2 ? 0.5 : 0;
+    const w = randRange(0.18, 0.38), d = w * randRange(0.6, 1.0), a = Math.random() * Math.PI * 2;
+    const c = Math.cos(a), sn = Math.sin(a);
+    const corner = (cx, cz) => [x + cx * c - cz * sn, y, z + cx * sn + cz * c];
+    const pts = [corner(-w / 2, -d / 2), corner(w / 2, -d / 2), corner(w / 2, d / 2), corner(-w / 2, d / 2)];
+    // flat on one level, or a corner hangs in the air over the kerb
+    for (const [px, , pz] of pts) {
+      if (Math.abs(world.groundHeight(px, pz, 0.02, 0.6) + 0.006 - y) > 0.01) return;
+      if (world.occupied(px, pz, 0.02, 0.4)) return;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pts.flat(), 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(
+      [u0, v0, u0 + 0.5, v0, u0 + 0.5, v0 + 0.5, u0, v0 + 0.5], 2));
+    // corners run anticlockwise seen from below with this rotation, so the
+    // sky-facing order is 0-2-1 / 0-3-2
+    g.setIndex([0, 2, 1, 0, 3, 2]);
+    bucket(x, z, litterMat).push(g);
+  };
+  const chip = (x, z) => {
+    if (!clear(x, z)) return;
+    const y = world.groundHeight(x, z, 0.05, 0.6);
+    const w = randRange(0.06, 0.22), h = randRange(0.04, 0.1), d = randRange(0.05, 0.18);
+    const mat = chipMats[Math.random() < 0.6 ? 1 : 0];
+    // a plain box: at a tenth of a metre a chamfer is 32 more triangles a
+    // chip nobody can see, and the chips land in the concrete batches that
+    // the shadow cascades draw again
+    const g = boxGeo(w, h, d, TILE.concrete);
+    g.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(
+      new THREE.Euler(randRange(-0.3, 0.3), Math.random() * Math.PI, randRange(-0.3, 0.3))));
+    g.translate(x, y + h * 0.2, z);
+    bucket(x, z, mat).push(g);
+  };
+
+  const apron = (LOT + 6) / 2;
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      const cx = lotCenter(i), cz = lotCenter(j);
+      // drifted along the kerb, both sides of it
+      for (const [ax, az, along] of [[0, -1, 'x'], [0, 1, 'x'], [-1, 0, 'z'], [1, 0, 'z']]) {
+        for (let t = -apron; t < apron; t += randRange(1.5, 4.5)) {
+          const off = apron + randRange(-0.6, 0.7);
+          const x = cx + (along === 'x' ? t : ax * off), z = cz + (along === 'z' ? t : az * off);
+          if (Math.random() < 0.45) sheet(x, z);
+          for (let k = (Math.random() * 3) | 0; k > 0; k--) chip(x + randRange(-0.5, 0.5), z + randRange(-0.5, 0.5));
+        }
+      }
+      for (let k = 0; k < 6; k++) sheet(cx + randRange(-apron, apron), cz + randRange(-apron, apron));
+    }
+  }
+  // fallen off the buildings: chips along the foot of every wall
+  for (const b of world.boxes) {
+    if (b.floor || b.top < 2.5 || b.sin) continue;
+    const per = 2 * ((b.maxX - b.minX) + (b.maxZ - b.minZ));
+    for (let k = Math.round(per / 5); k > 0; k--) {
+      const side = (Math.random() * 4) | 0, f = Math.random(), out = randRange(0.15, 0.9);
+      const x = side < 2 ? b.minX + (b.maxX - b.minX) * f : (side === 2 ? b.minX - out : b.maxX + out);
+      const z = side >= 2 ? b.minZ + (b.maxZ - b.minZ) * f : (side === 0 ? b.minZ - out : b.maxZ + out);
+      chip(x, z);
+    }
+  }
+
+  for (const b of byLot.values()) {
+    const mesh = new THREE.Mesh(mergeIntoOne(b.geos), b.mat);
+    mesh.receiveShadow = true;
+    mesh.userData.debris = true;
+    mesh.userData.tint = tintAt(b.x, b.z, 33, 0.18);
+    group.add(mesh);
+  }
+}
+
+/** One tuft: two crossed cards, each built front and back. */
+function tuft(x, y, z, scale) {
+  const w = randRange(0.4, 0.8) * scale, h = randRange(0.25, 0.6) * scale;
+  const rot = Math.random() * Math.PI;
+  const pos = [], nor = [], uv = [], idx = [];
+  for (const a of [rot, rot + Math.PI / 2]) {
+    const dx = Math.cos(a) * w / 2, dz = Math.sin(a) * w / 2;
+    const nx = -Math.sin(a), nz = Math.cos(a);           // the card's own normal
+    for (const face of [1, -1]) {
+      const base = pos.length / 3;
+      // normal mostly up: a blade is lit like the ground it grows from
+      const n = new THREE.Vector3(nx * face * 0.45, 1, nz * face * 0.45).normalize();
+      for (const [px, py, pz, u, v] of [
+        [x - dx, y, z - dz, 0, 0], [x + dx, y, z + dz, 1, 0],
+        [x + dx, y + h, z + dz, 1, 1], [x - dx, y + h, z - dz, 0, 1]]) {
+        pos.push(px, py, pz); nor.push(n.x, n.y, n.z); uv.push(u, v);
+      }
+      // wound so the facet faces the side this copy is lit from
+      const ux = 2 * dx, uz = 2 * dz;                        // bottom edge
+      const cx = -uz * h, cz = ux * h;                       // (bottom edge) x (up), sign of the face it makes
+      const facesNormal = (cx * nx + cz * nz) * face > 0;
+      if (facesNormal) idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      else idx.push(base, base + 2, base + 1, base, base + 3, base + 2);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+
 /** Lots per side of one batch patch (see `bakeStatic`). */
 const BATCH_LOTS = 2;
 const PATCH = BATCH_LOTS * BLOCK;
@@ -781,6 +1077,78 @@ export const CITY_PAINT = [
       });
     },
   },
+  {
+    label: 'Letting the weeds in',
+    weight: 1,
+    // Alpha-tested rather than blended: a blended card has to be sorted, and
+    // two thousand of them merged into a handful of batches cannot be. No
+    // normal map — a blade is too thin to have a relief worth lighting.
+    run(m) {
+      m.weedMat = new THREE.MeshStandardMaterial({
+        map: TEX.weeds(0), alphaTest: 0.5,
+        roughness: 0.9, metalness: 0, envMapIntensity: 0.6, vertexColors: true,
+      });
+      // A breeze. A still frame of weeds reads as a photograph pasted on the
+      // street; a little sway reads as air. The tip moves, the root does not
+      // (the card's own v is how far up the blade a vertex is), and the phase
+      // runs across the city with position, so a gust is seen to travel down
+      // a street rather than every tuft nodding in step. Driven by game time,
+      // `windTime`, which the loop advances: a paused game is a still one.
+      m.weedMat.userData.windTime = { value: 0 };
+      m.weedMat.onBeforeCompile = (shader) => {
+        shader.uniforms.windTime = m.weedMat.userData.windTime;
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nuniform float windTime;')
+          .replace('#include <begin_vertex>', `#include <begin_vertex>
+            float bend = uv.y * uv.y;
+            float gust = 0.6 + 0.4 * sin(windTime * 0.45 + position.x * 0.05 + position.z * 0.03);
+            transformed.x += sin(windTime * 1.9 + position.x * 0.8 + position.z * 0.55) * 0.045 * bend * gust;
+            transformed.z += cos(windTime * 1.5 + position.x * 0.5 - position.z * 0.7) * 0.03 * bend * gust;`);
+      };
+    },
+  },
+  {
+    label: 'Leaving the rain and the litter',
+    weight: 1,
+    // Standing water is the one mirror in the city. Near-black and almost
+    // perfectly smooth, so what it shows is the sky above it through the
+    // environment map, the cloud included, and the sun's own glint; the damp
+    // ring round it is the asphalt darkened and given a sheen. Both sit on
+    // the road like its paint does, a centimetre up and pulled forward.
+    run(m) {
+      m.waterMat = new THREE.MeshStandardMaterial({
+        color: 0x14161a, roughness: 0.06, metalness: 0, envMapIntensity: 1.25,
+        polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+      });
+      // The sky in a puddle is the environment map and stays mirror-sharp.
+      // The sun in it is the directional light's highlight, and at this
+      // smoothness a correct one is thousands of times brighter than the
+      // street: the bloom spread it into a white egg the size of the puddle,
+      // at 0.04 and still at 0.1. So the sun's direct highlight on water is
+      // turned down to a glint, and only on water.
+      m.waterMat.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_end>',
+          '#include <lights_fragment_end>\n  reflectedLight.directSpecular *= 0.015;');
+      };
+      // Damp ground is darker ground. With any real sheen the ring caught the
+      // bright sky at a grazing angle and came out paler than the asphalt it
+      // was meant to darken, so it reflects almost nothing.
+      m.dampMat = new THREE.MeshStandardMaterial({
+        color: 0x0a0b0d, roughness: 0.75, metalness: 0, envMapIntensity: 0.12,
+        transparent: true, opacity: 0.5, depthWrite: false,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      });
+      m.dampMat.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_end>',
+          '#include <lights_fragment_end>\n  reflectedLight.directSpecular *= 0.1;');
+      };
+      m.litterMat = new THREE.MeshStandardMaterial({
+        map: TEX.litter(), alphaTest: 0.5,
+        roughness: 0.92, metalness: 0, envMapIntensity: 0.5, vertexColors: true,
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      });
+    },
+  },
 ];
 
 /** Every step of `CITY_PAINT` at once, for a caller with nothing to show. */
@@ -808,6 +1176,11 @@ function labelMaterials(m) {
   label(m.paintMat, 'paint', TILE.paint);
   label(m.burntMat, 'burnt', TILE.metal);
   label(m.tireMat, 'tire', TILE.rubber);
+  // cards and water, not surfaces: no tile, so the density check skips them
+  m.weedMat.userData.name = 'weeds';
+  m.waterMat.userData.name = 'water';
+  m.dampMat.userData.name = 'damp';
+  m.litterMat.userData.name = 'litter';
 }
 
 /**
@@ -826,7 +1199,8 @@ export function buildCity(scene, painted = null) {
   const mats = painted || paintCity();
   labelMaterials(mats);
   const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
-    asphaltMat, paintMat, carBodyMats, burntMat, tireMat } = mats;
+    asphaltMat, paintMat, carBodyMats, burntMat, tireMat, weedMat,
+    waterMat, dampMat, litterMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
   const rustFor = (x, z) =>
@@ -1049,6 +1423,14 @@ export function buildCity(scene, painted = null) {
   }
 
   registerFloors(world, floors);
+
+  // Last, so it sees every collider and every floor it might grow against —
+  // and inside `decor`, so where it grows costs the layout nothing.
+  decor(() => {
+    overgrowth(group, world, weedMat);
+    puddles(group, world, waterMat, dampMat);
+    debris(group, world, litterMat, [concreteMat, darkConcrete]);
+  });
 
   const batches = bakeStatic(group, world);
 

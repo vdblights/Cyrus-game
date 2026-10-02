@@ -89,7 +89,7 @@ export class GrenadeSystem {
       g.pos.addScaledVector(g.vel, dt);
       const contact = world.bounceSphere(g.pos, g.vel, 0.09);
       if (contact === 1) {
-        if (g.vel.lengthSq() > 1.6) audio.grenadeBounce();
+        if (g.vel.lengthSq() > 1.6) audio.grenadeBounce(g.pos);
         g.spin.multiplyScalar(0.6);
       } else if (contact === 2) {
         // rolling: bleed off speed over time rather than all at once

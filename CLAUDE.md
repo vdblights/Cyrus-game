@@ -399,6 +399,56 @@ These each cost real debugging time. Changing them needs a reason.
   low-frequency shapes into a 96px canvas and lets the upscale smooth them,
   which is the same picture for about a thousandth of the cost. Nothing in
   `textures.js` should set `ctx.filter` again.
+- **Cloud is on the dome only, and weeds are decoration with a tier.**
+  The clouds (`CLOUD_GLSL` in `atmosphere.js`) are a domain-warped value
+  noise on a plane 1.2 km up, self-shadowed by one more lookup toward the
+  sun, and they live in the dome's shader and nowhere else: the fog reads
+  `ashAtmosphere` for every pixel in the city, and cloud in it would mottle
+  the haze. The environment map is rendered from the dome, so the city's
+  reflected light carries the cloud. The warp is worked out once and reused
+  by the shadow lookup — the first version did it twice and was 20 noise
+  lookups a sky pixel against 11. The weeds (`overgrowth` in `city.js`) are
+  decoration by every rule in the decoration invariant — placed inside
+  `decor` after the floors are registered, in neither collision list, and
+  only where they can stand — and two things about the geometry are
+  load-bearing. A tuft's two cards are each built twice with opposite
+  winding and their own normal, tilted up, rather than drawn double-sided:
+  three flips a double-sided face's normal on its back, which lights the
+  back of a card as the underside of something. And they declare no `TILE`,
+  so the texel-density check skips them, which is right for a card. One
+  mesh per lot, so the bake files them into patches and they cull. On low
+  they are hidden and the cloud drops an octave (`cloudLow`): measured on
+  low, interleaved over three rounds, weeds were 32 ms and the cloud 22 ms of
+  a 210 ms software frame, and low is the tier that has to stay cheap.
+  Medium and high pay about 4% for both. `the sky has weather in it`
+  (contrast 3.07 against 0.11 with the cloud returning the clear sky) and
+  `weeds grow where they can stand, and stay off the low tier` (838 inside
+  a collider with the clearance test out; shown on low with the tier
+  ignored) guard them.
+- **Water is a mirror for the sky and not for the sun; litter and puddles
+  lie on one level or not at all.** A puddle (`puddles` in `city.js`) is a
+  near-black fan at roughness 0.06, so it shows the environment map — the
+  sky with its cloud — sharply. At that smoothness the sun's direct
+  highlight is thousands of times brighter than the street, and the bloom
+  made it a white egg the size of the puddle, at 0.04 and still at 0.1; the
+  water material scales `directSpecular` down to a glint in its own shader
+  (`onBeforeCompile`), and only there. The damp ring under it reflects
+  almost nothing (0.12 environment, a tenth of the sun), because with any
+  sheen it caught the bright sky at a grazing angle and came out paler than
+  the asphalt it was meant to darken. Both are decoration by the flush rule,
+  a centimetre up with the road paint's polygon offset — which is only true
+  if every vertex finds the ground the centre does: the ring is tested
+  point by point and a puddle that would cross a kerb is not laid. Litter
+  (`debris`) is the same rule, and the first version only asked about each
+  sheet's centre, so 172 corners hung over kerb lines; every corner is asked
+  now. Concrete chips are plain boxes cut at `TILE.concrete` and merged into
+  the concrete batches — a chamfered chip was 44 triangles, drawn three
+  times because those batches cast shadows, and took a frame from 190k
+  triangles to 424k. The weeds sway on game time (`windTime`, advanced in
+  `frame`), with the tip moving as `v²` and the phase running across the
+  city so a gust is seen to travel. `puddles and litter lie on the ground
+  they are drawn on` and `weeds move in the wind, and are still when time
+  is` guard them.
 - **Weathering is a thresholded fractal, never a filled shape.** Every large
   stain goes through `mottle`, which used to fill ellipses into a low-res
   layer. Upscaled, they came out soft-edged and still round, and a surface
@@ -634,6 +684,46 @@ These each cost real debugging time. Changing them needs a reason.
   alone) and `the fire nearest you is lit, and the light count never
   changes` (12 visible on the old code). High and medium gained about 10%
   from the pooling and the canvas (1537 → 1403 ms, 1396 → 1259).
+- **A hostile climbs after you, and then holds the deck.** `mantleTarget`
+  was always entity-agnostic and only the player called it, so a car roof
+  was somewhere to stand over a melee hostile that could only circle it
+  until the watchdog took it away. A hostile now climbs (`CLIMB` in
+  `enemies.js`) when it is alerted, off any perch, already heading for you
+  — its move direction within about 45 degrees of you, so a raider
+  strafing at its range or backing off to hold it never charges a car —
+  you stand at least half a metre above its feet, and you are within 9 m.
+  Three things make it work. Avoidance turns a hostile aside from anything
+  chest-high two metres out, so it never reached a lip: when there is a
+  climbable lip ahead (`mantleTarget` with a longer `reach`), avoidance
+  stands down and it walks to the face. The climb owns the body the way a
+  pull-up owns the player — the player's own curve, slower (0.6 s + 0.4 a
+  metre), no turning and no firing — and a hostile killed halfway up drops
+  to whatever is under it. And once up, it holds the deck: a melee hostile
+  at its range strafes, and of twelve that climbed after the player on seed
+  1, six strafed straight back off the edge within seconds. The edge guard
+  stops any step that drops more than a step height while the player is not
+  below it — following you down is still allowed. Perch-holders never climb.
+  `a hostile follows you onto a car roof, and stays up there with you` puts
+  the player on eight decks on seed 1: 8 of 8 up within 1.3 s and still up;
+  0 of 8 with the climb taken out and 4 of 8 still up without the guard.
+- **A sound from somewhere is placed there, and only its direction is the
+  panner's.** Every sound was mono. Now anything that happens at a point —
+  a hostile's shot (at its muzzle), an impact, a hit, a death, a blast, a
+  grenade bounce, an alert — goes through `_out(at)`, a fresh HRTF panner
+  at that point, and `listen` puts the listener on the camera every frame.
+  HRTF rather than equal-power because a stereo pan cannot tell front from
+  back. `rolloffFactor` is 0: loudness stays the caller's own distance gain,
+  exactly as before, so placing a sound changed nothing about how loud
+  anything is. What is yours — your gun, your steps, the HUD — stays
+  unplaced, and so do the tails off the buildings (a shot's echo, a blast's
+  roll), which come from every wall at once. Nothing here touches the seeded
+  stream; `distantFire` and the alert's 30% gate already drew on it and still
+  do, in the same order. `a shot from your right is heard on your right`
+  stands a raider at the player's right, records where the game placed its
+  shot and the ears, and plays that shot through the real chain into an
+  `OfflineAudioContext` (`audio.init(ctx)` takes one): right over left 2.42,
+  0.42 from the mirror position, 1.03 unplaced; 1.0 with the panner taken
+  out, and no place at all with the muzzle not passed.
 - **Tone mapping belongs to exactly one stage.** With post on, the scene pass
   stays linear and `post.js` applies the ACES curve; with post off the
   renderer does it. Both at once looks chalky and washed. `Post.configure`
@@ -942,6 +1032,44 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The rain-and-litter pass is the fifteenth, and it is more of the
+fourteenth, asked for by name after the screenshots of that one: what else
+says a city has been left. Standing water in the gutters and the dips —
+142 puddles on seed 1, each a mirror of the clouded sky with a damp ring —
+litter drifted against the kerbs (484 sheets of newsprint, card, white
+paper and plastic, one card in four quarters), chips of brick and concrete
+along the foot of every wall, and a breeze in the weeds. The invariant
+above has the three things that went wrong on the way: a sun glint the
+size of a puddle, a damp ring paler than the dry road, and litter hanging
+over kerbs. Measured interleaved against the commit before: low 217 →
+226 ms, high 1,654 → 1,723 under software rendering, triangles on high
+190k → 245k. The layout fingerprints are unchanged.
+
+The weather-and-weeds pass is the fourteenth, and it came from looking at
+four frames before touching anything and asking what still read as made.
+Three things did. The sky was a bare gradient — clouds now, invariant above.
+Nothing grew in a city meant to have been abandoned for years — 6,877 tufts
+of weeds on seed 1 now, along every kerb, at the foot of every building and
+through the cracks, about 55k triangles in 9 batches. And the asphalt's
+potholes were filled ellipses, a row of identical black discs repeating
+every 8 m of road; they are ragged polygons with a rim that follows the
+pit's own outline and a scatter of kicked-out gravel. The layout is
+untouched (all three pinned fingerprints), because everything placed is
+placed by `decor`.
+
+The sound pass is the thirteenth, and it was item 4 of the list: you could
+not hear which side fire was coming from. The invariant above has it. One
+thing worth knowing for next time: hostiles make no footsteps, so a flanker
+is still silent until it shoots — placed footsteps per hostile are the
+obvious next sound, and the panner is already there for them.
+
+The climbing pass is the twelfth, and it was item 5 of the list: a car
+roof was a place hostiles could not follow you to. It is the invariant
+above, and one addition to the rig: a climb pose, one knee up onto the lip,
+the other trailing, the upper body leaning over it, riding a hump over the
+climb so it is gone by the time the hostile tops out. Rendered mid-climb
+from the street to confirm it reads as a haul rather than a lift.
 
 The low-tier pass is the eleventh, and it is the first that had numbers
 from the machine that reported the problem, because the readout from the
@@ -1831,25 +1959,20 @@ Suggested next work, in the order I would do it:
 3. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-4. **Positional audio** — sounds are mono, so you cannot hear which side fire
-   is coming from. `PannerNode` in the already-centralised audio module.
-5. **Let hostiles mantle too.** `World.mantleTarget` is entity-agnostic, but
-   only the player calls it, so a car roof is still a place they cannot follow
-   you to.
-6. **Finish what the rig made possible.** Hostiles now have knees, elbows,
+4. **Finish what the rig made possible.** Hostiles now have knees, elbows,
    a waist, a neck and a weapon their hands follow, so the rest is poses,
    not plumbing: a reload visible from across the street (drop the
    magazine's hold point and let the left hand follow it), a crouch behind
    cover, a hip-fire spray from a breaker, a turn of the head toward a
    sound. Each is a weapon pose plus maybe a waist angle; the arms come
    free.
-7. **More on the ground now that paint is there.** The markings pass put a
+5. **More on the ground now that paint is there.** The markings pass put a
    geometry layer on the road and left the pavement alone: manhole covers,
    kerb drops at the crossings, hatched keep-clear boxes and painted parking
    bays all fall out of the same `roadMarkings` machinery and the same street
    grid. Drop them in the same merged mesh and they cost one more batch of
    nothing.
-8. **Keep wall decoration out of jumping reach of a perch.** Decoration is
+6. **Keep wall decoration out of jumping reach of a perch.** Decoration is
    built where you cannot stand, and a terrace can put you within a jump of
    some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
    1.15 m above it, which you would fall through. Perches are placed after
@@ -1857,7 +1980,7 @@ Suggested next work, in the order I would do it:
    occupied or the decoration is skipped near a perch; `decor` costs the
    stream nothing either way. `what stands on a perch holds you up` stops at
    the deck's footprint on purpose and would need widening to cover it.
-9. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+7. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make

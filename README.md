@@ -385,11 +385,11 @@ float.
 Shadow mapping costs more than everything else in the scene put together, so
 it is the first thing the quality tiers drop:
 
-| Tier | Shadows | Lighting | Fire lights | Post | Pixel ratio | Dust |
-| --- | --- | --- | --- | --- | --- | --- |
-| High | 2048 wide + 2048 near, soft | PBR + sky, normal maps | nearest 3 | occlusion, bloom + grade, 4x MSAA | up to 1.25 | yes |
-| Medium | 1024 wide + 1024 near, hard | PBR + sky, normal maps | nearest 2 | occlusion, bloom + grade, 2x MSAA | up to 1.0 | yes |
-| Low | off | Lambert | none | off, straight to the canvas | 1.0 | no |
+| Tier | Shadows | Lighting | Fire lights | Post | Pixel ratio | Dust | Weeds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| High | 2048 wide + 2048 near, soft | PBR + sky, normal maps | nearest 3 | occlusion, bloom + grade, 4x MSAA | up to 1.25 | yes | yes |
+| Medium | 1024 wide + 1024 near, hard | PBR + sky, normal maps | nearest 2 | occlusion, bloom + grade, 2x MSAA | up to 1.0 | yes | yes |
+| Low | off | Lambert | none | off, straight to the canvas | 1.0 | no | no |
 
 A machine that cannot afford shadows cannot afford a bloom either, so Low
 drops the whole post chain and hands tone mapping back to the renderer. It
@@ -400,6 +400,21 @@ keeps its full materials. Under software rendering that is 176 ms a frame
 against 986 for what Low used to be. On every tier only the nearest few fire
 barrels cast real light — a fire's light reaches 14 m, and every barrel in
 the sector used to be paid for on every pixel.
+
+The sky carries weather: a layer of broken cloud lit gold on the sun's side
+and slate underneath, which the city's reflected light picks up too. And the
+city is overgrown — weeds along both sides of every kerb, against the foot of
+every building and through the cracks of the pavement — which is the
+strongest single thing that says nobody has swept here in years. Weeds are
+walked and shot through, as grass is. Low keeps the cloud, at fewer octaves,
+and drops the weeds.
+
+Rain has been and gone: puddles lie in the gutters and the dips of the road,
+dark and mirror-smooth, showing the sky above them with the sun as a small
+glint, each inside a ring of damp asphalt. Paper, card and plastic have
+drifted against the kerbs, and chips of brick and concrete lie along the
+foot of every wall. The weeds move in a breeze that runs down the street
+rather than through every tuft at once.
 
 The pixel ratio is the column that matters most. Every pass the post chain
 adds is paid per pixel, and on a 2x screen High used to draw 3.06 times the
@@ -450,12 +465,17 @@ Anything between a step and chest height is climbed rather than walked around:
 hold `Space` facing a car roof, a planter or a low wall and you haul yourself
 up over about half a second, ducked and unable to shoot until you top out.
 Hold it through a jump and the reach extends to roughly two and a half metres.
-Hostiles still only walk — they climb the same half-metre steps and nothing
-taller — so a car roof is a spot a melee rusher has to go around while it can
-still be shot from.
+Hostiles climb after you. Stand on a car roof, a crate or a low wall and a
+hostile coming for you — a scavenger, or anything that has lost sight of you
+— walks to the face and hauls itself up the same way you did, only slower,
+and with its weapon off you until it tops out: a car roof buys you that
+second and a half, not the fight. Once up there with you it holds the deck
+rather than strafing off the edge. Marksmen never climb; they hold their
+roofs.
 
 The same rules apply to everyone: hostiles climb, stand on, and fall off the
-same surfaces, and a melee rusher cannot reach you across a height gap. Drops
+same surfaces, and a melee rusher cannot reach you across a height gap too
+tall to climb. Drops
 of more than about four metres hurt, and a long enough fall will kill you.
 
 The ground you see is the ground you stand on. The pavement round every block
@@ -496,6 +516,12 @@ A few notes on the implementation:
   canvas at boot, every sound is synthesised from noise bursts and oscillator
   envelopes, and every model is assembled out of chamfered boxes and profiles
   described by their cross-sections.
+- **You hear where things are.** A hostile's shot, a round striking a wall, a
+  hit, a blast, a grenade skittering and a hostile's shout are each placed
+  where they happened, through an HRTF panner, with the listener riding the
+  camera — so fire from behind you sounds like it, best on headphones. Your
+  own gun and footsteps stay centred, and the echo off the buildings comes
+  from everywhere.
 - **Normal maps are generated, not authored.** A Sobel pass over each
   texture's own luminance becomes its normal map, so painted detail lights
   like geometry without shipping a second set of images.

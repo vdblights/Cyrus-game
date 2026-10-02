@@ -2538,6 +2538,311 @@ check('the fire nearest you is lit, and the light count never changes', async (p
   return r;
 });
 
+check('a hostile follows you onto a car roof, and stays up there with you', async (page) => {
+  // The player could haul themselves onto a car roof, a crate or a low wall
+  // and nothing could follow: `mantleTarget` was always entity-agnostic, but
+  // only the player called it, so a waist-high roof was somewhere to stand
+  // over a scavenger that could only circle it. This stands the player on
+  // every such deck it can find on the pinned seed, starts a scavenger on
+  // open ground 3.5 m off it with a climbable face in between, and asks
+  // whether it came up — and whether it was still up there seconds later,
+  // because the first version climbed, strafed at its range, and walked
+  // straight back off the edge.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const W = g.world;
+    const out = [];
+    for (const b of W.boxes) {
+      if (out.length >= 8) break;
+      if (b.floor || b.top < 0.8 || b.top > 1.7) continue;
+      const cx = b.cx ?? (b.minX + b.maxX) / 2, cz = b.cz ?? (b.minZ + b.maxZ) / 2;
+      if (Math.abs(W.groundHeight(cx, cz, 0.42, 99) - b.top) > 0.05) continue;
+      // a start on open ground, with a climbable face between it and the deck
+      let start = null;
+      const R = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 2 + 3.5;
+      for (let k = 0; k < 8 && !start; k++) {
+        const a = k * Math.PI / 4, sx = cx + Math.cos(a) * R, sz = cz + Math.sin(a) * R;
+        const fy = W.groundHeight(sx, sz, 0.12, 0.6);
+        if (fy > 0.5 || W.occupied(sx, sz, 0.7, 0.6)) continue;
+        const dx = cx - sx, dz = cz - sz, l = Math.hypot(dx, dz);
+        if (!W.mantleTarget(sx, sz, 0.45, fy, dx / l, dz / l, 0.6, 1.8, R)) continue;
+        start = { sx, sz, fy };
+      }
+      if (!start) continue;
+      for (const e of g.enemies) { e.group.visible = false; g._recycle(e); }
+      g.enemies.length = 0;
+      g.player.reset(cx, cz);
+      const hold = () => {
+        g.player.feetY = b.top; g.player.onGround = true; g.player.velocity.set(0, 0, 0);
+        g.player.position.y = b.top + g.player.eyeHeight;
+        g.player.health = 100;
+      };
+      hold();
+      const e = g.spawnEnemy('scavenger');
+      e.pos.set(start.sx, start.fy, start.sz);
+      e.group.position.copy(e.pos);
+      e.markWatchdog(g.player);
+      e.alert(g.time, 0);
+      let upAt = null;
+      for (let t = 0; t < 7; t += 1 / 30) {
+        g.time += 1 / 30; hold();
+        g.step(1 / 30);
+        if (upAt === null && e.pos.y > b.top - 0.1) upAt = +t.toFixed(1);
+      }
+      out.push({ top: +b.top.toFixed(2), upAt, stayed: Math.abs(e.pos.y - b.top) < 0.1 });
+    }
+    return { decks: out.length, up: out.filter((o) => o.upAt !== null).length,
+      stayed: out.filter((o) => o.stayed).length, slowest: Math.max(...out.map((o) => o.upAt ?? 99)) };
+  });
+  // Measured on seed 1: 8 of 8 up within 1.3 s, 8 of 8 still up; 0 of 8
+  // with the climb taken out, and 4 of 8 still up without the edge guard.
+  expect(r.decks >= 6, `only ${r.decks} climbable decks to stand on`);
+  expect(r.up === r.decks, `${r.decks - r.up} of ${r.decks} scavengers never came up after the player`);
+  expect(r.stayed === r.decks, `${r.decks - r.stayed} of ${r.decks} climbed up and walked back off`);
+  return r;
+});
+
+check('a shot from your right is heard on your right', async (page) => {
+  // Every sound was mono, so fire from behind you sounded exactly like fire
+  // from in front. This stands a raider to the player's right, lets it fire,
+  // records where the game said the shot came from and where it said the
+  // ears were, and then plays that same shot through the real audio chain
+  // into an offline context, so what is measured is the two channels coming
+  // out — the same again from the left, and once with no place at all.
+  const r = await page.evaluate(async () => {
+    const { audio } = await import('/src/audio.js');
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const { target, px, pz } = window.__place(12);
+    g.player.reset(px, pz);
+    const dx = target.x - px, dz = target.z - pz;
+    // face 90 degrees left of the hostile, so it stands on the right
+    g.player.yaw = Math.atan2(-dx, -dz) + Math.PI / 2;
+    g.player.pitch = 0;
+    const e = g.spawnEnemy('raider');
+    e.pos.set(target.x, g.world.groundHeight(target.x, target.z, 0.12, 0.6), target.z);
+    e.group.position.copy(e.pos);
+    e.alert(g.time, 0);
+    e.nextFire = 0;
+    let shotAt, ears;
+    const realShot = audio.shot.bind(audio), realListen = audio.listen.bind(audio);
+    audio.shot = (kind, gain, at) => { if (at && !shotAt) shotAt = { x: at.x, y: at.y, z: at.z }; if (!at) shotAt = shotAt || null; };
+    audio.listen = (x, y, z, f) => { ears = { x, y, z, f: { x: f.x, y: f.y, z: f.z } }; };
+    try {
+      for (let i = 0; i < 90 && !shotAt; i++) {
+        g.time += 1 / 30; g.player.health = 100;
+        g.frame();
+        g.player.yaw = Math.atan2(-dx, -dz) + Math.PI / 2;
+      }
+    } finally { audio.shot = realShot; audio.listen = realListen; }
+    if (!shotAt || !ears) return { shotAt: shotAt || null, ears: !!ears };
+
+    // play it: the real chain, into an offline context
+    const saved = { ctx: audio.ctx, master: audio.master, noiseBuf: audio.noiseBuf };
+    const render = async (at) => {
+      audio.ctx = null;
+      const off = new OfflineAudioContext(2, 44100 * 0.5, 44100);
+      audio.init(off);
+      audio.listen(ears.x, ears.y, ears.z, ears.f);
+      audio.shot('rifle', 1, at);
+      const buf = await off.startRendering();
+      const energy = (ch) => buf.getChannelData(ch).reduce((a, v) => a + v * v, 0);
+      return +(energy(1) / energy(0)).toFixed(2);           // right over left
+    };
+    try {
+      const mirror = { x: 2 * ears.x - shotAt.x, y: shotAt.y, z: 2 * ears.z - shotAt.z };
+      return { placed: true, right: await render(shotAt), left: await render(mirror), nowhere: await render(null) };
+    } finally { Object.assign(audio, saved); }
+  });
+  expect(r.shotAt !== null && r.placed, `the hostile's shot was not given a place: ${JSON.stringify(r)}`);
+  // Measured on seed 1: right over left 2.42 from the right, 0.42 from the
+  // left, 1.03 from nowhere (the room's reverb is stereo, so not exactly 1),
+  // and 1.0 with the panner taken out. The echo off the buildings
+  // is deliberately not placed, which is why the ratio is not larger.
+  expect(r.right > 1.8, `a shot from the right came out ${r.right}x louder on the right`);
+  expect(r.left < 0.55, `a shot from the left came out ${r.left}x louder on the right`);
+  expect(Math.abs(r.nowhere - 1) < 0.1, `a sound with no place was panned (${r.nowhere})`);
+  return r;
+});
+
+check('the sky has weather in it', async (page) => {
+  // A clear gradient at the end of the afternoon was the most computer-made
+  // thing left in the frame. This looks up at the sky away from the sun with
+  // nothing else drawn, and measures how much neighbouring pixels differ
+  // across the frame: a gradient changes slowly, cloud has edges.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const { SUN_DIR } = await import('/src/atmosphere.js');
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    const scene = new THREE.Scene();
+    scene.add(new THREE.Mesh(g.sky.geometry, g.sky.material));
+    const cam = new THREE.PerspectiveCamera(70, 1.6, 1, 1000);
+    cam.lookAt(-SUN_DIR.x, 0.6, -SUN_DIR.z);
+    const W = 320, H = 200;
+    const rt = new THREE.WebGLRenderTarget(W, H);
+    g.renderer.setRenderTarget(rt);
+    g.renderer.render(scene, cam);
+    const buf = new Uint8Array(W * H * 4);
+    g.renderer.readRenderTargetPixels(rt, 0, 0, W, H, buf);
+    g.renderer.setRenderTarget(null);
+    rt.dispose();
+    const lum = (i) => 0.2126 * buf[i] + 0.7152 * buf[i + 1] + 0.0722 * buf[i + 2];
+    let edge = 0, n = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x + 6 < W; x += 3) {
+        edge += Math.abs(lum((y * W + x) * 4) - lum((y * W + x + 6) * 4));
+        n++;
+      }
+    }
+    return { contrast: +(edge / n).toFixed(2) };
+  });
+  // Measured on seed 1: 3.07 with cloud, 0.11 with the cloud function
+  // returning the clear sky it was given.
+  expect(r.contrast > 1, `the sky away from the sun is a plain gradient (contrast ${r.contrast})`);
+  return r;
+});
+
+check('weeds grow where they can stand, and stay off the low tier', async (page) => {
+  // The overgrowth is decoration: in neither collision list, placed by the
+  // city's private generator, so it must only grow where something could —
+  // on the street or a floor, clear of anything taller than a kerb. This
+  // reads every tuft's root out of the merged city (the midpoint of a card's
+  // two bottom corners) and asks the footing and the box list about it. And
+  // it is the one thing the low tier drops, because on low it was a sixth
+  // of a software frame.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const W = g.world;
+    let tufts = 0, floating = 0, buried = 0, inside = 0;
+    for (const mesh of g.weedMeshes) {
+      const p = mesh.geometry.attributes.position;
+      // each card copy is four vertices, the first two its bottom corners
+      for (let v = 0; v + 3 < p.count; v += 16) {
+        const x = (p.getX(v) + p.getX(v + 1)) / 2, z = (p.getZ(v) + p.getZ(v + 1)) / 2;
+        const y = p.getY(v);
+        tufts++;
+        const ground = W.groundHeight(x, z, 0.05, y + 0.05);
+        if (y > ground + 0.03) floating++;
+        if (y < ground - 0.03) buried++;
+        if (W.occupied(x, z, 0, 0.6)) inside++;
+      }
+    }
+    const inSolids = g.world.solids.some((m) => m.material?.userData?.name === 'weeds');
+    g.applyQuality('high');
+    const shownHigh = g.weedMeshes.every((m) => m.visible);
+    g.applyQuality('low');
+    const shownLow = g.weedMeshes.some((m) => m.visible);
+    return { tufts, floating, buried, inside, inSolids, shownHigh, shownLow };
+  });
+  // Measured on seed 1: 6,877 tufts, none floating, buried or inside
+  // anything; 838 inside a collider with the clearance test taken out.
+  expect(r.tufts > 2000, `only ${r.tufts} tufts of weeds in the sector`);
+  expect(r.floating === 0 && r.buried === 0, `${r.floating} tufts float and ${r.buried} are buried`);
+  expect(r.inside === 0, `${r.inside} tufts grow inside a collider`);
+  expect(!r.inSolids, 'weeds are in the list bullets are traced against');
+  expect(r.shownHigh && !r.shownLow, `weeds shown on high ${r.shownHigh}, on low ${r.shownLow}`);
+  return r;
+});
+
+check('puddles and litter lie on the ground they are drawn on', async (page) => {
+  // Standing water and drifted paper are decoration by the flush rule: a
+  // centimetre up, walked over and shot through like the road paint. That is
+  // only true if every corner of each one finds the same level ground — a
+  // puddle half over a kerb is a sheet of glass hanging in the air. This
+  // reads every vertex of the merged water, damp ring and litter and asks
+  // the footing what is under it.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const W = g.world;
+    const out = {};
+    g.city.traverse((m) => {
+      const name = m.isMesh && m.material.userData.name;
+      if (!['water', 'damp', 'litter'].includes(name)) return;
+      const lift = { water: 0.012, damp: 0.008, litter: 0.006 }[name];
+      const row = out[name] || (out[name] = { verts: 0, off: 0, inside: 0, worst: 0 });
+      const p = m.geometry.attributes.position;
+      for (let v = 0; v < p.count; v++) {
+        const x = p.getX(v), y = p.getY(v), z = p.getZ(v);
+        const ground = W.groundHeight(x, z, 0.02, y);
+        const gap = Math.abs(y - lift - ground);
+        row.verts++;
+        row.worst = Math.max(row.worst, +gap.toFixed(3));
+        if (gap > 0.02) row.off++;
+        if (W.occupied(x, z, 0, 0.6)) row.inside++;
+      }
+    });
+    out.puddles = out.water ? out.water.verts / 15 : 0;
+    out.inSolids = W.solids.some((m) => ['water', 'damp', 'litter'].includes(m.material?.userData?.name));
+    return out;
+  });
+  // Measured on seed 1: 142 puddles and 484 sheets, every vertex on its
+  // ground. With the puddles' level test taken out, 35 water vertices stand
+  // off it, at worst 0.28 m — the height of a kerb. And it caught the first
+  // version of the litter doing exactly that: 172 corners of sheets dropped
+  // across a kerb line, which only the centre had been asked about.
+  expect(r.puddles > 60, `only ${r.puddles} puddles in the sector`);
+  for (const k of ['water', 'damp', 'litter']) {
+    expect(r[k] && r[k].off === 0, `${r[k]?.off} ${k} vertices stand off the ground (worst ${r[k]?.worst} m)`);
+    expect(r[k].inside === 0, `${r[k].inside} ${k} vertices are inside a collider`);
+  }
+  expect(!r.inSolids, 'water or litter is in the list bullets are traced against');
+  return { puddles: r.puddles, litter: r.litter.verts / 4 };
+});
+
+check('weeds move in the wind, and are still when time is', async (page) => {
+  // A still frame of weeds reads as a photograph pasted on the street. The
+  // tips sway on game time, so this draws the same view at one wind time
+  // twice and at another once, with the post chain off so its grain is not
+  // the thing being measured.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.settings.quality = 'high';
+    g.applyQuality('high');
+    const p = g.weedMeshes[0].geometry.attributes.position;
+    const x = p.getX(0), z = p.getZ(0);
+    g.player.reset(x + 1.5, z + 1.5);
+    g.player.yaw = Math.atan2(1.5, 1.5); g.player.pitch = -0.6;
+    g.step(1 / 60);
+    g.post.configure({ enabled: false, bloom: false, samples: 0, ao: false });
+    const gl = g.renderer.getContext();
+    const W = g.renderer.domElement.width, H = g.renderer.domElement.height;
+    const shot = () => {
+      g.renderer.setRenderTarget(null); g.renderer.clear(); g.renderer.render(g.scene, g.camera);
+      const b = new Uint8Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, b); return b;
+    };
+    const wind = g.paintedMaterials.weedMat.userData.windTime;
+    wind.value = 0; const a = shot();
+    wind.value = 0; const a2 = shot();
+    wind.value = 0.7; const b = shot();
+    let still = 0, moved = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      if (Math.abs(a[i] - a2[i]) > 12) still++;
+      if (Math.abs(a[i] - b[i]) > 12) moved++;
+    }
+    // and the loop is what advances it
+    const before = wind.value;
+    g.clock.getDelta = () => 1 / 30;
+    g.render = () => {};
+    g.frame();
+    return { still, moved, advanced: wind.value !== before };
+  });
+  // Measured on seed 1: 1,534 pixels move between two wind times, none
+  // between two frames at the same one; 0 with the sway taken out.
+  expect(r.still === 0, `${r.still} pixels changed with nothing moving`);
+  expect(r.moved > 300, `only ${r.moved} pixels moved between two wind times`);
+  expect(r.advanced, 'the loop does not advance the wind');
+  return r;
+});
+
 check('the frame-rate readout shows on a key, and names the GPU', async (page) => {
   // Lag is reported from machines nobody here can see, so the game carries
   // its own numbers: the key left of 1 shows them, and the pause menu has
