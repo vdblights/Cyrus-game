@@ -2906,6 +2906,9 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
       if (b.floor || b.top < 0.8 || b.top > 1.7) continue;
       const cx = b.cx ?? (b.minX + b.maxX) / 2, cz = b.cz ?? (b.minZ + b.maxZ) / 2;
       if (Math.abs(W.groundHeight(cx, cz, 0.42, 99) - b.top) > 0.05) continue;
+      // one deck per place: the fountain's rim is sixteen staves, first in
+      // the list, and eight of them were all this sampled
+      if (out.some((o) => Math.hypot(o.at[0] - cx, o.at[1] - cz) < 4)) continue;
       // a start on open ground, with a climbable face between it and the deck
       let start = null;
       const R = Math.max(b.maxX - b.minX, b.maxZ - b.minZ) / 2 + 3.5;
@@ -2938,7 +2941,7 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
         g.step(1 / 30);
         if (upAt === null && e.pos.y > b.top - 0.1) upAt = +t.toFixed(1);
       }
-      out.push({ top: +b.top.toFixed(2), upAt, stayed: Math.abs(e.pos.y - b.top) < 0.1 });
+      out.push({ top: +b.top.toFixed(2), upAt, stayed: Math.abs(e.pos.y - b.top) < 0.1, at: [cx, cz] });
     }
     return { decks: out.length, up: out.filter((o) => o.upAt !== null).length,
       stayed: out.filter((o) => o.stayed).length, slowest: Math.max(...out.map((o) => o.upAt ?? 99)) };

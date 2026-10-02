@@ -85,7 +85,12 @@ These each cost real debugging time. Changing them needs a reason.
   `minX..maxZ`. The min/max is the enclosing AABB, kept as a cheap reject and
   for the readers that only want a bound — `occupied`, where every caller is
   placing something and wants clearance rather than contact, and the nav bake,
-  where claiming slightly too much is the safe direction. `resolve`,
+  where claiming slightly too much is the safe direction. Steering is not one
+  of those: avoidance probed with `occupied` until settled props put a
+  slanted container on the plaza, and a scavenger two metres off it read the
+  empty corner of its AABB as the way being blocked and dithered in place
+  (`a hostile follows you onto a car roof`, 7 of 8). It asks `blocked`,
+  which tests the footprint. `resolve`,
   `groundHeight` and `bounceSphere` transform into the box's own frame, where
   every box is axis-aligned and the transform is the identity for the ones
   that already are, so there is one code path and not two. `lineOfSight` is

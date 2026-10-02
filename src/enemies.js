@@ -876,7 +876,7 @@ export class Enemy {
     if (moveDir.lengthSq() > 1e-4 && !climbing) {
       moveDir.normalize();
       const probe = 1.8 + this.radius;
-      const clear = (x, z) => !world.occupied(this.pos.x + x * probe, this.pos.z + z * probe, this.radius, this.pos.y + 0.9);
+      const clear = (x, z) => !world.blocked(this.pos.x + x * probe, this.pos.z + z * probe, this.radius, this.pos.y + 0.9);
       const rot = (a, out) => {
         const cos = Math.cos(a), sin = Math.sin(a);
         return out.set(moveDir.x * cos - moveDir.z * sin, 0, moveDir.x * sin + moveDir.z * cos);
