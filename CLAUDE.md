@@ -1057,6 +1057,31 @@ it. And trace what the bot spent the slow wave on before concluding either
 way: the trace is what found a real (if harmless) economy change hiding in
 the same diff.
 
+A tenth, from the settling pass, and all four cost an hour between them.
+**The suite reads `src/` from disk on every page load**, so editing a file
+while a run is going changes the code under the checks still to come: a
+run that straddles an edit tests nothing, and one check booted in the few
+seconds a half-made edit was on disk and hung until it was killed. Finish
+editing, then run, and kill a run before changing the layout under it.
+**`buildCity`'s helpers are nested `function`s declared after its
+`return`**, so they hoist but anything they share does not: a `let`
+written beside them is never initialised, and the first call throws.
+State a builder shares (`settled`, `heaps`, `floors`) is declared at the
+top of `buildCity`, before the first lot is laid. **`tests/probe.js`
+serves on a fixed port**, so it cannot run while the suite does (it fails
+`EADDRINUSE`); a script that calls `openGame({ seed, port })` from
+`tests/harness.js` on a port of its own can. And `pgrep -f`/`pkill -f`
+on a pattern such as `tests/run.js` matches the shell running the
+command, which kills it (exit 144); select by the process listing
+instead (`ps -eo pid,args | grep "node tests/run"`).
+
+A check that samples "the first N" of a list is a check on the list's
+order. `a hostile follows you onto a car roof` took the first eight decks
+in `world.boxes`, which after the fountain became sixteen staves were all
+the fountain's rim: one place measured eight times, beside the plaza's
+barricades. It takes one deck per place now (4 m apart). The same thing
+can happen to anything that samples by index.
+
 ## Performance
 
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
