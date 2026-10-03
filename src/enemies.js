@@ -16,6 +16,13 @@ const IK_A = new THREE.Vector3(), IK_B = new THREE.Vector3(), IK_C = new THREE.V
 const IK_Q = new THREE.Quaternion();
 const POSE = new THREE.Object3D();          // the weapon's pose, worked out before it is applied
 const M4 = new THREE.Matrix4();
+// the support hand's way through a reload: where it is, where it goes next
+const HAND_A = new THREE.Vector3(), HAND_B = new THREE.Vector3(), HAND_FORE = new THREE.Vector3();
+const HAND_MAG = new THREE.Vector3(), HAND_LOW = new THREE.Vector3();
+// a pouch on the left hip, in the upper body's frame: far enough from the
+// magazine that the hand's trip to it reads from across a street
+const POUCH = new THREE.Vector3(-0.26, 0.04, -0.06);
+const smooth = (t) => t * t * (3 - 2 * t);
 
 /**
  * Bend a two-piece limb so its end reaches `target`.
@@ -94,6 +101,14 @@ const PERCH_PATIENCE = 15;
 const CLIMB = { above: 0.5, near: 9, min: 0.6, max: 1.8, base: 0.6, perM: 0.4 };
 
 /**
+ * A crouch behind cover: how far the hips come down (in the body's own
+ * units, so a big archetype drops further), and the thigh and knee that put
+ * the feet back on the ground under them — a 0.42 m thigh and a 0.44 m shin
+ * at these angles stand 0.50 m tall with the foot 6 cm forward of the hip.
+ */
+const CROUCH = { drop: 0.36, thigh: 1.1, knee: -1.9, lean: 0.22 };
+
+/**
  * Hostile archetypes. `preferred` is the range the AI tries to hold; melee
  * types simply close to contact.
  *
@@ -112,26 +127,26 @@ export const ENEMY_TYPES = {
   },
   raider: {
     name: 'RAIDER', hp: 110, speed: 3.0, scale: 1.0, melee: false,
-    damage: 6, rate: 0.16, burst: 3, burstPause: 2.4, preferred: 13, accuracy: 0.085,
+    damage: 6, rate: 0.16, burst: 3, burstPause: 2.4, preferred: 13, accuracy: 0.085, mag: 30, reload: 2.2,
     color: 0x66788a, accent: 0x3f4750, score: 150, detect: 65, sound: 'rifle', marker: 0xe8a33a,
     kit: { head: 'helm', armour: 'carrier', coat: 0, weapon: 'rifle' },
   },
   shotgunner: {
     name: 'BREAKER', hp: 170, speed: 3.6, scale: 1.08, melee: false,
-    damage: 5, pellets: 6, rate: 1.15, preferred: 6, accuracy: 0.14, falloff: 16,
+    damage: 5, pellets: 6, rate: 1.15, preferred: 6, accuracy: 0.14, falloff: 16, mag: 6, reload: 2.6, shells: 4,
     color: 0x9a7550, accent: 0x53412f, score: 200, detect: 50, sound: 'shotgun', marker: 0x3fa9d8,
     kit: { head: 'visor', armour: 'heavy', coat: 0, weapon: 'shotgun' },
   },
   marksman: {
     name: 'MARKSMAN', hp: 90, speed: 2.4, scale: 1.0, melee: false,
-    damage: 26, rate: 2.9, preferred: 26, accuracy: 0.022, detect: 95,
+    damage: 26, rate: 2.9, preferred: 26, accuracy: 0.022, detect: 95, mag: 5, reload: 2.4,
     color: 0x5c6f5a, accent: 0x2f3a30, score: 250, sound: 'rifle', marker: 0x7ce04a,
     laser: true, perch: true,
     kit: { head: 'hood', armour: 'light', coat: 0.34, weapon: 'long' },
   },
   brute: {
     name: 'JUGGERNAUT', hp: 420, speed: 2.4, scale: 1.35, melee: false,
-    damage: 7, rate: 0.13, burst: 6, burstPause: 2.8, preferred: 9, accuracy: 0.105,
+    damage: 7, rate: 0.13, burst: 6, burstPause: 2.8, preferred: 9, accuracy: 0.105, mag: 60, reload: 3.2,
     color: 0x7d5a5a, accent: 0x3a3533, score: 400, detect: 70, sound: 'smg', marker: 0xb03be0,
     kit: { head: 'helm', armour: 'plated', coat: 0, weapon: 'drum' },
   },
@@ -400,9 +415,12 @@ function makeKit(type) {
   // Where the two hands close on the weapon, in the weapon's own frame: the
   // shooting hand on the grip, the support hand under the front of the
   // receiver — or both on the shaft, for the hook.
+  // `mag` is where the support hand goes to reload: the foot of the curved
+  // magazine, the underside of the drum, the shotgun's loading port.
   const hold = k.weapon === 'hook'
     ? { grip: [0, 0, 0.02], fore: [0, 0, -0.24] }
-    : { grip: [0, -0.12, 0.06], fore: [0, -0.085, -0.26] };
+    : { grip: [0, -0.12, 0.06], fore: [0, -0.085, -0.26],
+      mag: k.weapon === 'drum' ? [0, -0.28, -0.15] : k.weapon === 'shotgun' ? [0, -0.075, -0.12] : [0, -0.21, -0.20] };
 
   return {
     hold,
@@ -711,6 +729,7 @@ export class Enemy {
     this.hold = {
       grip: new THREE.Vector3(...built.hold.grip),
       fore: new THREE.Vector3(...built.hold.fore),
+      mag: built.hold.mag ? new THREE.Vector3(...built.hold.mag) : null,
     };
     this.poleR = new THREE.Vector3(0.7, -1, 0.35);
     this.fist = ARM.fore;     // elbow to the middle of the fist
@@ -736,6 +755,14 @@ export class Enemy {
     this.alerted = false;
     this.nextFire = 0;
     this.burstLeft = 0;
+    this.mag = this.type.mag || 0;   // rounds left before a reload
+    this.reloadT = 0;                // seconds of reload still to go
+    this.reloadCue = 0;              // which of its sounds have played
+    this.crouch = 0;                 // 0 standing, 1 down behind cover
+    this.crouchWant = false;
+    this.heard = null;               // where a far-off shot came from, while it listens
+    this.heardUntil = 0;
+    this.lookYaw = 0;                // the head's turn toward it, eased
     this.strafe = Math.random() < 0.5 ? 1 : -1;
     this.strafeTimer = randRange(1, 3);
     this.walkPhase = Math.random() * 6.28;
@@ -836,6 +863,17 @@ export class Enemy {
     this.alerted = true;
     this.nextFire = Math.max(this.nextFire, time + readyIn);
     if (Math.random() < 0.3) audio.enemyAlert({ x: this.pos.x, y: this.pos.y + 1.5, z: this.pos.z });
+  }
+
+  /**
+   * A shot heard from too far off to come looking: the head turns toward it
+   * for a few seconds, and that is all — a tell that it has noticed you,
+   * before it does anything about it.
+   */
+  hear(x, z, time) {
+    if (this.alerted || !this.alive) return;
+    this.heard = { x, z };
+    this.heardUntil = time + 2.5;
   }
 
   /** @returns {'kill'|'hit'|null} */
@@ -944,7 +982,8 @@ export class Enemy {
     toPlayer.normalize();
     const heightGap = player.position.y - (this.pos.y + 1.5);
 
-    const eyeY = this.pos.y + 1.5 * this.type.scale;
+    // a hostile down behind cover is looking from where its eyes are
+    const eyeY = this.pos.y + (1.5 - CROUCH.drop * this.crouch) * this.type.scale;
     const sees = dist < this.type.detect &&
       world.lineOfSight(this.pos.x, eyeY, this.pos.z, player.position.x, player.position.y, player.position.z);
 
@@ -970,6 +1009,8 @@ export class Enemy {
       this.group.updateMatrixWorld(true);
       return;
     }
+
+    if (this.reloadT > 0) this._advanceReload(dt, dist);
 
     const nav = this.game.nav;
     let moveDir = V2.set(0, 0, 0);
@@ -1001,6 +1042,10 @@ export class Enemy {
         }
       }
     }
+
+    // Down behind cover for a reload, it stays down: walking would take it
+    // out from behind the thing it crouched for.
+    if (this.reloadT > 0 && this.crouchWant) { moveDir.set(0, 0, 0); this.vel.set(0, 0, 0); }
 
     // ---- climbing ---------------------------------------------------------
     // You are on something it could follow you onto: go straight at it, and
@@ -1193,6 +1238,16 @@ export class Enemy {
       this.group.rotation.y += diff * Math.min(1, dt * 7);
     }
 
+    // listening: the head turns toward a far-off shot, as far as a neck turns
+    let lookWant = 0;
+    if (!this.alerted && this.heard && time < this.heardUntil) {
+      let a = Math.atan2(-(this.heard.x - this.pos.x), -(this.heard.z - this.pos.z)) - this.group.rotation.y;
+      while (a > Math.PI) a -= Math.PI * 2;
+      while (a < -Math.PI) a += Math.PI * 2;
+      lookWant = THREE.MathUtils.clamp(a, -1.2, 1.2);
+    }
+    this.lookYaw += (lookWant - this.lookYaw) * Math.min(1, dt * 5);
+
     this._updateLaser(player, sees, time);
     // the gun follows the target's height, so a marksman on a roof aims down
     const pitchWant = this.alerted ? Math.atan2(player.position.y - 0.25 - (this.pos.y + 1.36 * this.type.scale), Math.max(1, dist)) : 0;
@@ -1205,7 +1260,7 @@ export class Enemy {
     // ---- shooting / melee ---------------------------------------------
     if (!this.alerted || !sees) return;
     const t = this.type;
-    if (time < this.nextFire) return;
+    if (time < this.nextFire || this.reloadT > 0) return;
 
     if (t.melee) {
       if (dist < t.preferred + 0.9 && Math.abs(heightGap) < 1.8) {
@@ -1226,6 +1281,49 @@ export class Enemy {
       this.nextFire = time + t.rate * randRange(0.85, 1.3);
     }
     this._shoot(player, world);
+    if (t.mag && --this.mag <= 0) this._startReload(player, world, dist, time);
+  }
+
+  /**
+   * Out of rounds: a reload, which is a window — the fire stops for a second
+   * or three, and it can be heard. If there is cover within reach that would
+   * hide a crouched body from the target and not a standing one, it gets
+   * down behind it for the duration and stays put.
+   */
+  _startReload(player, world, dist, time) {
+    const t = this.type;
+    this.reloadT = t.reload;
+    this.reloadCue = 0;
+    this.burstLeft = 0;
+    const s = t.scale, p = player.position;
+    const standing = world.lineOfSight(p.x, p.y, p.z, this.pos.x, this.pos.y + 1.25 * s, this.pos.z);
+    const crouched = world.lineOfSight(p.x, p.y, p.z, this.pos.x, this.pos.y + (1.25 - CROUCH.drop) * s, this.pos.z);
+    this.crouchWant = standing && !crouched;
+    this._reloadSound('out', dist);
+  }
+
+  /** The reload's clock, and the sounds that go with its stages. */
+  _advanceReload(dt, dist) {
+    const t = this.type;
+    this.reloadT = Math.max(0, this.reloadT - dt);
+    const r = 1 - this.reloadT / t.reload;
+    const cues = t.shells
+      ? [...Array.from({ length: t.shells }, (_, i) => [0.15 + (0.7 * i) / t.shells, 'shell']), [0.9, 'bolt']]
+      : [[0.55, 'in'], [0.85, 'bolt']];
+    while (this.reloadCue < cues.length && r >= cues[this.reloadCue][0]) {
+      this._reloadSound(cues[this.reloadCue][1], dist);
+      this.reloadCue++;
+    }
+    if (this.reloadT <= 0) {
+      this.mag = t.mag;
+      this.crouchWant = false;
+    }
+  }
+
+  _reloadSound(stage, dist) {
+    if (dist > 30) return;
+    this.parts.weapon.getWorldPosition(V3);
+    audio.reload(stage, V3, THREE.MathUtils.clamp(10 / Math.max(3, dist), 0.12, 0.8));
   }
 
   _shoot(player, world) {
@@ -1266,7 +1364,7 @@ export class Enemy {
   _updateLaser(player, sees, time) {
     const beam = this.parts.beam;
     if (!beam) return;
-    const aiming = this.alerted && sees && this.nextFire - time < 1.1;
+    const aiming = this.alerted && sees && this.reloadT <= 0 && this.nextFire - time < 1.1;
     beam.visible = aiming;
     if (!aiming) return;
 
@@ -1364,6 +1462,14 @@ export class Enemy {
       P.legL.rotation.x = 1.25 * haul; P.shinL.rotation.x = -1.6 * haul;
       P.legR.rotation.x = 0.45 * haul; P.shinR.rotation.x = -0.7 * haul;
     }
+    // down behind cover for a reload: one foot planted, the other knee down
+    this.crouch += ((this.reloadT > 0 && this.crouchWant ? 1 : 0) - this.crouch) * Math.min(1, dt * 7);
+    const c = this.crouch;
+    if (c > 0.001) {
+      const L = THREE.MathUtils.lerp;
+      P.legL.rotation.x = L(P.legL.rotation.x, CROUCH.thigh, c); P.shinL.rotation.x = L(P.shinL.rotation.x, CROUCH.knee, c);
+      P.legR.rotation.x = L(P.legR.rotation.x, 0.35, c); P.shinR.rotation.x = L(P.shinR.rotation.x, -1.95, c);
+    }
     // lowest with the feet furthest apart, highest as they pass
     const bob = 0.035 * amp * (0.5 + 0.5 * Math.cos(2 * ph));
 
@@ -1380,13 +1486,13 @@ export class Enemy {
     const up = P.upper;
     const breathe = Math.sin(this.idleT * 1.6) * 0.012 * (1 - amp);
     up.rotation.set(
-      -0.10 * amp * (1 - 0.5 * A) + breathe + 0.05 * this.kick + f.x - 0.55 * haul,
+      -0.10 * amp * (1 - 0.5 * A) + breathe + 0.05 * this.kick + f.x - 0.55 * haul - CROUCH.lean * c,
       -0.48 * A + Math.sin(ph) * 0.07 * amp * (1 - A) - 0.30 * (1 - A),
       Math.sin(ph) * 0.035 * amp + f.z,
     );
 
     // the head stays on the target while the shoulders turn under it
-    P.neck.rotation.set(this.aimPitch * 0.6 * A - 0.5 * f.x, 0.48 * A + 0.30 * (1 - A), 0, 'YXZ');
+    P.neck.rotation.set(this.aimPitch * 0.6 * A - 0.5 * f.x, 0.48 * A + 0.30 * (1 - A) + this.lookYaw, 0, 'YXZ');
 
     // ---- the weapon, in the body's frame
     const w = P.weapon;
@@ -1401,6 +1507,18 @@ export class Enemy {
       THREE.MathUtils.lerp(0.2, 0.0, A),
       'YXZ',
     );
+    // a reload: the muzzle dips and the gun cants toward the support hand,
+    // easing in and out at either end so it never snaps
+    const reloading = this.reloadT > 0 && this.hold.mag;
+    const r = reloading ? 1 - this.reloadT / this.type.reload : 0;
+    const R = reloading ? smooth(Math.min(1, r / 0.12, (1 - r) / 0.12)) : 0;
+    if (R > 0) {
+      POSE.rotation.x -= 0.45 * R;
+      POSE.rotation.z += 0.5 * R;
+      POSE.position.x -= 0.05 * R;
+      POSE.position.y -= 0.05 * R;
+      POSE.position.z += 0.06 * R;
+    }
     if (this.swingT > 0) {
       // a hook strike: raised over the shoulder, then driven down through
       const t = 1 - this.swingT / 0.25;
@@ -1420,17 +1538,49 @@ export class Enemy {
     w.updateMatrix();
     M4.copy(up.matrix).invert().multiply(w.matrix);
     reach(P.armR, P.foreR, V4.copy(this.hold.grip).applyMatrix4(M4), ARM.upper, ARM.fore, this.poleR);
-    reach(P.armL, P.foreL, V4.copy(this.hold.fore).applyMatrix4(M4), ARM.upper, ARM.fore, this.poleL);
+    const support = reloading ? this._reloadHand(r, M4) : V4.copy(this.hold.fore).applyMatrix4(M4);
+    reach(P.armL, P.foreL, support, ARM.upper, ARM.fore, this.poleL);
 
-    this.group.position.y = this.pos.y + bob;
+    this.group.position.y = this.pos.y + bob - CROUCH.drop * c * this.type.scale;
     if (P.shadow) {
-      // stays on the floor while the body bobs, and fades as it rises
-      P.shadow.position.y = -bob / this.type.scale + 0.03;
+      // stays on the floor while the body bobs or crouches, and fades as it rises
+      P.shadow.position.y = -bob / this.type.scale + CROUCH.drop * c + 0.03;
       P.shadow.material.opacity = 0.75 * Math.max(0, 1 - bob * 4);
     }
 
     // eye flares when hurt
     if (P.eye) P.eye.material.color.setHex(this.hurtFlash > 0 ? 0xffffff : 0xff4a2a);
+  }
+
+  /**
+   * Where the support hand is at `r` of the way through a reload, in the
+   * upper body's frame. A magazine: off the handguard to the magazine, pull
+   * it, down to the pouch on the belt, back up with a fresh one, seat it,
+   * back to the handguard. A shotgun: a shell from the pouch to the loading
+   * port, once for each shell, in time with the sound of it going in.
+   */
+  _reloadHand(r, toUpper) {
+    HAND_FORE.copy(this.hold.fore).applyMatrix4(toUpper);
+    HAND_MAG.copy(this.hold.mag).applyMatrix4(toUpper);
+    HAND_LOW.copy(HAND_MAG); HAND_LOW.y -= 0.2;
+    const t = this.type;
+    let keys;
+    if (t.shells) {
+      keys = [[0, HAND_FORE], [0.05, HAND_MAG]];
+      for (let i = 0; i < t.shells; i++) {
+        const at = 0.15 + (0.7 * i) / t.shells;
+        keys.push([at - 0.09, POUCH], [at, HAND_MAG]);
+      }
+      keys.push([0.95, HAND_FORE], [1, HAND_FORE]);
+    } else {
+      keys = [[0, HAND_FORE], [0.12, HAND_MAG], [0.25, HAND_LOW], [0.42, POUCH],
+        [0.55, HAND_LOW], [0.66, HAND_MAG], [0.88, HAND_FORE], [1, HAND_FORE]];
+    }
+    let k = 1;
+    while (k < keys.length - 1 && r > keys[k][0]) k++;
+    const [t0, a] = keys[k - 1], [t1, b] = keys[k];
+    const u = smooth(THREE.MathUtils.clamp((r - t0) / Math.max(1e-4, t1 - t0), 0, 1));
+    return V4.copy(HAND_A.copy(a)).lerp(HAND_B.copy(b), u);
   }
 
   dispose(scene) {

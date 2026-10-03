@@ -168,12 +168,18 @@ class Audio {
     this._noise(0.5, 'lowpass', 900, 0.7, 0.10 * distanceGain, 250);
   }
 
-  reload(stage) {
+  /**
+   * A magazine out, a magazine in, the bolt, a shell. Yours is unplaced; a
+   * hostile's is placed where it is reloading, at its distance's gain, so a
+   * pause in its fire has a sound you can find it by.
+   */
+  reload(stage, at = null, gain = 1) {
     if (!this.ctx) return;
-    if (stage === 'out') { this._tone('square', 320, 170, 0.07, 0.10); this._noise(0.06, 'highpass', 2600, 1, 0.10); }
-    if (stage === 'in')  { this._tone('square', 220, 140, 0.09, 0.13); this._noise(0.08, 'bandpass', 1400, 2, 0.12); }
-    if (stage === 'bolt'){ this._tone('square', 480, 260, 0.06, 0.12); this._noise(0.05, 'highpass', 3200, 1, 0.13); }
-    if (stage === 'shell'){ this._tone('square', 600, 380, 0.05, 0.09); }
+    const out = this._out(at);
+    if (stage === 'out') { this._tone('square', 320, 170, 0.07, 0.10 * gain, 0, out); this._noise(0.06, 'highpass', 2600, 1, 0.10 * gain, undefined, out); }
+    if (stage === 'in')  { this._tone('square', 220, 140, 0.09, 0.13 * gain, 0, out); this._noise(0.08, 'bandpass', 1400, 2, 0.12 * gain, undefined, out); }
+    if (stage === 'bolt'){ this._tone('square', 480, 260, 0.06, 0.12 * gain, 0, out); this._noise(0.05, 'highpass', 3200, 1, 0.13 * gain, undefined, out); }
+    if (stage === 'shell'){ this._tone('square', 600, 380, 0.05, 0.09 * gain, 0, out); }
   }
 
   dryFire() { if (this.ctx) this._tone('square', 900, 300, 0.04, 0.10); }

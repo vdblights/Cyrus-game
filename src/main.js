@@ -1242,12 +1242,17 @@ class Game {
   // --------------------------------------------------------------- combat
   applyRecoil(v, h) { this.player.applyRecoil(v, h); }
 
-  /** Gunfire carries: anything close enough to hear the shot comes looking. */
+  /**
+   * Gunfire carries: anything close enough to hear the shot comes looking,
+   * and anything in the ring past that hears it faintly and turns its head.
+   */
   alertNearby(radius) {
+    const p = this.player.position;
     for (const e of this.enemies) {
       if (!e.alive || e.alerted) continue;
-      const dx = e.pos.x - this.player.position.x, dz = e.pos.z - this.player.position.z;
-      if (dx * dx + dz * dz < radius * radius) e.alert();
+      const d2 = (e.pos.x - p.x) ** 2 + (e.pos.z - p.z) ** 2;
+      if (d2 < radius * radius) e.alert();
+      else if (d2 < 4 * radius * radius) e.hear(p.x, p.z, this.time);
     }
   }
 

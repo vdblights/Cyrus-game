@@ -488,6 +488,16 @@ second and a half, not the fight. Once up there with you it holds the deck
 rather than strafing off the edge. Marksmen never climb; they hold their
 roofs.
 
+Hostiles run dry. A rifle's magazine, a breaker's six shells, a marksman's
+five rounds and a juggernaut's drum each end in a reload — two to three
+seconds with no fire coming from it, and the magazine out, the fresh one in
+and the bolt are heard from where it stands. Watch for the gun dipping and
+the hand going to the magazine: that is your moment. If it has cover beside
+it that would hide it crouched and not standing, it kneels behind it to
+reload and stays there. And gunfire too far off to bring a hostile running
+still carries: an unalerted one in the ring beyond turns its head toward the
+shot.
+
 The same rules apply to everyone: hostiles climb, stand on, and fall off the
 same surfaces, and a melee rusher cannot reach you across a height gap too
 tall to climb. Drops

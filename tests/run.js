@@ -464,15 +464,20 @@ check('what stands on a perch holds you up', async (page) => {
   // that points up from a deck within jumping reach of it and is wide enough
   // to land on.
   //
-  // It stops at the deck's own footprint on purpose. Wall decoration is laid
-  // before the perches exist and is allowed to stand next to one: on seed 1 a
-  // fire escape's lowest platform is 1.4 m off one terrace and 1.15 m above
-  // it, which is a decoration rule meeting a placement rule, not this bug.
+  // And past the deck's edge, as far as a running jump carries (3 m) and as
+  // high as a mantle reaches (2.6 m): wall decoration is laid before the
+  // perches exist, and on seed 1 a fire escape's lowest platform hung 1.4 m
+  // off one terrace and 1.15 m above it — a jump you landed and fell straight
+  // through. Out there a face has to be big enough to land a foot on
+  // (0.25 m²), because a streetlight's head is within reach of one deck and
+  // nobody tries to stand on it.
   const r = await page.evaluate(() => {
     const g = window.__game;
     const decks = g.perches.map((p) => ({ p, b: g.world.boxes.find((b) => Math.abs(b.top - p.y) < 0.02 &&
       p.x > b.minX && p.x < b.maxX && p.z > b.minZ && p.z < b.maxZ) })).filter((d) => d.b);
-    let faces = 0, raised = 0;
+    const CARRY = 3, REACH = 2.6;
+    let faces = 0, raised = 0, ring = 0;
+    const off = [];
     const unsupported = [];
     for (const m of g.city.children) {
       if (!m.isMesh) continue;
@@ -488,21 +493,37 @@ check('what stands on a perch holds you up', async (page) => {
         const e3 = Math.hypot(c[0] - b[0], c[1] - b[1], c[2] - b[2]);
         if (len / Math.max(Math.hypot(...e1), Math.hypot(...e2), e3) < 0.3) continue;   // a sliver
         const x = (a[0] + b[0] + c[0]) / 3, y = (a[1] + b[1] + c[1]) / 3, z = (a[2] + b[2] + c[2]) / 3;
-        const d = decks.find(({ p, b: k }) => y > p.y + 0.2 && y < p.y + 2.6 &&
+        const d = decks.find(({ p, b: k }) => y > p.y + 0.2 && y < p.y + REACH &&
           x > k.minX && x < k.maxX && z > k.minZ && z < k.maxZ);
-        if (!d) continue;
+        if (!d) {
+          // the ring round a deck: anything wide enough to land on
+          if (len / 2 < 0.25) continue;
+          const near = decks.find(({ p, b: k }) => y > p.y - 0.3 && y < p.y + REACH &&
+            x > k.minX - CARRY && x < k.maxX + CARRY && z > k.minZ - CARRY && z < k.maxZ + CARRY);
+          if (!near) continue;
+          ring++;
+          const ground = g.world.groundHeight(x, z, 0.12, y + 0.25);
+          if (ground < y - 0.15) off.push([+x.toFixed(1), +y.toFixed(2), +z.toFixed(1), +ground.toFixed(2)]);
+          continue;
+        }
         faces++;
         if (y > d.p.y + 1) raised++;
         const ground = g.world.groundHeight(x, z, 0.12, y + 0.05);
         if (ground < y - 0.15) unsupported.push([+x.toFixed(1), +y.toFixed(2), +z.toFixed(1), +ground.toFixed(2)]);
       }
     }
-    return { decks: decks.length, faces, raised, unsupported: unsupported.length, sample: unsupported.slice(0, 4) };
+    return { decks: decks.length, faces, raised, unsupported: unsupported.length, sample: unsupported.slice(0, 4),
+      ring, offDeck: off.length, offSample: off.slice(0, 4) };
   });
   expect(r.decks > 0 && r.faces > 0, `${r.decks} decks with ${r.faces} faces on them to measure`);
   expect(r.raised > 0, 'no crate on any deck — this seed no longer tests the crates');
   expect(r.unsupported === 0,
     `${r.unsupported} of ${r.faces} faces on a deck are drawn but not stood on, e.g. ${JSON.stringify(r.sample)}`);
+  // Seed 1: 12 faces of fire escape within reach of a deck with nothing
+  // under them before the escapes near a perch were taken down.
+  expect(r.ring > 0, 'nothing to land on within reach of any deck — the ring measures nothing');
+  expect(r.offDeck === 0,
+    `${r.offDeck} of ${r.ring} faces within a jump of a deck are drawn but not stood on, e.g. ${JSON.stringify(r.offSample)}`);
   return r;
 });
 
@@ -2951,6 +2972,141 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
   expect(r.decks >= 6, `only ${r.decks} climbable decks to stand on`);
   expect(r.up === r.decks, `${r.decks - r.up} of ${r.decks} scavengers never came up after the player`);
   expect(r.stayed === r.decks, `${r.decks - r.stayed} of ${r.decks} climbed up and walked back off`);
+  return r;
+});
+
+check('a hostile reloads behind cover, and turns its head to a far-off shot', async (page) => {
+  // A hostile never ran dry, so its fire never paused and there was never a
+  // moment to push. Now a magazine empties, and a reload is a window you can
+  // hear: the fire stops for the archetype's reload time, the support hand
+  // goes from the handguard to the magazine and the hip and back, and if
+  // there is cover within reach that hides a crouched body from you and not
+  // a standing one, it kneels behind it for the duration and stays put.
+  // And gunfire too far off to bring one running is heard in the ring past
+  // that: an unalerted hostile turns its head toward the shot, and nothing
+  // more.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const W = g.world;
+    const tick = (s, each) => {
+      for (let i = 0; i < Math.round(s * 30); i++) {
+        g.time += 1 / 30; g.player.health = 100;
+        g.step(1 / 30);
+        each?.();
+      }
+    };
+    const fist = (e) => e.parts.foreL.localToWorld(new THREE.Vector3(0, -0.30, 0));
+    const at = (e, local) => e.parts.weapon.localToWorld(local.clone());
+
+    // ---- the window: one round left, then the fire stops for the reload
+    const { target, px, pz } = window.__place(12);
+    g.player.reset(px, pz);
+    const e = g.spawnEnemy('raider');
+    e.pos.set(target.x, W.groundHeight(target.x, target.z, 0.12, 0.6), target.z);
+    e.group.position.copy(e.pos);
+    e.alert(g.time, 0);
+    e.nextFire = 0; e.mag = 1;
+    const shots = [];
+    const shoot = e._shoot.bind(e);
+    e._shoot = (p, w) => { shots.push(g.time); shoot(p, w); };
+    let handAtMag = null;
+    tick(6.6, () => {
+      const prog = e.reloadT > 0 ? 1 - e.reloadT / e.type.reload : -1;
+      if (handAtMag === null && prog > 0.12 && prog < 0.2) handAtMag = fist(e).distanceTo(at(e, e.hold.mag));
+    });
+    const gap = shots.length > 1 ? shots[1] - shots[0] : null;
+    const reloadTime = e.type.reload;
+    // and back on the handguard, firing again
+    const handOnFore = e.reloadT <= 0 ? fist(e).distanceTo(at(e, e.hold.fore)) : null;
+
+    // ---- the crouch: a seated barricade slab between it and you
+    for (const x of g.enemies) { x.group.visible = false; g._recycle(x); }
+    g.enemies.length = 0;
+    let cover = null;
+    for (const b of W.boxes) {
+      if (!b.prop || Math.abs(b.hx - 1.1) > 0.01 || Math.abs(b.hz - 0.35) > 0.01) continue;
+      // the slab's thin axis, in the world
+      const nx = b.sin, nz = b.cos;
+      for (const side of [1, -1]) {
+        const hx = b.cx + side * nx * 0.85, hz = b.cz + side * nz * 0.85;
+        const qx = b.cx - side * nx * 9, qz = b.cz - side * nz * 9;
+        const hy = W.groundHeight(hx, hz, 0.12, b.top - 0.5), qy = W.groundHeight(qx, qz, 0.12, 0.6);
+        if (Math.abs(hy - (b.top - 1.05)) > 0.05 || qy > 0.5) continue;      // both ends on the slab's own floor
+        if (W.blocked(hx, hz, 0.45, hy + 0.6) || W.blocked(qx, qz, 0.5, 0.6)) continue;
+        cover = { hx, hy, hz, qx, qz };
+        break;
+      }
+      if (cover) break;
+    }
+    if (!cover) return { gap, reload: reloadTime, handAtMag, handOnFore, cover: false };
+    g.player.reset(cover.qx, cover.qz);
+    const c = g.spawnEnemy('raider');
+    c.pos.set(cover.hx, cover.hy, cover.hz);
+    c.group.position.copy(c.pos);
+    c.alert(g.time, 0);
+    c.nextFire = g.time + 99;
+    tick(0.5);
+    const head0 = c.parts.head.getWorldPosition(new THREE.Vector3()).y;
+    const from = c.pos.clone();
+    c._startReload(g.player, W, Math.hypot(c.pos.x - g.player.position.x, c.pos.z - g.player.position.z), g.time);
+    const wants = c.crouchWant;
+    tick(1.0);
+    const head1 = c.parts.head.getWorldPosition(new THREE.Vector3()).y;
+    const chest = c.parts.torso.getWorldPosition(new THREE.Vector3());
+    const p = g.player.position;
+    const chestSeen = W.lineOfSight(p.x, p.y, p.z, chest.x, chest.y, chest.z);
+    const moved = Math.hypot(c.pos.x - from.x, c.pos.z - from.z);
+
+    // and in the open it stays on its feet
+    const o = g.spawnEnemy('raider');
+    o.pos.set(target.x, W.groundHeight(target.x, target.z, 0.12, 0.6), target.z);
+    g.player.reset(px, pz);
+    o._startReload(g.player, W, 12, g.time);
+
+    // ---- a far-off shot: 60 m, past what alerts a scavenger and what it can see
+    for (const x of g.enemies) { x.group.visible = false; g._recycle(x); }
+    g.enemies.length = 0;
+    const lim = W.bounds - 4, sgn = (v) => (v > 0 ? -1 : 1);
+    const lx = THREE.MathUtils.clamp(px + sgn(px) * 42, -lim, lim), lz = THREE.MathUtils.clamp(pz + sgn(pz) * 42, -lim, lim);
+    const s = g.spawnEnemy('scavenger');
+    const P0 = new THREE.Vector3(lx, W.groundHeight(lx, lz, 0.12, 0.6), lz);
+    // facing 60 degrees off the line to the shot, held there
+    const toShot = Math.atan2(-(px - lx), -(pz - lz)), Y0 = toShot + Math.PI / 3;
+    const hold = () => { s.pos.copy(P0); s.vel.set(0, 0, 0); s.group.rotation.y = Y0; s.group.position.copy(P0); };
+    hold();
+    g.alertNearby(40);
+    for (let i = 0; i < 30; i++) { g.time += 1 / 30; g.step(1 / 30); hold(); }
+    s._animate(0, 60); s.group.updateMatrixWorld(true);
+    const look = new THREE.Vector3(0, 0, -1).applyQuaternion(s.parts.head.getWorldQuaternion(new THREE.Quaternion()));
+    const want = new THREE.Vector3(px - lx, 0, pz - lz).normalize();
+    look.y = 0; look.normalize();
+    return {
+      farDist: +Math.hypot(px - lx, pz - lz).toFixed(1), farAlerted: s.alerted, turned: +look.dot(want).toFixed(2),
+      gap: gap && +gap.toFixed(2), reload: reloadTime, shots: shots.length,
+      handAtMag: handAtMag && +handAtMag.toFixed(3), handOnFore: handOnFore && +handOnFore.toFixed(3),
+      cover: true, wants, drop: +(head0 - head1).toFixed(2), chestSeen, moved: +moved.toFixed(2), openWants: o.crouchWant,
+    };
+  });
+  expect(r.gap !== null, `the raider fired ${r.shots} times — no reload to measure`);
+  // with no reload, the next round of a burst follows in 0.16 s
+  expect(r.gap >= r.reload - 0.05, `the fire resumed ${r.gap} s after the magazine ran dry, inside a ${r.reload} s reload`);
+  expect(r.handOnFore !== null && r.handOnFore < 0.08, `the support hand is ${r.handOnFore} m off the handguard while firing`);
+  expect(r.handAtMag !== null && r.handAtMag < 0.08, `the support hand is ${r.handAtMag} m off the magazine as the reload starts`);
+  expect(r.cover, 'no barricade on this seed to take cover behind');
+  expect(r.wants, 'behind a barricade that hides a crouched body, it did not choose to get down');
+  expect(r.drop > 0.25, `the head came down ${r.drop} m behind cover`);
+  expect(!r.chestSeen, 'crouched behind the barricade, its chest is still in your line of sight');
+  expect(r.moved < 0.2, `it walked ${r.moved} m out from behind its cover while reloading`);
+  expect(!r.openWants, 'in the open it chose to crouch, behind nothing');
+  // its body is held 60 degrees off the shot, so a head facing the way the
+  // body does reads 0.5
+  expect(r.farDist > 40 && r.farDist < 80, `the far hostile is ${r.farDist} m off — not in the ring that hears`);
+  expect(!r.farAlerted, 'a shot from too far off to come looking alerted it');
+  expect(r.turned > 0.9, `its head points ${r.turned} along the line to a far-off shot`);
   return r;
 });
 
