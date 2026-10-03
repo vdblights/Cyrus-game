@@ -454,6 +454,60 @@ check('stairs carry the player onto a perch', async (page) => {
   return { tested: r.tested, climbed: r.climbed };
 });
 
+check('a fire escape is open grating near and far, and hangs above every head', async (page) => {
+  // A fire escape was a slab, a bar and a tilted plank, which read from
+  // across a street and fell apart up close. Its landings, treads and
+  // railing infill are cut out of textures now, so you see through them —
+  // and a cut-out texture's ordinary mipmaps average a thin bar below the
+  // cut-off, so a grating that is a quarter iron at full size is no iron at
+  // all a few metres off, and the whole thing vanishes from the street. This
+  // asks every mip level to keep most of the full size's coverage, and asks
+  // the merged city that all of the fire escapes, drop ladders included,
+  // hang above a head on a car roof: they are decoration, and anything lower
+  // is something you walk through.
+  const r = await page.evaluate(async () => {
+    const TEX = await import('/src/textures.js');
+    const g = window.__game;
+    const coverage = (img) => {
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 127) n++;
+      return n / (d.length / 4);
+    };
+    const kept = {};
+    for (const [name, tex] of [['grating', TEX.grating()], ['railing', TEX.railing()]]) {
+      const levels = tex.mipmaps?.length ? tex.mipmaps : [tex.image];
+      const full = coverage(levels[0]);
+      // down to 8 px, past which a level is a few texels of nothing in particular
+      const worst = Math.min(...levels.filter((l) => l.width >= 8).slice(1).map((l) => coverage(l) / full));
+      kept[name] = { full: +full.toFixed(2), levels: levels.length, worst: +worst.toFixed(2) };
+    }
+    let tris = 0, lowest = Infinity;
+    const found = new Set();
+    for (const m of g.city.children) {
+      const name = m.isMesh && m.material.userData.name;
+      if (!['iron', 'grating', 'railing'].includes(name)) continue;
+      found.add(name);
+      const p = m.geometry.attributes.position;
+      tris += (m.geometry.index ? m.geometry.index.count : p.count) / 3;
+      for (let i = 0; i < p.count; i++) lowest = Math.min(lowest, p.getY(i));
+    }
+    return { kept, found: [...found], tris, lowest: +lowest.toFixed(2) };
+  });
+  expect(r.found.length === 3, `the merged city has ${r.found.join(', ') || 'no'} fire escape batches, not iron, grating and railing`);
+  for (const [name, k] of Object.entries(r.kept)) {
+    // averaged the ordinary way the grating keeps a third of its iron two levels down, and none past that
+    expect(k.levels > 1 && k.worst > 0.6, `the ${name} keeps ${k.worst} of its coverage at its worst mip level`);
+  }
+  // a hostile's head on a car roof: a 1.5 m deck and a 1.8 m body
+  expect(r.lowest >= 3.3, `a fire escape reaches down to ${r.lowest} m, where a head on a car roof passes through it`);
+  return r;
+});
+
 check('what stands on a perch holds you up', async (page) => {
   // Every terrace may carry a crate and a knee-high lip round its edge, and
   // both used to be drawn and nothing else: the crate was in neither
