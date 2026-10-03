@@ -1050,6 +1050,103 @@ check('the pavement is a floor you stand on, step onto and shoot', async (page) 
   return r;
 });
 
+check('a crossing drops its kerb, and the ramp you see is the ramp you walk', async (page) => {
+  // Where a zebra crossing meets the pavement the kerb comes down to a 3 cm
+  // lip, ramping back up across the pavement and flaring back up along it.
+  // A ramp is not a box, so the pavement's collider carries its height as a
+  // function (`surface`), and its raycast copy is the ramp too. Three things
+  // have to agree: the drawn ramp and the footing, every sloped face of it;
+  // the walk across, with no 28 cm step left in it; and a shot at the ramp,
+  // which has to stop on it and not in the air where the slab used to be.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game, W = g.world;
+    const aprons = W.boxes.filter((b) => b.floor && b.surface);
+    // each dropped run along a kerb, 5 cm in from it
+    const drops = [];
+    for (const b of aprons) {
+      for (const [nx, nz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        let t0 = null;
+        // stepped by count, not by adding 0.1: a sum that lands a hair under
+        // the far corner never closes the run that ends there
+        const steps = Math.round((2 * b.hx) / 0.1);
+        for (let k = 0; k <= steps + 1; k++) {
+          const t = -b.hx + k * 0.1;
+          const lx = nx ? nx * (b.hx - 0.05) : t, lz = nz ? nz * (b.hz - 0.05) : t;
+          const low = k <= steps && b.surface(lx, lz, 0) < 0.1;
+          if (low && t0 === null) t0 = t;
+          if (!low && t0 !== null) {
+            const mid = (t0 + t) / 2;
+            if (t - t0 > 2) drops.push({ x: b.cx + (nx ? nx * b.hx : mid), z: b.cz + (nz ? nz * b.hz : mid), nx, nz });
+            t0 = null;
+          }
+        }
+      }
+    }
+
+    // every sloped face of the pavement, against the footing under it
+    let sloped = 0, worst = 0, worstAt = null;
+    for (const m of g.city.children) {
+      if (!m.isMesh || m.material.userData.name !== 'concrete') continue;
+      const p = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : p.count, at = (k) => (idx ? idx.getX(k) : k);
+      for (let k = 0; k < n; k += 3) {
+        const a = at(k), b = at(k + 1), c = at(k + 2);
+        const e1 = [p.getX(b) - p.getX(a), p.getY(b) - p.getY(a), p.getZ(b) - p.getZ(a)];
+        const e2 = [p.getX(c) - p.getX(a), p.getY(c) - p.getY(a), p.getZ(c) - p.getZ(a)];
+        const nx = e1[1] * e2[2] - e1[2] * e2[1], ny = e1[2] * e2[0] - e1[0] * e2[2], nz = e1[0] * e2[1] - e1[1] * e2[0];
+        const len = Math.hypot(nx, ny, nz);
+        // up-facing and not level, low, and bigger than a chip of debris
+        if (len / 2 < 0.05 || ny / len < 0.9 || ny / len > 0.999) continue;
+        const x = (p.getX(a) + p.getX(b) + p.getX(c)) / 3, y = (p.getY(a) + p.getY(b) + p.getY(c)) / 3, z = (p.getZ(a) + p.getZ(b) + p.getZ(c)) / 3;
+        if (y > 0.3) continue;
+        sloped++;
+        const gap = Math.abs(W.groundHeight(x, z, 0.001, y + 0.05) - y);
+        if (gap > worst) { worst = gap; worstAt = [+x.toFixed(2), +y.toFixed(3), +z.toFixed(2)]; }
+      }
+    }
+
+    // walk off the road, through the middle of a drop and onto the pavement
+    const d = drops[0];
+    g.startRun();
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.input.locked = true;
+    g.player.reset(d.x + d.nx * 2.5, d.z + d.nz * 2.5);
+    g.player.yaw = Math.atan2(d.nx, d.nz);
+    g.input.keys.clear(); g.input.keys.add('KeyW');
+    let feet = g.player.feetY, step = 0;
+    for (let f = 0; f < 90; f++) {
+      g.time += 1 / 60; g.step(1 / 60);
+      step = Math.max(step, Math.abs(g.player.feetY - feet)); feet = g.player.feetY;
+    }
+    g.input.keys.clear();
+
+    // and a shot straight down at the ramp, half way up it
+    const sx = d.x - d.nx * 0.7, sz = d.z - d.nz * 0.7;
+    const ramp = W.groundHeight(sx, sz, 0.001, 1);
+    const hit = new THREE.Raycaster(new THREE.Vector3(sx, 5, sz), new THREE.Vector3(0, -1, 0)).intersectObjects(W.solids, false)[0];
+    return {
+      aprons: aprons.length, drops: drops.length, sloped, worst: +worst.toFixed(4), worstAt,
+      walk: { step: +step.toFixed(3), end: +feet.toFixed(3) },
+      ramp: +ramp.toFixed(3), shot: hit ? +hit.point.y.toFixed(3) : null,
+    };
+  });
+  // Seed 1: 34 aprons dropped, 64 drops, 304 sloped faces all within 0.3 mm
+  // of the footing, a walk across stepping 0.041 m in its worst frame and a
+  // shot stopping on the ramp. With `groundHeight` reading a dropped slab as
+  // flat, a face of the ramp at 0.113 m is held at 0.28; with the raycast
+  // copy left a box, the shot stops at 0.28 over a ramp at 0.155.
+  expect(r.drops >= 40, `only ${r.drops} dropped kerbs across ${r.aprons} pavements`);
+  expect(r.sloped >= 100, `only ${r.sloped} sloped faces of pavement to measure`);
+  expect(r.worst < 0.01, `a face of the ramp stands ${r.worst} m off the footing, at ${JSON.stringify(r.worstAt)}`);
+  expect(r.walk.step < 0.1, `walking up a dropped kerb stepped ${r.walk.step} m in one frame`);
+  expect(Math.abs(r.walk.end - 0.28) < 0.01, `the walk over a dropped kerb ended at ${r.walk.end}, not on the pavement`);
+  expect(r.ramp > 0.05 && r.ramp < 0.25, `half way up the ramp the footing reads ${r.ramp}`);
+  expect(r.shot !== null && Math.abs(r.shot - r.ramp) < 0.01, `a shot at the ramp at ${r.ramp} m stopped at ${r.shot}`);
+  return r;
+});
+
 check('long falls hurt, short drops do not', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -2598,8 +2695,11 @@ check('what is set into the street lies flush on it, road or pavement', async (p
             const floor = g.world.groundHeight(x, z, 0.001, y);
             const gap = y - floor;
             worst = Math.max(worst, gap < 0 ? 1 : gap);
-            // paving belongs on a pavement, everything else on the road
-            if ((name === 'tactile') !== (floor > 0.2)) wrongSurface++;
+            // paving belongs on a pavement, everything else on the road. The
+            // pavement is the slab's footprint rather than a height, because
+            // the paving lies on the dropped kerb, down to 3 cm off the road.
+            const paved = g.world.boxes.some((b) => b.floor && x > b.minX && x < b.maxX && z > b.minZ && z < b.maxZ);
+            if ((name === 'tactile') !== paved) wrongSurface++;
           }
         }
       }
@@ -2746,7 +2846,11 @@ check('nothing compiles at first contact', async (page) => {
   // was drawn: five programs the first time hostiles came into view and
   // three on the first shot, which is a stall at exactly the moment of first
   // contact. This deploys, puts one of every archetype in view, fires,
-  // throws and detonates, and counts what that frame cost in programs.
+  // throws and detonates, drops one of everything a hostile leaves, and
+  // counts what that cost in programs. The drops had never been compiled at
+  // boot at all, which nothing asked about until they were rebuilt; left out
+  // of the boot compile now, the first to fall builds one (the unlit halo
+  // and sign), the lit parts sharing programs the city already has.
   const r = await page.evaluate(async () => {
     const { ENEMY_TYPES } = await import('/src/enemies.js');
     const g = window.__game;
@@ -2773,6 +2877,15 @@ check('nothing compiles at first contact', async (page) => {
     g.input.fire = true; step(); step(); g.input.fire = false;
     g.cookStart = g.time; g.throwGrenade(); step();
     g.explode(new p.constructor(p.x, g.player.feetY + 0.2, p.z - 6)); step();
+    // and what the dead leave behind, one of each, in view
+    const real = Math.random;
+    g.nades = 0;
+    [0.1, 0.3, 0.4].forEach((roll, i) => {
+      let first = true;
+      Math.random = () => (first ? ((first = false), roll) : real());
+      try { g.maybeDrop(new p.constructor(p.x - 1 + i, g.player.feetY, p.z - 4)); } finally { Math.random = real; }
+    });
+    step();
 
     const fresh = g.renderer.info.programs.filter((q) => !known.has(q));
     return { known: known.size, fresh: fresh.map((q) => q.cacheKey.split(',')[0]) };
@@ -3633,10 +3746,22 @@ check('a seed still lays out the city it did', async (page) => {
   // collider before and after: every building and every floor is identical
   // on all three seeds. Before it: 901/635/12 f77a4c34 (425 cd6eb736),
   // 880/580/10 faf144f5 (371 68d89f10), 923/626/12 7271e677 (417 f7c4a2df).
+  //
+  // And once more, for the dropped kerbs: a pavement with a crossing at its
+  // corner ramps down to the road there, so a prop settled on that corner is
+  // no longer level and moves, or is not put down. The stream is untouched
+  // (the apron pays for the box it was). Compared collider by collider:
+  // seeds 7 and 20260101 moved 7 and 6 prop colliders and nothing else; on
+  // seed 1 one barricade moved 1.5 m off a ramp and one streetlight found no
+  // level ground within reach, and the perches, placed round the props,
+  // re-sited — four went and three came, with the rubble cleared off them —
+  // while every collider further than 14 m from a perch that changed is
+  // identical. Before it: 801/580/13 88473ce5 (429 5d9b6755), 834/543/11
+  // dcd3d7d2 (376 d57389ac), 877/573/10 4f7b5ad (395 4f540362).
   const want = {
-    1: { boxes: 801, solids: 580, perches: 13, fp: '88473ce5', placed: 429, fpPlaced: '5d9b6755' },
-    7: { boxes: 834, solids: 543, perches: 11, fp: 'dcd3d7d2', placed: 376, fpPlaced: 'd57389ac' },
-    20260101: { boxes: 877, solids: 573, perches: 10, fp: '4f7b5ad', placed: 395, fpPlaced: '4f540362' },
+    1: { boxes: 771, solids: 561, perches: 12, fp: '43fc2161', placed: 413, fpPlaced: 'ff19bfd0' },
+    7: { boxes: 834, solids: 543, perches: 11, fp: 'f6d29176', placed: 376, fpPlaced: '86e2c858' },
+    20260101: { boxes: 877, solids: 573, perches: 10, fp: '79f7d600', placed: 395, fpPlaced: '985f0133' },
   };
 
   const got = {};
@@ -3712,6 +3837,9 @@ check('nothing is built inside out', async (page) => {
       }
     };
     walkShapes(g.propShapes);
+    for (const proto of Object.values(g.pickupProto)) {
+      proto.traverse((o) => { if (o.isMesh) tally('drops', o.geometry); });
+    }
 
     // one of every archetype, since nothing else in the game builds these
     g.startRun();
@@ -3725,6 +3853,110 @@ check('nothing is built inside out', async (page) => {
   for (const [name, row] of Object.entries(r)) {
     expect(row.tris > 100, `only ${row.tris} triangles measured in ${name}`);
     expect(row.bad === 0, `${row.bad} of ${row.tris} facets in ${name} are wound inside out`);
+  }
+  return r;
+});
+
+check('a drop is made the way the thing is, and costs the spawn stream what it did', async (page) => {
+  // What a hostile leaves behind is the one object the player walks up to and
+  // looks down at from a metre away. They were a mustard box, a white box and
+  // a canteen-shaped prism; they are an ammunition can, a moulded medical case
+  // and a grenade now, built from side views and lathes (`drops.js`). Three
+  // things about that fail silently, and this reads all three. Every textured
+  // part has to be unwrapped at the tile it declares — the can's stencil only
+  // lands on its side if it is. A clone made mid-fight mints an `Object3D` per
+  // part, four draws of the stream each, so a drop with a halo more than it
+  // had would move every spawn after the first drop of the run; it is paid
+  // for at a fixed price instead, and that price is what the old drops cost,
+  // measured on the old code: 28, 40 and 28 draws, because a cloned mesh
+  // mints three UUIDs (see `DROP_COST`). And the halo that marks a drop at distance has to
+  // stay on the floor while the drop bobs over it.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const kinds = { ammo: 0.1, health: 0.3, frag: 0.4 };   // the roll that picks each
+    const out = {};
+    g.startRun();
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const real = Math.random;
+    for (const [kind, roll] of Object.entries(kinds)) {
+      // texel density of every part that declares a tile, area-weighted
+      const proto = g.pickupProto[kind];
+      let tris = 0;
+      const parts = [];
+      proto.traverse((o) => {
+        if (!o.isMesh) return;
+        const pos = o.geometry.attributes.position, uv = o.geometry.attributes.uv, idx = o.geometry.index;
+        const n = idx ? idx.count : pos.count, at = (k) => (idx ? idx.getX(k) : k);
+        tris += n / 3;
+        const tile = o.userData.tile;
+        if (!tile) return;
+        const ds = [];
+        let total = 0;
+        for (let k = 0; k < n; k += 3) {
+          const a = at(k), b = at(k + 1), c = at(k + 2);
+          const e1 = [pos.getX(b) - pos.getX(a), pos.getY(b) - pos.getY(a), pos.getZ(b) - pos.getZ(a)];
+          const e2 = [pos.getX(c) - pos.getX(a), pos.getY(c) - pos.getY(a), pos.getZ(c) - pos.getZ(a)];
+          const area = Math.hypot(e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]) / 2;
+          if (area < 1e-7) continue;
+          const uvArea = Math.abs((uv.getX(b) - uv.getX(a)) * (uv.getY(c) - uv.getY(a))
+            - (uv.getX(c) - uv.getX(a)) * (uv.getY(b) - uv.getY(a))) / 2;
+          ds.push([Math.sqrt(uvArea / area) * tile, area]);
+          total += area;
+        }
+        ds.sort((p, q) => p[0] - q[0]);
+        let acc = 0, median = 0;
+        for (const [d, a] of ds) { acc += a; if (acc >= total / 2) { median = d; break; } }
+        parts.push({ material: o.material.map?.name || o.material.type, tile, median: +median.toFixed(2) });
+      });
+
+      // what a drop of this kind spends: force the roll, then count the draws
+      g.nades = 0;
+      const before = real.mark();
+      let first = true;
+      Math.random = () => (first ? ((first = false), roll) : real());
+      // five metres off, or walking into it would pick it up mid-measurement
+      try { g.maybeDrop(g.player.position.clone().add({ x: 5, y: 0, z: 0 })); } finally { Math.random = real; }
+      const after = real.mark();
+      real.rewind(before);
+      let draws = 0;
+      while (real.mark() !== after && draws < 500) { real(); draws++; }
+      const drop = g.pickups[g.pickups.length - 1];
+
+      // and the halo, once the drop has bobbed well off its rest
+      let bob = 0, halo = null, lowest = Infinity;
+      for (let f = 0; f < 120 && Math.abs(bob) < 0.05; f++) {
+        g.time += 1 / 60; g.updatePickups(1 / 60);
+        bob = drop.mesh.position.y - drop.floor - 0.42;
+      }
+      drop.mesh.updateMatrixWorld(true);
+      const v = new (drop.mesh.position.constructor)();
+      drop.mesh.traverse((o) => {
+        if (!o.isMesh) return;
+        const p = o.geometry.attributes.position;
+        for (let i = 0; i < p.count; i++) {
+          v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);
+          if (o.userData.halo) halo = Math.max(halo ?? -Infinity, Math.abs(v.y - drop.floor));
+          else lowest = Math.min(lowest, v.y - drop.floor);
+        }
+      });
+      g.scene.remove(drop.mesh);
+      g.pickups.pop();
+      out[kind] = { kind: drop.kind, tris, parts, draws, bob: +bob.toFixed(3), halo: halo === null ? null : +halo.toFixed(3), lowest: +lowest.toFixed(3) };
+    }
+    return out;
+  });
+  const cost = { ammo: 28, health: 40, frag: 28 };
+  for (const [kind, d] of Object.entries(r)) {
+    expect(d.kind === kind, `forcing a ${kind} dropped a ${d.kind}`);
+    expect(d.tris > 600, `the ${kind} is ${d.tris} triangles`);
+    expect(d.parts.length >= 2, `only ${d.parts.length} textured parts on the ${kind}`);
+    for (const p of d.parts) {
+      expect(p.median > 0.8 && p.median < 1.25, `a ${kind} part is textured at ${p.median}x the ${p.tile} m it declares`);
+    }
+    expect(d.draws === cost[kind], `a ${kind} drop spent ${d.draws} draws of the stream, where it always spent ${cost[kind]}`);
+    expect(d.halo !== null && d.halo < 0.02, `the ${kind}'s halo stands ${d.halo} m off the floor with the drop ${d.bob} m off its rest`);
+    expect(d.lowest > 0.1, `the ${kind} hangs ${d.lowest} m over the floor`);
   }
   return r;
 });

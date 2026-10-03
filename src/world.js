@@ -54,6 +54,10 @@ export class World {
     this.addBox(minX, minZ, maxX, maxZ, top);
     this.boxes[this.boxes.length - 1].floor = true;
   }
+  // A floor may also carry `surface(lx, lz, r)`: its height at a point in its
+  // own frame, the highest within `r`. `top` is then its highest anywhere, so
+  // every reader that only wants a bound still has one; `groundHeight` and
+  // `bounceSphere` ask the surface. A kerb dropped at a crossing is one.
 
   /**
    * Register a box turned `rot` about Y, the way three turns a mesh.
@@ -137,7 +141,7 @@ export class World {
     let best = 0;
     const rSq = radius * radius;
     for (const b of this.boxes) {
-      if (b.top > ceiling || b.top <= best) continue;
+      if (b.top <= best || (b.top > ceiling && !b.surface)) continue;
       if (x <= b.minX - radius || x >= b.maxX + radius
           || z <= b.minZ - radius || z >= b.maxZ + radius) continue;
       const rx = x - b.cx, rz = z - b.cz;
@@ -145,7 +149,12 @@ export class World {
       const lz = b.sin * rx + b.cos * rz;
       const dx = Math.max(0, Math.abs(lx) - b.hx);
       const dz = Math.max(0, Math.abs(lz) - b.hz);
-      if (dx * dx + dz * dz < rSq) best = b.top;
+      if (dx * dx + dz * dz >= rSq) continue;
+      if (!b.surface) { best = b.top; continue; }
+      // a floor whose top is not level — a pavement with its kerb dropped —
+      // answers for itself, with the highest of it within reach
+      const top = b.surface(lx, lz, radius);
+      if (top <= ceiling && top > best) best = top;
     }
     return best;
   }
@@ -354,11 +363,13 @@ export class World {
       const nearZ = lz < -b.hz ? -b.hz : lz > b.hz ? b.hz : lz;
       const dx = lx - nearX, dz = lz - nearZ;
       if (dx * dx + dz * dz >= radius * radius) continue;
+      const top = b.surface ? b.surface(nearX, nearZ, 0) : b.top;
+      if (pos.y - radius > top) continue;
 
       // three candidate escapes: out the sides, or up onto the top face
       const outX = dx >= 0 ? b.hx + radius - lx : -b.hx - radius - lx;
       const outZ = dz >= 0 ? b.hz + radius - lz : -b.hz - radius - lz;
-      const outY = b.top + radius - pos.y;
+      const outY = top + radius - pos.y;
       const aX = Math.abs(outX), aZ = Math.abs(outZ), aY = Math.abs(outY);
 
       if (aY <= aX && aY <= aZ) {

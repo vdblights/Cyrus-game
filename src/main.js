@@ -12,13 +12,13 @@ import { Post } from './post.js';
 import { audio } from './audio.js';
 import * as TEX from './textures.js';
 import { TILE } from './textures.js';
-import { chamferGeo, mergeIntoOne } from './shapes.js';
+import { buildDropPrototypes, DROP_COST } from './drops.js';
 import { randRange, SUPPORT_RADIUS } from './world.js';
 import { NavGrid } from './nav.js';
 import { PerfMeter } from './perf.js';
 import { installAtmosphere, skyMaterial, environmentFrom, SUN_DIR, SUN_COLOR } from './atmosphere.js';
 import { installShadowCascade, placeShadow, sizeShadow, SUN_DISTANCE } from './shadows.js';
-import { initRandom, getSeed, reserve } from './rng.js';
+import { initRandom, getSeed, reserve, spend } from './rng.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
@@ -308,7 +308,7 @@ class Game {
    * shown until the last of them puts it back.
    */
   precompileStages() {
-    let bodies, shown, unculled;
+    let bodies, drops, shown, unculled;
     return [
       ['Compiling shaders', 8, () => {
         bodies = sampleBodies();
@@ -317,6 +317,20 @@ class Game {
         this.dress(bodies);
         this.scene.add(bodies);
         for (const b of bodies.children) this.hostiles.track(b);
+        // and one of every drop, which nothing else puts in the scene before
+        // the first hostile dies
+        drops = reserve(() => {
+          const group = new THREE.Group();
+          Object.values(this.pickupProto).forEach((proto, i) => {
+            const d = proto.clone();
+            d.position.set(i - 1, 0.5, 0);
+            group.add(d);
+          });
+          return group;
+        });
+        drops.position.copy(bodies.position).addScaledVector(V1, -3);
+        this.dress(drops);
+        this.scene.add(drops);
         shown = [];
         unculled = [];
         // a rig's meshes are hidden for good — the batches draw them — and
@@ -325,7 +339,7 @@ class Game {
         for (const scene of [this.scene, this.viewScene]) {
           scene.traverse((o) => { if (!o.visible && !o.isLight && !rig(o)) { shown.push(o); o.visible = true; } });
         }
-        for (const o of [...shown, ...bodies.children]) {
+        for (const o of [...shown, ...bodies.children, ...drops.children]) {
           o.traverse((c) => { if (c.frustumCulled) { c.frustumCulled = false; unculled.push(c); } });
         }
         // against the target the scene is really drawn into, or every program
@@ -359,6 +373,7 @@ class Game {
         for (const o of unculled) o.frustumCulled = true;
         for (const b of bodies.children) this.hostiles.untrack(b);
         this.scene.remove(bodies);
+        this.scene.remove(drops);
       }],
     ];
   }
@@ -479,84 +494,13 @@ class Game {
   }
 
   /**
-   * What a hostile leaves behind, built once and cloned per drop.
-   *
-   * A pickup is the one object in the game the player deliberately walks up
-   * to and looks down at from a metre away, and these were a flat-coloured
-   * box, a flat-coloured box and an icosahedron. They are cases and a grenade
-   * now: stencilled, banded, latched, with the edges broken — and cloned
-   * rather than rebuilt, so a drop still costs one `Object3D` per part and
-   * nothing is repainted mid-fight.
-   *
-   * The emissive is deliberately kept: a drop has to be findable in a dusk
-   * street, and the texture darkened all three.
+   * What a hostile leaves behind, built once and cloned per drop — see
+   * `drops.js`, which keeps the parts a clone mints exactly what they were.
    */
   setupPickupPrototypes() {
-    const crateTex = TEX.crate();
-    const crateBits = {
-      map: crateTex,
-      normalMap: TEX.normalFrom(crateTex, 1.3, 'crate', 1),
-      normalScale: new THREE.Vector2(0.7, 0.7),
-      roughnessMap: TEX.surfaceFrom(crateTex, { dark: 1, lite: 0.45 }, 'crate'),
-      roughness: 1, metalness: 0.1, envMapIntensity: 0.6,
-    };
-    const steelTex = TEX.gunMetal();
-    const steelBits = {
-      map: steelTex,
-      normalMap: TEX.normalFrom(steelTex, 1.2, 'gunmetal', 1),
-      roughnessMap: TEX.surfaceFrom(steelTex, { dark: 0.9, lite: 0.2, metalDark: 0.5, metalLite: 1 }, 'gunmetal'),
-      roughness: 1, metalness: 1, envMapIntensity: 0.9,
-    };
-
-    const mats = {
-      ammo: new THREE.MeshStandardMaterial({ ...crateBits, color: 0x9a8a3a, emissive: 0x2a2406 }),
-      health: new THREE.MeshStandardMaterial({ ...crateBits, color: 0xdcdcd4, emissive: 0x0b1f0c }),
-      frag: new THREE.MeshStandardMaterial({ ...steelBits, color: 0x6b7a4a, emissive: 0x101806 }),
-      latch: new THREE.MeshStandardMaterial({ ...steelBits, color: 0xb8bec6 }),
-    };
-    this.crossMat = new THREE.MeshBasicMaterial({ color: 0x2ecc40 });
-
-    const C = TILE.crate, S = TILE.gunMetal;
-    const proto = {};
-
-    // an ammunition case: lid, lid lip, two latches, a rope handle either end
-    proto.ammo = new THREE.Group();
-    proto.ammo.add(new THREE.Mesh(mergeIntoOne([
-      chamferGeo(0.44, 0.20, 0.28, 0.025, C, [0, -0.03, 0]),
-      chamferGeo(0.46, 0.06, 0.30, 0.02, C, [0, 0.10, 0]),
-    ]), mats.ammo));
-    proto.ammo.add(new THREE.Mesh(mergeIntoOne([
-      chamferGeo(0.05, 0.08, 0.035, 0.01, S, [-0.13, 0.05, 0.155]),
-      chamferGeo(0.05, 0.08, 0.035, 0.01, S, [0.13, 0.05, 0.155]),
-      chamferGeo(0.03, 0.05, 0.16, 0.008, S, [-0.225, 0.08, 0]),
-      chamferGeo(0.03, 0.05, 0.16, 0.008, S, [0.225, 0.08, 0]),
-    ]), mats.latch));
-
-    // a medical case: the same case, with the cross standing proud of it
-    proto.health = new THREE.Group();
-    proto.health.add(new THREE.Mesh(mergeIntoOne([
-      chamferGeo(0.36, 0.30, 0.26, 0.03, C, [0, 0, 0]),
-      chamferGeo(0.38, 0.05, 0.28, 0.02, C, [0, 0.10, 0]),
-    ]), mats.health));
-    proto.health.add(new THREE.Mesh(mergeIntoOne([
-      chamferGeo(0.22, 0.07, 0.012, 0.004, C, [0, 0, 0.135]),
-      chamferGeo(0.07, 0.22, 0.012, 0.004, C, [0, 0, 0.135]),
-    ]), this.crossMat));
-    proto.health.add(new THREE.Mesh(
-      chamferGeo(0.10, 0.04, 0.10, 0.012, S, [0, 0.145, 0]), mats.latch));
-
-    // a fragmentation grenade: body, fuse assembly, spoon and pin ring
-    const ring = new THREE.TorusGeometry(0.035, 0.008, 4, 10);
-    ring.rotateY(Math.PI / 2).translate(0.055, 0.15, 0);
-    proto.frag = new THREE.Group();
-    proto.frag.add(new THREE.Mesh(mergeIntoOne([
-      chamferGeo(0.17, 0.22, 0.17, 0.045, S, [0, 0, 0]),
-      chamferGeo(0.09, 0.06, 0.09, 0.02, S, [0, 0.13, 0]),
-      chamferGeo(0.03, 0.15, 0.05, 0.01, S, [0, 0.08, -0.075]),
-    ]), mats.frag));
-    proto.frag.add(new THREE.Mesh(ring, mats.latch));
-
-    for (const p of Object.values(proto)) p.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    const { proto, crossMat, haloMats } = buildDropPrototypes();
+    this.crossMat = crossMat;
+    this.haloMats = haloMats;
     this.pickupProto = proto;
   }
 
@@ -1417,8 +1361,12 @@ class Game {
     // a marksman's drop has always landed at street level under its perch,
     // and that is half of what makes killing one pay.
     const floor = this.world.groundHeight(pos.x, pos.z, SUPPORT_RADIUS, 0.5);
-    // a clone shares the geometry and the materials; only the nodes are new
-    const mesh = this.pickupProto[kind].clone();
+    // A clone shares the geometry and the materials; only the nodes are new,
+    // and each spends draws of the stream on UUIDs. So it is minted in a
+    // `reserve` and pays what a drop of this kind always cost, and a drop can
+    // change shape without moving every spawn after it.
+    const mesh = reserve(() => this.pickupProto[kind].clone());
+    spend(DROP_COST[kind]);
     this.dress(mesh);
     mesh.position.set(pos.x, floor + 0.45, pos.z);
     this.scene.add(mesh);
@@ -1426,10 +1374,15 @@ class Game {
   }
 
   updatePickups(dt) {
+    // the halos breathe together, which is what makes one catch the eye
+    if (this.haloMats) for (const m of this.haloMats) m.opacity = 0.27 + 0.1 * Math.sin(this.time * 3.1);
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const p = this.pickups[i];
       p.mesh.rotation.y += dt * 1.6;
-      p.mesh.position.y = p.floor + 0.42 + Math.sin((this.time + p.born) * 2.4) * 0.07;
+      const bob = Math.sin((this.time + p.born) * 2.4) * 0.07;
+      p.mesh.position.y = p.floor + 0.42 + bob;
+      // the halo stays on the floor while the drop bobs over it
+      for (const c of p.mesh.children) if (c.userData.halo) c.position.y = 0.012 - 0.42 - bob;
 
       const dx = p.mesh.position.x - this.player.position.x;
       const dz = p.mesh.position.z - this.player.position.z;

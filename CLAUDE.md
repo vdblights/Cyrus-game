@@ -56,6 +56,7 @@ builds, never to play.
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
 | `src/enemies.js` | Archetypes, AI, procedural bodies, laser telegraph |
 | `src/objectives.js` | Site placement, channel state machine, marker, waypoint |
+| `src/drops.js` | What a hostile drops: the ammunition can, medical case and grenade, and their halos |
 | `src/grenades.js` | Fuse, flight, bounce, detonation |
 | `src/effects.js` | Pooled tracers, impacts, blood, casings, explosions |
 | `src/textures.js` | Every texture, painted to canvas at boot |
@@ -180,6 +181,44 @@ These each cost real debugging time. Changing them needs a reason.
   a perch's pavement before its stairs and walked into its deck. What still
   assumes y=0 is wrong now: an effect that lands, a pickup, an objective
   ring and a test that says "on the street" all ask the floor instead.
+- **A floor may slope, and then its box answers for its own height.** Where
+  a zebra meets the pavement the kerb is dropped: a ramp from the apron's
+  corner to 2.5 m along the kerb, down to a 3 cm lip across 1.4 m of the
+  pavement, with a 1 m flare past it where the kerb climbs back along its
+  length, and a dish where both streets at a corner are crossed (`DROP`,
+  `apronDrops`, `apronSurface` in `city.js`). A ramp is not a box, and
+  stepping it — a stack of thin floors — would have been a few hundred boxes
+  more in every `groundHeight` loop. So an apron with a drop is still one
+  floor box, carrying `surface(lx, lz, r)`: its height at a point in its own
+  frame, the highest within `r`. `top` stays the slab's highest, so every
+  reader that only wants a bound (`resolve`, `lineOfSight`, `occupied`, the
+  nav bake) is unchanged and still right; `groundHeight` and `bounceSphere`
+  ask the surface. Two things keep the three copies of it — what is drawn,
+  what holds you up, what a bullet stops at — one surface rather than three
+  that agree. Every piece of it is a plane, and every crease between two
+  planes runs corner to corner across a cell of the grid `DROP_BREAKS` lays
+  (the flare's cell, and the corner square's when both streets are
+  crossed), so `drape` reproduces it exactly by choosing whichever diagonal
+  agrees with the surface at the cell's middle. And the drawn apron, its
+  raycast copy (the same grid without the bake's cells) and the paving on it
+  are all built off that one function. The paving cannot be level on a ramp,
+  so it is draped over the same grid plus its own edges, on both axes, which
+  keeps the corner's crease on a cell diagonal; where both streets are
+  crossed it turns the corner as an L rather than two pads overlapping, which
+  is what two flat pads did before and z-fought. The apron is built inside
+  `reserve` and pays `spend(UUID_COST)` for the box it used to be, so a drop
+  costs the stream nothing; what moves is the props, because `settle` asks
+  `floorAt` for one level under every corner and a ramp is not one. `a
+  crossing drops its kerb, and the ramp you see is the ramp you walk` reads
+  every sloped face of pavement in the merged city against the footing
+  (304 faces on seed 1, all within 0.3 mm), walks up a drop (0.041 m in the
+  worst frame, against the 0.278 m a kerb takes at once) and shoots the
+  ramp. Broken at the reader, it reports a face at 0.113 m held at 0.28
+  with `groundHeight` reading the slab flat, and a shot stopping at 0.28
+  over a ramp at 0.155 with the raycast copy left a box. Its kerb scan
+  first stepped `t += 0.1` along each edge, which lands a hair under the
+  far corner and never closed the run that ends there — 32 drops counted of
+  64. Step a scan by count.
 - **Anything you can see at body height is something you can bump into.**
   Every heap of rubble (`rubblePile`) and every fallen slab in a rubble lot
   was drawn and registered nowhere — the slabs were in the raycast list and
@@ -536,18 +575,21 @@ These each cost real debugging time. Changing them needs a reason.
   is` guard them.
 - **What is set into the street asks the ground under every corner.**
   `streetIron` in `city.js` lays manhole covers in the lanes, gully grates
-  in the gutters and blister paving on the pavement at both ends of every
-  zebra crossing, and `roadMarkings` lays yellow paint — double lines along
-  some kerbs, boxes on some junctions — beside the white. All of it is
+  in the gutters and blister paving on the dropped kerb at both ends of
+  every zebra crossing, and `roadMarkings` lays yellow paint — double lines
+  along some kerbs, boxes on some junctions — beside the white. All of it is
   decoration by the flush rule, and the flush rule only holds if every
-  corner finds the surface the centre does: the ironwork and paving run
-  after the floors are registered, ask `groundHeight` at each corner with a
-  ceiling under every prop (0.5 m), and are not laid where the answers
-  disagree. The crossings the paving pads are found by the same roll the
-  paint laid them by. `what is set into the street lies flush on it, road
-  or pavement` reads the merged city: paving at road height reports 360
-  corners on the wrong side of a kerb, and grates pushed onto the kerb with
-  the corner test taken out stand 0.292 m off what is under them.
+  corner finds the surface the centre does: the ironwork runs after the
+  floors are registered, asks `groundHeight` at each corner with a ceiling
+  under every prop (0.5 m), and is not laid where the answers disagree. The
+  paving lies on a ramp, so it cannot be level and is draped instead — see
+  the next invariant. Every crossing, painted, paved or dropped, is
+  `crossingAt`'s, one roll per junction per street. `what is set into the
+  street lies flush on it, road or pavement` reads the merged city: paving
+  at road height reports 360 corners on the wrong side of a kerb, and grates
+  pushed onto the kerb with the corner test taken out stand 0.292 m off
+  what is under them. "The pavement" in that check is a floor's footprint
+  now, not a height over 0.2 m, because the paving comes down to 3 cm.
 - **Weathering is a thresholded fractal, never a filled shape.** Every large
   stain goes through `mottle`, which used to fill ellipses into a low-res
   layer. Upscaled, they came out soft-edged and still round, and a surface
@@ -636,6 +678,28 @@ These each cost real debugging time. Changing them needs a reason.
   20260813, rebuilding the wrecks, barriers, containers and drums left every
   box, perch and barrel exactly where it was, and `a seed still lays out the
   city it did` is the check that keeps it so.
+- **A drop is cloned at the price it always cost, and a cloned mesh costs
+  three UUIDs.** What a hostile leaves (`drops.js`) is cloned mid-fight,
+  where the stream picks spawns, so its shape used to be part of where the
+  next wave came from. `maybeDrop` clones inside `reserve` and pays
+  `DROP_COST` — 28, 40 and 28 draws, measured on the old drops. They were
+  first written down as 12, 16 and 12 by counting objects, and that was
+  wrong: `Object3D.clone()` constructs a bare `Mesh` and copies into it,
+  and a bare `Mesh` mints a default geometry and material before the copy
+  replaces them, so every mesh in a clone costs three UUIDs and a group
+  one. Measure a bill like this, never count it — `rewind` to the mark
+  before and draw until you reach the mark after. And a drop has to be
+  findable before it is anything else: drawn as the real things are, in
+  olive and steel, the can and the grenade vanished into the street at
+  eight metres, where the mustard box they replaced was the brightest thing
+  in the frame. Each lies over an additive halo in its own colour, kept on
+  the floor while the drop bobs over it. `a drop is made the way the thing
+  is, and costs the spawn stream what it did` reads all of it: 40 draws for
+  an ammunition drop with the price not paid, the halo 0.062 m off the
+  floor when it bobs with the drop, and the can at 0.5x its tile unwrapped
+  at twice it. The drops were never in the boot compile either, so the
+  first to fall compiled the halo's program mid-fight; `nothing compiles at
+  first contact` drops one of each now.
 - **Kit that is not a hit zone is armour you shoot through.** A hostile's
   plate, pauldrons, hood and pouches are merged into the meshes that already
   carry a `zone` — the torso, the rig, the head — rather than hung beside them
@@ -1139,6 +1203,11 @@ while a run is going changes the code under the checks still to come: a
 run that straddles an edit tests nothing, and one check booted in the few
 seconds a half-made edit was on disk and hung until it was killed. Finish
 editing, then run, and kill a run before changing the layout under it.
+Nor render alongside it: a look script booting a second game on the same
+machine pushed one of the suite's boots past the harness's 60 s wait, and
+the whole run died eighteen checks in. Work on a second change in a `git
+worktree` (it serves its own `src/`, with `node_modules` symlinked in), and
+give a look script its own longer wait for the menu.
 **`buildCity`'s helpers are nested `function`s declared after its
 `return`**, so they hoist but anything they share does not: a `let`
 written beside them is never initialised, and the first call throws.
@@ -1277,6 +1346,31 @@ hit. Under software rendering it changes no frame time either, for the
 reason the Performance section gives: there calls are cheap and pixels are
 not. The machine this is for is a real GPU with a weak driver, where a
 call is CPU time the frame waits on.
+
+The drops were rebuilt after the fire escapes, asked for in one line:
+improve the models for the player drops. Rendered close before touching
+them, an ammunition drop was a mustard chest whose two latches read as
+holes, a medical drop a white chest with a flat neon cross and a black
+block for a handle, and a frag a chamfered prism that read as a canteen —
+the three objects the player walks up to and looks down at from a metre.
+They are drawn by side view and lathe now (`drops.js`, invariant above):
+an M2A1 can with its lot stencilled on both long sides, a moulded case
+with the first-aid sign, an M67 with its band, spoon and pin. Three things
+went wrong first and only a render showed them: the stencil was painted
+and absent, because a chamfered box is unwrapped about its own middle
+before its offset and the raised panel over the stencil sampled the tile's
+plain edge; then it read backwards on one side of the can, because a
+planar unwrap runs the same way on both faces of a slab; and the paint
+came out lime, because a fully metallic material reflects the sky through
+its base colour — paint is a dielectric, and only the wear shows bare
+metal. The drop halos are the gameplay half (invariant above).
+
+The kerb drops landed in the same pass as the drops, and were item 2 of
+the list (invariant above, under the floors). They moved props off the
+corners they now slope, which is a layout change, re-measured once in the
+layout check with the reason: on seeds 7 and 20260101 a handful of prop
+colliders and nothing else, on seed 1 one barricade and one streetlight,
+and the perches placed round them.
 
 The fire escapes were rebuilt after the reload pass, from one line of
 play: they look fine from a distance, but there is no detail and they do
@@ -2275,13 +2369,7 @@ Suggested next work, in the order I would do it:
 1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-2. **Drop the kerbs at the crossings.** The street pass did everything on
-   the ground but this, because a dropped kerb is a ramp in the pavement's
-   floor: `registerFloors` would register a sloped or stepped apron corner,
-   every crossing's footing moves, and the layout check's fingerprints have
-   to be re-measured once. The tactile paving is already where the drops
-   would go.
-3. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+2. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make

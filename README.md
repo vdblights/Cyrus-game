@@ -210,8 +210,10 @@ walking toward you before the marker band is legible.
 
 Waves grow each round, hostiles trickle in rather than appearing all at once,
 and clearing a wave awards a score bonus plus an ammo resupply. Kills sometimes
-drop stencilled ammunition cases, medical cases and frags. Health regenerates five seconds after you
-stop taking fire. Your best wave and score are kept between sessions.
+drop an olive ammunition can with its lot stencilled on the side, a moulded
+medical case with the first-aid sign on it, or a frag, each over a soft halo
+in its own colour — amber, green, red — so you can find one across a street
+at dusk. Health regenerates five seconds after you stop taking fire. Your best wave and score are kept between sessions.
 
 ## Objectives
 
@@ -271,10 +273,12 @@ aggregate — and roughly one marking in six is missing outright, which is what
 a decade without maintenance looks like. Some kerbs carry parking bays or
 double yellow lines instead of an edge line, and a few junctions are yellow
 boxes, hatched corner to corner. Set into the road are cast-iron manhole
-covers and gully grates in the gutter; on the pavement at each end of every
-zebra, a patch of buff blister paving. Every piece of it asks the ground
-under each of its corners and is only laid where they agree, so nothing
-hangs off a kerb. It costs the layout nothing: like the rest of the
+covers and gully grates in the gutter. At each end of every zebra the kerb
+is dropped to a lip over the road, the pavement ramping down to it with
+flared sides, and the ramp is laid with buff blister paving; where both
+streets at a corner are crossed, the two ramps meet in a dish and the paving
+turns the corner. Every piece of ironwork asks the ground under each of its
+corners and is only laid where they agree, so nothing hangs off a kerb. It costs the layout nothing: like the rest of the
 decorative pass it draws from its own generator, so a seed lays out exactly
 the city it did before.
 
@@ -376,10 +380,16 @@ you what is coming. So are their weapons, drawn by their side view like
 yours: a rifle with its magazine curving forward and a stock, a breaker's
 shotgun over its magazine tube, a marksman's scoped rifle, a juggernaut's
 drum-fed gun with its bipod folded, a scavenger's hook. The kit is merged into the parts that already take hits,
-so what you can see is what you can shoot. The cloth, the webbing and the
-cases they drop are painted pale on purpose, because a texture multiplies the
-colour on the material — put a mid-grey weave under an olive drab coat and
-every hostile is a silhouette.
+so what you can see is what you can shoot. The cloth and the webbing are
+painted pale on purpose, because a texture multiplies the colour on the
+material — put a mid-grey weave under an olive drab coat and every hostile is
+a silhouette.
+
+What they drop is drawn the same way as their guns, by the side view and the
+lathe: a pressed-steel ammunition can with its lid, hinge, cam latch and
+folded bail handle; a medical case in two moulded halves with ribs, a handle
+and draw latches; a grenade turned round its yellow band, under a fuze with
+its spoon and pin.
 
 They move like people carrying weapons. Knees and elbows bend; the stride
 is paced to the ground covered, so a planted boot does not skate. On patrol
@@ -508,7 +518,8 @@ is a 28 cm kerb above the road, and the plaza, the rubble lots and the ruins'
 courtyards are slabs of their own; you step up onto them, hostiles stand on
 them rather than in them, and a shot at the pavement stops at the pavement.
 Stepping up a kerb or a stair moves your feet at once and eases the view up
-after them, so a street crossing is not a jolt.
+after them, so a street crossing is not a jolt — and at a zebra there is no
+step at all, because the kerb is dropped and you walk up the ramp you see.
 
 ## How it is put together
 
