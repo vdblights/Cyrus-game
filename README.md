@@ -210,8 +210,10 @@ walking toward you before the marker band is legible.
 
 Waves grow each round, hostiles trickle in rather than appearing all at once,
 and clearing a wave awards a score bonus plus an ammo resupply. Kills sometimes
-drop stencilled ammunition cases, medical cases and frags. Health regenerates five seconds after you
-stop taking fire. Your best wave and score are kept between sessions.
+drop an olive ammunition can with its lot stencilled on the side, a moulded
+medical case with the first-aid sign on it, or a frag, each over a soft halo
+in its own colour — amber, green, red — so you can find one across a street
+at dusk. Health regenerates five seconds after you stop taking fire. Your best wave and score are kept between sessions.
 
 ## Objectives
 
@@ -378,10 +380,16 @@ you what is coming. So are their weapons, drawn by their side view like
 yours: a rifle with its magazine curving forward and a stock, a breaker's
 shotgun over its magazine tube, a marksman's scoped rifle, a juggernaut's
 drum-fed gun with its bipod folded, a scavenger's hook. The kit is merged into the parts that already take hits,
-so what you can see is what you can shoot. The cloth, the webbing and the
-cases they drop are painted pale on purpose, because a texture multiplies the
-colour on the material — put a mid-grey weave under an olive drab coat and
-every hostile is a silhouette.
+so what you can see is what you can shoot. The cloth and the webbing are
+painted pale on purpose, because a texture multiplies the colour on the
+material — put a mid-grey weave under an olive drab coat and every hostile is
+a silhouette.
+
+What they drop is drawn the same way as their guns, by the side view and the
+lathe: a pressed-steel ammunition can with its lid, hinge, cam latch and
+folded bail handle; a medical case in two moulded halves with ribs, a handle
+and draw latches; a grenade turned round its yellow band, under a fuze with
+its spoon and pin.
 
 They move like people carrying weapons. Knees and elbows bend; the stride
 is paced to the ground covered, so a planted boot does not skate. On patrol

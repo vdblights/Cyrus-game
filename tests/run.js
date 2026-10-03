@@ -2843,7 +2843,11 @@ check('nothing compiles at first contact', async (page) => {
   // was drawn: five programs the first time hostiles came into view and
   // three on the first shot, which is a stall at exactly the moment of first
   // contact. This deploys, puts one of every archetype in view, fires,
-  // throws and detonates, and counts what that frame cost in programs.
+  // throws and detonates, drops one of everything a hostile leaves, and
+  // counts what that cost in programs. The drops had never been compiled at
+  // boot at all, which nothing asked about until they were rebuilt; left out
+  // of the boot compile now, the first to fall builds one (the unlit halo
+  // and sign), the lit parts sharing programs the city already has.
   const r = await page.evaluate(async () => {
     const { ENEMY_TYPES } = await import('/src/enemies.js');
     const g = window.__game;
@@ -2870,6 +2874,15 @@ check('nothing compiles at first contact', async (page) => {
     g.input.fire = true; step(); step(); g.input.fire = false;
     g.cookStart = g.time; g.throwGrenade(); step();
     g.explode(new p.constructor(p.x, g.player.feetY + 0.2, p.z - 6)); step();
+    // and what the dead leave behind, one of each, in view
+    const real = Math.random;
+    g.nades = 0;
+    [0.1, 0.3, 0.4].forEach((roll, i) => {
+      let first = true;
+      Math.random = () => (first ? ((first = false), roll) : real());
+      try { g.maybeDrop(new p.constructor(p.x - 1 + i, g.player.feetY, p.z - 4)); } finally { Math.random = real; }
+    });
+    step();
 
     const fresh = g.renderer.info.programs.filter((q) => !known.has(q));
     return { known: known.size, fresh: fresh.map((q) => q.cacheKey.split(',')[0]) };
@@ -3809,6 +3822,9 @@ check('nothing is built inside out', async (page) => {
       }
     };
     walkShapes(g.propShapes);
+    for (const proto of Object.values(g.pickupProto)) {
+      proto.traverse((o) => { if (o.isMesh) tally('drops', o.geometry); });
+    }
 
     // one of every archetype, since nothing else in the game builds these
     g.startRun();
@@ -3822,6 +3838,110 @@ check('nothing is built inside out', async (page) => {
   for (const [name, row] of Object.entries(r)) {
     expect(row.tris > 100, `only ${row.tris} triangles measured in ${name}`);
     expect(row.bad === 0, `${row.bad} of ${row.tris} facets in ${name} are wound inside out`);
+  }
+  return r;
+});
+
+check('a drop is made the way the thing is, and costs the spawn stream what it did', async (page) => {
+  // What a hostile leaves behind is the one object the player walks up to and
+  // looks down at from a metre away. They were a mustard box, a white box and
+  // a canteen-shaped prism; they are an ammunition can, a moulded medical case
+  // and a grenade now, built from side views and lathes (`drops.js`). Three
+  // things about that fail silently, and this reads all three. Every textured
+  // part has to be unwrapped at the tile it declares — the can's stencil only
+  // lands on its side if it is. A clone made mid-fight mints an `Object3D` per
+  // part, four draws of the stream each, so a drop with a halo more than it
+  // had would move every spawn after the first drop of the run; it is paid
+  // for at a fixed price instead, and that price is what the old drops cost,
+  // measured on the old code: 28, 40 and 28 draws, because a cloned mesh
+  // mints three UUIDs (see `DROP_COST`). And the halo that marks a drop at distance has to
+  // stay on the floor while the drop bobs over it.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const kinds = { ammo: 0.1, health: 0.3, frag: 0.4 };   // the roll that picks each
+    const out = {};
+    g.startRun();
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const real = Math.random;
+    for (const [kind, roll] of Object.entries(kinds)) {
+      // texel density of every part that declares a tile, area-weighted
+      const proto = g.pickupProto[kind];
+      let tris = 0;
+      const parts = [];
+      proto.traverse((o) => {
+        if (!o.isMesh) return;
+        const pos = o.geometry.attributes.position, uv = o.geometry.attributes.uv, idx = o.geometry.index;
+        const n = idx ? idx.count : pos.count, at = (k) => (idx ? idx.getX(k) : k);
+        tris += n / 3;
+        const tile = o.userData.tile;
+        if (!tile) return;
+        const ds = [];
+        let total = 0;
+        for (let k = 0; k < n; k += 3) {
+          const a = at(k), b = at(k + 1), c = at(k + 2);
+          const e1 = [pos.getX(b) - pos.getX(a), pos.getY(b) - pos.getY(a), pos.getZ(b) - pos.getZ(a)];
+          const e2 = [pos.getX(c) - pos.getX(a), pos.getY(c) - pos.getY(a), pos.getZ(c) - pos.getZ(a)];
+          const area = Math.hypot(e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]) / 2;
+          if (area < 1e-7) continue;
+          const uvArea = Math.abs((uv.getX(b) - uv.getX(a)) * (uv.getY(c) - uv.getY(a))
+            - (uv.getX(c) - uv.getX(a)) * (uv.getY(b) - uv.getY(a))) / 2;
+          ds.push([Math.sqrt(uvArea / area) * tile, area]);
+          total += area;
+        }
+        ds.sort((p, q) => p[0] - q[0]);
+        let acc = 0, median = 0;
+        for (const [d, a] of ds) { acc += a; if (acc >= total / 2) { median = d; break; } }
+        parts.push({ material: o.material.map?.name || o.material.type, tile, median: +median.toFixed(2) });
+      });
+
+      // what a drop of this kind spends: force the roll, then count the draws
+      g.nades = 0;
+      const before = real.mark();
+      let first = true;
+      Math.random = () => (first ? ((first = false), roll) : real());
+      // five metres off, or walking into it would pick it up mid-measurement
+      try { g.maybeDrop(g.player.position.clone().add({ x: 5, y: 0, z: 0 })); } finally { Math.random = real; }
+      const after = real.mark();
+      real.rewind(before);
+      let draws = 0;
+      while (real.mark() !== after && draws < 500) { real(); draws++; }
+      const drop = g.pickups[g.pickups.length - 1];
+
+      // and the halo, once the drop has bobbed well off its rest
+      let bob = 0, halo = null, lowest = Infinity;
+      for (let f = 0; f < 120 && Math.abs(bob) < 0.05; f++) {
+        g.time += 1 / 60; g.updatePickups(1 / 60);
+        bob = drop.mesh.position.y - drop.floor - 0.42;
+      }
+      drop.mesh.updateMatrixWorld(true);
+      const v = new (drop.mesh.position.constructor)();
+      drop.mesh.traverse((o) => {
+        if (!o.isMesh) return;
+        const p = o.geometry.attributes.position;
+        for (let i = 0; i < p.count; i++) {
+          v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);
+          if (o.userData.halo) halo = Math.max(halo ?? -Infinity, Math.abs(v.y - drop.floor));
+          else lowest = Math.min(lowest, v.y - drop.floor);
+        }
+      });
+      g.scene.remove(drop.mesh);
+      g.pickups.pop();
+      out[kind] = { kind: drop.kind, tris, parts, draws, bob: +bob.toFixed(3), halo: halo === null ? null : +halo.toFixed(3), lowest: +lowest.toFixed(3) };
+    }
+    return out;
+  });
+  const cost = { ammo: 28, health: 40, frag: 28 };
+  for (const [kind, d] of Object.entries(r)) {
+    expect(d.kind === kind, `forcing a ${kind} dropped a ${d.kind}`);
+    expect(d.tris > 600, `the ${kind} is ${d.tris} triangles`);
+    expect(d.parts.length >= 2, `only ${d.parts.length} textured parts on the ${kind}`);
+    for (const p of d.parts) {
+      expect(p.median > 0.8 && p.median < 1.25, `a ${kind} part is textured at ${p.median}x the ${p.tile} m it declares`);
+    }
+    expect(d.draws === cost[kind], `a ${kind} drop spent ${d.draws} draws of the stream, where it always spent ${cost[kind]}`);
+    expect(d.halo !== null && d.halo < 0.02, `the ${kind}'s halo stands ${d.halo} m off the floor with the drop ${d.bob} m off its rest`);
+    expect(d.lowest > 0.1, `the ${kind} hangs ${d.lowest} m over the floor`);
   }
   return r;
 });

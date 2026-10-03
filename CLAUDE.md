@@ -56,6 +56,7 @@ builds, never to play.
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
 | `src/enemies.js` | Archetypes, AI, procedural bodies, laser telegraph |
 | `src/objectives.js` | Site placement, channel state machine, marker, waypoint |
+| `src/drops.js` | What a hostile drops: the ammunition can, medical case and grenade, and their halos |
 | `src/grenades.js` | Fuse, flight, bounce, detonation |
 | `src/effects.js` | Pooled tracers, impacts, blood, casings, explosions |
 | `src/textures.js` | Every texture, painted to canvas at boot |
@@ -672,6 +673,28 @@ These each cost real debugging time. Changing them needs a reason.
   20260813, rebuilding the wrecks, barriers, containers and drums left every
   box, perch and barrel exactly where it was, and `a seed still lays out the
   city it did` is the check that keeps it so.
+- **A drop is cloned at the price it always cost, and a cloned mesh costs
+  three UUIDs.** What a hostile leaves (`drops.js`) is cloned mid-fight,
+  where the stream picks spawns, so its shape used to be part of where the
+  next wave came from. `maybeDrop` clones inside `reserve` and pays
+  `DROP_COST` — 28, 40 and 28 draws, measured on the old drops. They were
+  first written down as 12, 16 and 12 by counting objects, and that was
+  wrong: `Object3D.clone()` constructs a bare `Mesh` and copies into it,
+  and a bare `Mesh` mints a default geometry and material before the copy
+  replaces them, so every mesh in a clone costs three UUIDs and a group
+  one. Measure a bill like this, never count it — `rewind` to the mark
+  before and draw until you reach the mark after. And a drop has to be
+  findable before it is anything else: drawn as the real things are, in
+  olive and steel, the can and the grenade vanished into the street at
+  eight metres, where the mustard box they replaced was the brightest thing
+  in the frame. Each lies over an additive halo in its own colour, kept on
+  the floor while the drop bobs over it. `a drop is made the way the thing
+  is, and costs the spawn stream what it did` reads all of it: 40 draws for
+  an ammunition drop with the price not paid, the halo 0.062 m off the
+  floor when it bobs with the drop, and the can at 0.5x its tile unwrapped
+  at twice it. The drops were never in the boot compile either, so the
+  first to fall compiled the halo's program mid-fight; `nothing compiles at
+  first contact` drops one of each now.
 - **Kit that is not a hit zone is armour you shoot through.** A hostile's
   plate, pauldrons, hood and pouches are merged into the meshes that already
   carry a `zone` — the torso, the rig, the head — rather than hung beside them
@@ -1175,6 +1198,11 @@ while a run is going changes the code under the checks still to come: a
 run that straddles an edit tests nothing, and one check booted in the few
 seconds a half-made edit was on disk and hung until it was killed. Finish
 editing, then run, and kill a run before changing the layout under it.
+Nor render alongside it: a look script booting a second game on the same
+machine pushed one of the suite's boots past the harness's 60 s wait, and
+the whole run died eighteen checks in. Work on a second change in a `git
+worktree` (it serves its own `src/`, with `node_modules` symlinked in), and
+give a look script its own longer wait for the menu.
 **`buildCity`'s helpers are nested `function`s declared after its
 `return`**, so they hoist but anything they share does not: a `let`
 written beside them is never initialised, and the first call throws.
@@ -1313,6 +1341,27 @@ hit. Under software rendering it changes no frame time either, for the
 reason the Performance section gives: there calls are cheap and pixels are
 not. The machine this is for is a real GPU with a weak driver, where a
 call is CPU time the frame waits on.
+
+The drops were rebuilt after the fire escapes, asked for in one line:
+improve the models for the player drops. Rendered close before touching
+them, an ammunition drop was a mustard chest whose two latches read as
+holes, a medical drop a white chest with a flat neon cross and a black
+block for a handle, and a frag a chamfered prism that read as a canteen —
+the three objects the player walks up to and looks down at from a metre.
+They are drawn by side view and lathe now (`drops.js`, invariant above):
+an M2A1 can with its lot stencilled on both long sides, a moulded case
+with the first-aid sign, an M67 with its band, spoon and pin. Three things
+went wrong first and only a render showed them: the stencil was painted
+and absent, because a chamfered box is unwrapped about its own middle
+before its offset and the raised panel over the stencil sampled the tile's
+plain edge; then it read backwards on one side of the can, because a
+planar unwrap runs the same way on both faces of a slab; and the paint
+came out lime, because a fully metallic material reflects the sky through
+its base colour — paint is a dielectric, and only the wear shows bare
+metal. The drop halos are the gameplay half (invariant above).
+
+The kerb drops landed in the same pass as the drops, and were item 2 of
+the list (invariant above, under the floors).
 
 The fire escapes were rebuilt after the reload pass, from one line of
 play: they look fine from a distance, but there is no detail and they do

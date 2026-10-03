@@ -65,6 +65,12 @@ export const TILE = {
   // bar pitch wants 512 px/m, and a baluster every 12.5 cm a quarter of that.
   grating: 0.5,
   railing: 1.0,
+  // What a hostile drops, each tile laid out for the one part it covers: an
+  // ammunition can's long side carries its stencil once, a medical case its
+  // moulding, a grenade's body the yellow band round its shoulder.
+  ammoCan: 0.5,
+  medCase: 0.5,
+  frag: 0.25,
 };
 
 /** Windows per facade tile. `city.js` snaps wall UVs to these. */
@@ -1384,6 +1390,147 @@ export function crate() {
     splotches(ctx, s, 22, 'rgba(120,70,36,0.26)', 2, 8);
     grit(ctx, s, 500, '236,232,224', '28,24,20', 1.2);
     noise(ctx, s, 14);
+    return c;
+  });
+}
+
+/**
+ * Olive drab on pressed steel, with the lot stencilled on the long side.
+ *
+ * The can's long sides are unwrapped with the tile centred on them (`main.js`
+ * shifts them half a tile), so the stencil sits in the middle of the tile and
+ * nothing else of the can reaches it: the ends and the lid land on the
+ * tile's edges, where there is only paint. Lettering is drawn with whatever
+ * sans-serif the browser has, squeezed and then worn through, because a
+ * stencil a player reads from a metre away is the point of the thing.
+ */
+export function ammoCan() {
+  return make('ammocan', () => {
+    const s = 512, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#4a5030';
+    ctx.fillRect(0, 0, s, s);
+    mottle(ctx, s, 14, 'rgba(24,26,14,0.30)', 20, 80);
+    mottle(ctx, s, 8, 'rgba(120,124,86,0.16)', 16, 60);
+
+    // the stencil, in the middle of the tile where only the long side reaches
+    ctx.save();
+    ctx.fillStyle = 'rgba(214,190,92,0.92)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const line = (text, y, px) => {
+      ctx.save();
+      ctx.translate(s / 2, y);
+      ctx.scale(0.82, 1);
+      ctx.font = `bold ${px}px "Arial Narrow", Arial, Helvetica, sans-serif`;
+      ctx.fillText(text, 0, 0);
+      ctx.restore();
+    };
+    line('840 CARTRIDGES', s * 0.665, 34);
+    line('5.56 MM BALL M855', s * 0.735, 27);
+    line('10 RD CLIPS  BANDOLEER', s * 0.79, 22);
+    line('LOT ASH-25-117', s * 0.84, 22);
+    ctx.restore();
+    // a stencil is sprayed through a plate: the bridges leave gaps in it
+    ctx.fillStyle = '#4a5030';
+    for (let x = s * 0.2; x < s * 0.8; x += rr(9, 17)) ctx.fillRect(x, s * 0.62, rr(1, 1.8), s * 0.24);
+
+    // where hands and the ground have had the paint off, down to grey steel
+    // and the rust under it
+    for (let i = 0; i < 90; i++) {
+      ctx.strokeStyle = `rgba(${chance(0.6) ? '150,148,136' : '22,22,14'},${rr(0.12, 0.4)})`;
+      ctx.lineWidth = rr(0.5, 1.6);
+      const x = rr(0, s), y = rr(0, s), a = rr(0, Math.PI * 2), len = rr(4, 30);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); ctx.stroke();
+    }
+    splotches(ctx, s, 40, 'rgba(128,124,110,0.55)', 1.5, 6);
+    splotches(ctx, s, 26, 'rgba(110,60,28,0.40)', 1.5, 7);
+    grit(ctx, s, 900, '170,170,150', '18,18,10', 1.2);
+    noise(ctx, s, 12);
+    return c;
+  });
+}
+
+/**
+ * Moulded polymer, the shell of a medical case: near white so the material
+ * colour says what it is, a fine stipple from the mould, and the grime a case
+ * picks up being carried through a city like this one.
+ */
+export function medCase() {
+  return make('medcase', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#d8d6d0';
+    ctx.fillRect(0, 0, s, s);
+    mottle(ctx, s, 12, 'rgba(70,64,54,0.20)', 14, 60);
+    // the stipple of the mould, fine and even
+    grit(ctx, s, 2600, '240,240,236', '120,116,108', 0.9);
+    for (let i = 0; i < 70; i++) {
+      ctx.strokeStyle = `rgba(${chance(0.7) ? '90,84,74' : '246,246,242'},${rr(0.10, 0.32)})`;
+      ctx.lineWidth = rr(0.4, 1.2);
+      const x = rr(0, s), y = rr(0, s), a = rr(0, Math.PI * 2), len = rr(4, 24);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); ctx.stroke();
+    }
+    splotches(ctx, s, 16, 'rgba(84,70,52,0.30)', 2, 9);
+    noise(ctx, s, 9);
+    return c;
+  });
+}
+
+/**
+ * The first-aid sign — a white cross on green — as a decal for the case.
+ * Its UVs cover it once, so it is not a tile; it carries the green the old
+ * flat cross did, because green is how a player finds health at dusk.
+ */
+export function firstAidLabel() {
+  return make('firstaid', () => {
+    const s = 128, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#e4e2da';
+    ctx.fillRect(0, 0, s, s);
+    ctx.fillStyle = '#2b9a48';
+    ctx.beginPath();
+    ctx.roundRect(5, 5, s - 10, s - 10, 12);
+    ctx.fill();
+    ctx.fillStyle = '#eeeee8';
+    const a = s * 0.2, b = s * 0.4;
+    ctx.fillRect((s - a) / 2, (s - 2 * b) / 2 + 2, a, 2 * b - 4);
+    ctx.fillRect((s - 2 * b) / 2 + 2, (s - a) / 2, 2 * b - 4, a);
+    // scuffed: the label is the first thing on a case to wear
+    for (let i = 0; i < 40; i++) {
+      ctx.strokeStyle = `rgba(${chance(0.5) ? '210,208,200' : '40,60,40'},${rr(0.12, 0.35)})`;
+      ctx.lineWidth = rr(0.5, 1.4);
+      const x = rr(0, s), y = rr(0, s), an = rr(0, Math.PI * 2), len = rr(3, 16);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(an) * len, y + Math.sin(an) * len); ctx.stroke();
+    }
+    noise(ctx, s, 10);
+    return c;
+  });
+}
+
+/**
+ * A fragmentation grenade's body: olive paint over a smooth steel sphere,
+ * with the yellow band round the shoulder that marks it high explosive.
+ * The band is painted where the lathe's unwrap puts the shoulder (`main.js`
+ * draws the profile so it lands there); the unwrap runs round the body by
+ * arc length, so the band is the one thing on this tile that must tile
+ * across, and does.
+ */
+export function fragBody() {
+  return make('fragbody', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#4c5532';
+    ctx.fillRect(0, 0, s, s);
+    mottle(ctx, s, 10, 'rgba(24,28,14,0.30)', 14, 50);
+    // the band, between 0.62 and 0.68 of the way up the profile
+    ctx.fillStyle = 'rgba(206,176,64,0.95)';
+    ctx.fillRect(0, s * (1 - 0.68), s, s * 0.06);
+    for (let i = 0; i < 70; i++) {
+      ctx.strokeStyle = `rgba(${chance(0.6) ? '150,150,138' : '20,22,12'},${rr(0.12, 0.38)})`;
+      ctx.lineWidth = rr(0.4, 1.2);
+      const x = rr(0, s), y = rr(0, s), a = rr(0, Math.PI * 2), len = rr(3, 18);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); ctx.stroke();
+    }
+    splotches(ctx, s, 18, 'rgba(140,138,124,0.5)', 1.2, 4);
+    grit(ctx, s, 600, '170,170,150', '18,20,10', 1.0);
+    noise(ctx, s, 10);
     return c;
   });
 }
