@@ -61,6 +61,10 @@ export const TILE = {
   cover: 0.8,
   grate: 0.6,
   tactile: 0.8,
+  // A fire escape's bar grating, and the balusters of its railings: a 3 cm
+  // bar pitch wants 512 px/m, and a baluster every 12.5 cm a quarter of that.
+  grating: 0.5,
+  railing: 1.0,
 };
 
 /** Windows per facade tile. `city.js` snaps wall UVs to these. */
@@ -945,6 +949,103 @@ export function grate() {
     noise(ctx, s, 10);
     return c;
   });
+}
+
+/**
+ * Mipmaps for a cut-out texture that keep as much of it standing as the full
+ * size does.
+ *
+ * Averaging a thin bar into its neighbours drops its alpha below the cut-off
+ * a level or two down, so a grating that is a quarter iron at full size is
+ * none at all a few metres off — an alpha-tested fire escape vanished from
+ * the street, which is the one distance it used to look right from. Each
+ * level here is the one above it halved, with its alpha then rescaled so the
+ * fraction of texels over the cut-off matches the full-size image's
+ * (Castaño's coverage-preserving mipmaps).
+ */
+function keepCoverage(tex, cutoff = 0.5) {
+  const levels = [tex.image];
+  const coverage = (c) => {
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > cutoff * 255) n++;
+    return n / (d.length / 4);
+  };
+  const want = coverage(tex.image);
+  let prev = tex.image;
+  while (prev.width > 1 || prev.height > 1) {
+    const w = Math.max(1, prev.width >> 1), h = Math.max(1, prev.height >> 1);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(prev, 0, 0, w, h);
+    const img = ctx.getImageData(0, 0, w, h), d = img.data;
+    // the alpha that `want` of the texels stand above, scaled up to the cut-off
+    const alphas = [];
+    for (let i = 3; i < d.length; i += 4) alphas.push(d[i]);
+    alphas.sort((p, q) => q - p);
+    const at = alphas[Math.min(alphas.length - 1, Math.floor(want * alphas.length))] || 1;
+    const k = (cutoff * 255) / Math.max(1, at);
+    for (let i = 3; i < d.length; i += 4) d[i] = Math.min(255, d[i] * k);
+    ctx.putImageData(img, 0, 0);
+    levels.push(c);
+    prev = c;
+  }
+  tex.mipmaps = levels;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  return tex;
+}
+
+/**
+ * Fire escape grating: bearing bars on a 3 cm pitch with a rod across them
+ * every 12.5 cm, iron where there is iron and nothing between — you look
+ * through a landing at the one above. Weathering is painted only onto what
+ * is already there (`source-atop`), so it never fills a gap.
+ */
+export function grating() {
+  const tex = make('grating', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, s, s);
+    for (let x = 0; x < s; x += 16) {
+      ctx.fillStyle = '#4a4744'; ctx.fillRect(x, 0, 5, s);
+      ctx.fillStyle = 'rgba(150,144,134,0.55)'; ctx.fillRect(x, 0, 1, s);
+    }
+    for (let y = 30; y < s; y += 64) {
+      ctx.fillStyle = '#3e3b38'; ctx.fillRect(0, y, s, 3);
+      ctx.fillStyle = 'rgba(140,134,124,0.45)'; ctx.fillRect(0, y, s, 1);
+    }
+    ctx.globalCompositeOperation = 'source-atop';
+    mottle(ctx, s, 9, 'rgba(118,62,28,0.55)', 8, 34);
+    grit(ctx, s, 500, '170,164,154', '12,12,12', 1.4);
+    ctx.globalCompositeOperation = 'source-over';
+    noise(ctx, s, 12);
+    return c;
+  });
+  return tex.mipmaps?.length ? tex : keepCoverage(tex);
+}
+
+/** Fire escape railing infill: a square baluster every 12.5 cm, rust running down them. */
+export function railing() {
+  const tex = make('railing', () => {
+    const s = 256, c = canvas(s), ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, s, s);
+    for (let x = 6; x < s; x += 32) {
+      ctx.fillStyle = '#403d3a'; ctx.fillRect(x, 0, 6, s);
+      ctx.fillStyle = 'rgba(150,144,134,0.5)'; ctx.fillRect(x, 0, 1, s);
+    }
+    ctx.globalCompositeOperation = 'source-atop';
+    for (let i = 0; i < 40; i++) {
+      const x = Math.random() * s, y = Math.random() * s;
+      ctx.fillStyle = `rgba(122,64,28,${0.2 + Math.random() * 0.35})`;
+      ctx.fillRect(x, y, 6, 10 + Math.random() * 60);
+    }
+    grit(ctx, s, 300, '170,164,154', '12,12,12', 1.2);
+    ctx.globalCompositeOperation = 'source-over';
+    noise(ctx, s, 10);
+    return c;
+  });
+  return tex.mipmaps?.length ? tex : keepCoverage(tex);
 }
 
 /**
