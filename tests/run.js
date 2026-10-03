@@ -1067,9 +1067,13 @@ check('a crossing drops its kerb, and the ramp you see is the ramp you walk', as
     for (const b of aprons) {
       for (const [nx, nz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         let t0 = null;
-        for (let t = -b.hx; t <= b.hx + 0.05; t += 0.1) {
+        // stepped by count, not by adding 0.1: a sum that lands a hair under
+        // the far corner never closes the run that ends there
+        const steps = Math.round((2 * b.hx) / 0.1);
+        for (let k = 0; k <= steps + 1; k++) {
+          const t = -b.hx + k * 0.1;
           const lx = nx ? nx * (b.hx - 0.05) : t, lz = nz ? nz * (b.hz - 0.05) : t;
-          const low = t <= b.hx && b.surface(lx, lz, 0) < 0.1;
+          const low = k <= steps && b.surface(lx, lz, 0) < 0.1;
           if (low && t0 === null) t0 = t;
           if (!low && t0 !== null) {
             const mid = (t0 + t) / 2;
