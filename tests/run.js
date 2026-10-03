@@ -3688,6 +3688,90 @@ check('every archetype is kitted, textured, and keeps its hit zones', async (pag
   return r;
 });
 
+check('a wave is drawn a part at a time, and looks like the hostiles it is', async (page) => {
+  // A hostile was fourteen drawn meshes, nine casting a shadow, so about
+  // forty calls a frame across the main pass and both cascades, and a wave
+  // was most of the frame's calls (731 against 251 for the empty street,
+  // twelve hostiles on seed 1). Each archetype's parts are drawn instanced
+  // now, written from the rigs, which stay hidden as the thing a bullet
+  // hits. This asks two things on the low tier, which has no grain to move
+  // between frames: that nine more hostiles of archetypes already standing
+  // cost their contact shadows and nothing else, and that the batched frame
+  // is the frame the rigs themselves draw, pixel for pixel — a part the
+  // batches drop or misplace (a shin hung off its hidden thigh, a band that
+  // lost its colour) shows up as the difference.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.renderer.setAnimationLoop(null);
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.settings.quality = 'low';
+    g.applyQuality('low');
+    g.player.reset(-17, 24); g.player.yaw = 2.2; g.player.pitch = -0.05;
+    g.step(1 / 60);
+    const p = g.player.position;
+    const fx = -Math.sin(g.player.yaw), fz = -Math.cos(g.player.yaw);
+    const kinds = ['raider', 'scavenger', 'shotgunner'];
+    const place = (i) => {
+      const e = g.spawnEnemy(kinds[i % 3]);
+      const d = 7 + (i % 4) * 2.5, s = ((i / 4) | 0) - 1;
+      e.spawn(p.x + fx * d + fz * s * 2.2, p.z + fz * d - fx * s * 2.2, 1, 0.3);
+      // shouldered as a fight would have it, but holding fire: a shot
+      // leaves a tracer and a flash, which are draw calls of their own
+      e.alerted = true;
+      e.nextFire = Infinity;
+      e.update(1 / 60, g.time, g.player, g.world);
+      e.update = function () {};
+      return e;
+    };
+    const gl = g.renderer.getContext();
+    const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    const frame = () => {
+      g.renderer.info.reset();
+      g.renderer.setRenderTarget(null); g.renderer.clear(); g.renderer.render(g.scene, g.camera);
+      const buf = new Uint8Array(W * H * 4);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      return { calls: g.renderer.info.render.calls, buf };
+    };
+    const differ = (a, b) => {
+      let n = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 12) n++;
+      }
+      return n;
+    };
+    g.renderer.info.autoReset = false;
+    const empty = frame();
+    for (let i = 0; i < 3; i++) place(i);
+    const three = frame();
+    for (let i = 3; i < 12; i++) place(i);
+    const batched = frame();
+    // the same frame drawn the old way: every rig mesh shown, no batches
+    const rigs = g.enemies.flatMap((e) => e.group.userData.drawn);
+    g.hostiles.root.visible = false;
+    for (const m of rigs) m.visible = true;
+    const drawn = frame();
+    for (const m of rigs) m.visible = false;
+    g.hostiles.root.visible = true;
+    g.renderer.info.autoReset = true;
+    g.settings.quality = 'high';
+    g.applyQuality('high');
+    return {
+      calls: { empty: empty.calls, three: three.calls, twelve: batched.calls, perRig: drawn.calls },
+      covered: differ(empty.buf, drawn.buf),
+      mismatch: differ(batched.buf, drawn.buf),
+      rigMeshes: rigs.length,
+    };
+  });
+  const more = r.calls.twelve - r.calls.three;
+  expect(r.covered > 2000, `the hostiles cover only ${r.covered} pixels of the frame, which measures nothing`);
+  expect(more <= 9 * 1.5,
+    `nine more hostiles of the same three archetypes cost ${more} draw calls (${JSON.stringify(r.calls)})`);
+  expect(r.mismatch < r.covered * 0.01,
+    `the batched wave differs from its rigs in ${r.mismatch} of the ${r.covered} pixels they cover`);
+  return r;
+});
+
 check('the bake darkens the ground the city stands on', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

@@ -5,7 +5,7 @@ import { Player, Input } from './player.js';
 import { WeaponSystem, MELEE_RANGE, MELEE_DAMAGE } from './weapons.js';
 import { GrenadeSystem, FUSE, BLAST_RADIUS, BLAST_DAMAGE } from './grenades.js';
 import { Effects } from './effects.js';
-import { Enemy, ENEMY_TYPES, primeEnemyKits, sampleBodies } from './enemies.js';
+import { Enemy, ENEMY_TYPES, HostileBatches, primeEnemyKits, sampleBodies } from './enemies.js';
 import { ObjectiveSystem, objectiveForWave } from './objectives.js';
 import { HUD } from './hud.js';
 import { Post } from './post.js';
@@ -222,7 +222,10 @@ class Game {
           // and doing it here puts it in the loading screen instead of in a
           // firefight.
           primeEnemyKits();
+          // and the batches that draw them, one per archetype and part
+          this.hostiles = new HostileBatches(this.scene);
         });
+        this.dress(this.hostiles.root);
         this.settle();
       }],
       ['Measuring this machine', 3, () => this.chooseStartingTier()],
@@ -313,10 +316,14 @@ class Game {
         bodies.position.copy(this.camera.position).addScaledVector(V1, 6).setY(0);
         this.dress(bodies);
         this.scene.add(bodies);
+        for (const b of bodies.children) this.hostiles.track(b);
         shown = [];
         unculled = [];
+        // a rig's meshes are hidden for good — the batches draw them — and
+        // compiling them would only build programs nothing uses
+        const rig = (o) => o.isMesh && !o.isInstancedMesh && o.userData.batch;
         for (const scene of [this.scene, this.viewScene]) {
-          scene.traverse((o) => { if (!o.visible && !o.isLight) { shown.push(o); o.visible = true; } });
+          scene.traverse((o) => { if (!o.visible && !o.isLight && !rig(o)) { shown.push(o); o.visible = true; } });
         }
         for (const o of [...shown, ...bodies.children]) {
           o.traverse((c) => { if (c.frustumCulled) { c.frustumCulled = false; unculled.push(c); } });
@@ -350,6 +357,7 @@ class Game {
         this.render();
         for (const o of shown) o.visible = false;
         for (const o of unculled) o.frustumCulled = true;
+        for (const b of bodies.children) this.hostiles.untrack(b);
         this.scene.remove(bodies);
       }],
     ];

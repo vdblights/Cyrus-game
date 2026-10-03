@@ -656,6 +656,40 @@ These each cost real debugging time. Changing them needs a reason.
   testing note about hardcoded aim heights from the other side: baking the
   offsets in put every part at the feet, and turned the headshot check into a
   leg shot that quietly still passed the "did damage" half.
+- **A hostile is drawn by its archetype's batches, and shot through its
+  rig.** `HostileBatches` in `enemies.js` keeps one `InstancedMesh` per
+  archetype and part — torso, rig, head, head kit, upper and lower arm,
+  thigh, shin, gun, band and eye — and writes every shown hostile into them
+  from `scene.onBeforeRender`, which three calls after it has brought every
+  matrix up to date, so every pass in a frame (both cascades, the occlusion
+  depth, the scene) draws the same instances. The rig's own meshes are
+  built exactly as before and hidden (`visible = false`, tagged
+  `userData.batch`): a raycast ignores `visible`, so `hitscan`, `hitMeshes`
+  and every check that reads `parts.*` are untouched, and so is the number
+  of objects a spawn mints, which is part of the stream that picks the next
+  spawn. Four things about it are load-bearing. A lower limb hangs off its
+  hidden upper one, so "is this shown" walks the ancestors and treats a rig
+  mesh as shown — the first version did not, and drew every hostile with no
+  shins and no forearms. The band and the eye keep their per-hostile
+  materials, because the elite's gold and the hurt flash write to them, and
+  the batch reads each colour into `instanceColor`. The contact shadow and
+  the laser stay a mesh per hostile: each fades on its own opacity, which an
+  instance cannot carry, and neither casts a shadow. And a batch is built at
+  boot inside `reserve`, and grown inside one, because an object minted
+  mid-run spends four draws of the stream. A body has to be `track`ed to be
+  drawn at all — an `Enemy` does it in its constructor and the boot compile
+  does it for the sample bodies — and anything that ever adds a mesh to a
+  hostile adds it to `BATCHED` or leaves it a mesh of its own. Twelve
+  hostiles on seed 1, software rendering: 731 draw calls a frame on high
+  against 251 for the empty street, now 408; on low 267, now 142. What it
+  gives up is culling a hostile on its own, which put the high frame's
+  triangles up 3% (547k to 565k), and no frame time moved past noise
+  (2,410 against 2,451 ms on high). `a wave is drawn a part at a time, and
+  looks like the hostiles it is` asks for nine more hostiles to cost only
+  their contact shadows and for the batched frame to match the rigs drawn
+  directly: 9 calls and 2 differing pixels of 16,844; 144 calls with the
+  batches taken out, and 2,730 pixels with a shin hung off a hidden thigh
+  counted as hidden.
 - **Boot is a list of stages, and it yields between them.** `Game.boot` runs
   a plan of `[label, weight, run]` and gives the page a frame before each
   one (`yieldToPaint`), so the loading screen can say what is happening and
@@ -1191,6 +1225,17 @@ What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
 
+The instancing pass is the eighteenth, and it was item 1 of the list: a
+hostile was about forty draw calls a frame, and a wave was most of the
+frame's calls. Every archetype is drawn as one instanced batch a part now
+(invariant above), which takes twelve hostiles from 480 calls to 157 on
+high — and 12 of those 157 are the contact shadows, which stay one each.
+It changes nothing about the layout, the spawn stream or what a bullet can
+hit. Under software rendering it changes no frame time either, for the
+reason the Performance section gives: there calls are cheap and pixels are
+not. The machine this is for is a real GPU with a weak driver, where a
+call is CPU time the frame waits on.
+
 The guns-and-vehicles pass is the sixteenth, asked for in one line: work
 on the vehicle and gun models. Rendered before touching anything, both were
 still stacks of boxes — a gun was twenty chamfered prisms with every grip
@@ -1420,7 +1465,8 @@ What it does not do is make a frame cheaper. If a machine is short at the
 high tier's resolution floor, the next levers are the ones Performance
 already names: split the merged city per block, so the near cascade stops
 drawing the whole sector a second time, and instance hostiles per archetype
-and part, which is where the motion pass's extra calls went.
+and part, which is where the motion pass's extra calls went. (Both have
+since landed.)
 
 The floors pass is the sixth, and it was item 1 of the list: the
 sidewalks were drawn and not stood on. It turned out to be four slabs, not
@@ -1482,7 +1528,8 @@ against 2,184, on seed 1 under software rendering). Forty-eight calls per
 hostile is now the biggest per-object bill in the frame, though, and a
 hostile cannot be merged the way the city is, because its parts move. If a
 big wave ever costs frame rate, instancing per archetype and part is the
-lever: every raider's left shin is the same geometry and material.
+lever: every raider's left shin is the same geometry and material. (It has
+since landed, and a hostile is one call more than the empty street.)
 
 The hands pass is the fourth, and it went after the thing on screen in
 every frame: the gun floated. Nothing held it, and each weapon was eight to
@@ -2151,32 +2198,23 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Instance hostiles per archetype and part.** A hostile is twelve meshes
-   drawn in three passes, 36 calls each, and a full wave is most of the
-   frame's calls. Every raider's left shin is the same geometry and the same
-   material, so an `InstancedMesh` per archetype and part, written per frame
-   from the rig, takes a wave back to a few dozen calls. Hit detection would
-   need the raycast to stay on the per-hostile meshes, which can stay off the
-   scene graph the way the city's solids do. If frame rate is still reported
-   short after the pixel caps, this and the wide cascade's 2048 map on high
-   are what is left.
-2. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
+1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-3. **Finish what the rig made possible.** Hostiles now have knees, elbows,
+2. **Finish what the rig made possible.** Hostiles now have knees, elbows,
    a waist, a neck and a weapon their hands follow, so the rest is poses,
    not plumbing: a reload visible from across the street (drop the
    magazine's hold point and let the left hand follow it), a crouch behind
    cover, a hip-fire spray from a breaker, a turn of the head toward a
    sound. Each is a weapon pose plus maybe a waist angle; the arms come
    free.
-4. **Drop the kerbs at the crossings.** The street pass did everything on
+3. **Drop the kerbs at the crossings.** The street pass did everything on
    the ground but this, because a dropped kerb is a ramp in the pavement's
    floor: `registerFloors` would register a sloped or stepped apron corner,
    every crossing's footing moves, and the layout check's fingerprints have
    to be re-measured once. The tactile paving is already where the drops
    would go.
-5. **Keep wall decoration out of jumping reach of a perch.** Decoration is
+4. **Keep wall decoration out of jumping reach of a perch.** Decoration is
    built where you cannot stand, and a terrace can put you within a jump of
    some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
    1.15 m above it, which you would fall through. Perches are placed after
@@ -2184,7 +2222,7 @@ Suggested next work, in the order I would do it:
    occupied or the decoration is skipped near a perch; `decor` costs the
    stream nothing either way. `what stands on a perch holds you up` stops at
    the deck's footprint on purpose and would need widening to cover it.
-6. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+5. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make

@@ -542,7 +542,162 @@ function buildBody(type) {
   g.scale.setScalar(type.scale);
   // yaw outermost, so a lean or a topple is about the body's own axes
   g.rotation.order = 'YXZ';
+
+  // The rig's meshes are not drawn: `HostileBatches` draws every hostile of
+  // an archetype in one call a part. They stay where they are, hidden, as
+  // the skeleton the batches read and the thing `hitscan` shoots — a raycast
+  // ignores `visible`, and the matrices are kept current either way.
+  const drawn = [];
+  g.traverse((o) => {
+    if (!o.isMesh) return;
+    const key = BATCHED.find((k) => geo[k] === o.geometry);
+    if (!key) return;
+    o.userData.batch = key;
+    o.visible = false;
+    drawn.push(o);
+  });
+  g.userData.drawn = drawn;
+  g.userData.archetype = type.name;
   return { group: g, parts, hold };
+}
+
+/**
+ * Which of a kit's geometries are drawn instanced, and how many of each one
+ * body carries. The contact shadow and the laser stay a mesh per hostile:
+ * each fades on its own opacity, which an instance cannot carry, and neither
+ * casts a shadow, so each is one call rather than three.
+ */
+const BATCHED = ['torso', 'rig', 'head', 'headKit', 'arm', 'fore', 'leg', 'shin', 'gun', 'band', 'eye'];
+const PER_BODY = { arm: 2, fore: 2, leg: 2, shin: 2 };
+const TINTED = new Set(['band', 'eye']);
+const NO_RAYCAST = () => {};
+
+/**
+ * Every hostile in the scene, drawn as one `InstancedMesh` per archetype and
+ * part.
+ *
+ * A hostile is fourteen drawn meshes, nine of which cast a shadow, so it was
+ * about forty draw calls a frame across the main pass and both cascades, and
+ * a wave was most of the frame's calls. Every raider's left shin is the same
+ * geometry and the same material as every other raider's, so this keeps one
+ * batch for each and writes the instances from the rigs just before each
+ * render (`scene.onBeforeRender`, which three calls after it has brought every
+ * matrix up to date). A batch costs its calls whether it holds one hostile or
+ * twenty, and an archetype with nobody standing is hidden and costs none.
+ *
+ * Built at boot inside `reserve`, like the kits it draws: every batch is an
+ * object, and an object minted out of the seeded stream mid-run would move
+ * every spawn after it. Growing a batch is done the same way.
+ *
+ * The rigs are untouched and stay the authority: `hitscan` raycasts their
+ * meshes, every check reads their parts, and the low tier dresses them on
+ * spawn as it always did. What the batches add is the drawing, and the one
+ * thing they give up is culling a hostile on its own — at a hostile's
+ * triangle count that is cheaper than the calls it used to take.
+ */
+export class HostileBatches {
+  constructor(scene, capacity = 16) {
+    this.scene = scene;
+    this.bodies = new Set();
+    this.root = new THREE.Group();
+    this.root.name = 'hostiles';
+    this.byType = new Map();
+    this.white = new THREE.Color(1, 1, 1);
+    for (const type of Object.values(ENEMY_TYPES)) {
+      const kit = kitFor(type);
+      const { cloth, gear, skin, steel } = kit.materials;
+      const material = {
+        torso: cloth, rig: gear, head: skin, headKit: gear, arm: cloth, fore: cloth,
+        leg: gear, shin: gear, gun: steel,
+        band: new THREE.MeshBasicMaterial({ color: 0xffffff }),
+        eye: new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      };
+      const set = {};
+      for (const key of BATCHED) {
+        set[key] = this._make(kit.geo[key], material[key], capacity * (PER_BODY[key] || 1), key);
+      }
+      this.byType.set(type.name, set);
+    }
+    scene.add(this.root);
+    const before = scene.onBeforeRender;
+    scene.onBeforeRender = (...args) => { before.apply(scene, args); this.sync(); };
+  }
+
+  _make(geometry, material, capacity, key) {
+    const m = new THREE.InstancedMesh(geometry, material, capacity);
+    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    if (TINTED.has(key)) {
+      m.setColorAt(0, this.white);
+      m.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    } else {
+      m.castShadow = true;
+    }
+    m.count = 0;
+    m.visible = false;
+    // the batch is drawn as a whole, wherever its hostiles are; and it is
+    // never shot, the rigs are
+    m.frustumCulled = false;
+    m.raycast = NO_RAYCAST;
+    m.userData.batch = key;
+    m.userData.capacity = capacity;
+    this.root.add(m);
+    return m;
+  }
+
+  /** A body built by `buildBody` — a hostile, or one shown to the compile. */
+  track(group) { this.bodies.add(group); }
+
+  untrack(group) { this.bodies.delete(group); }
+
+  /** Write every shown hostile into its archetype's batches. */
+  sync() {
+    for (const set of this.byType.values()) for (const key of BATCHED) set[key].count = 0;
+    for (const group of this.bodies) {
+      if (!this._shown(group)) continue;
+      const set = this.byType.get(group.userData.archetype);
+      for (const mesh of group.userData.drawn) {
+        if (!this._shown(mesh.parent, group)) continue;
+        const key = mesh.userData.batch;
+        let batch = set[key];
+        if (batch.count >= batch.userData.capacity) batch = set[key] = this._grow(batch);
+        const i = batch.count++;
+        batch.setMatrixAt(i, mesh.matrixWorld);
+        if (batch.instanceColor) batch.setColorAt(i, mesh.material.color);
+      }
+    }
+    for (const set of this.byType.values()) {
+      for (const key of BATCHED) {
+        const batch = set[key];
+        batch.visible = batch.count > 0;
+        if (!batch.visible) continue;
+        batch.instanceMatrix.needsUpdate = true;
+        if (batch.instanceColor) batch.instanceColor.needsUpdate = true;
+      }
+    }
+  }
+
+  /**
+   * Whether `o` and everything above it, up to `top` or the scene, is shown.
+   * A rig mesh counts as shown: they are all hidden, and a shin hangs off
+   * its thigh.
+   */
+  _shown(o, top = null) {
+    for (; o; o = o.parent) {
+      if (!o.visible && !o.userData.batch) return false;
+      if (o === top || o === this.scene) return true;
+    }
+    return false;
+  }
+
+  _grow(batch) {
+    const grown = reserve(() => this._make(batch.geometry, batch.material, batch.userData.capacity * 2, batch.userData.batch));
+    this.root.remove(batch);
+    batch.dispose();
+    return grown;
+  }
+
+  /** Every batch, for a check or a compile to walk. */
+  get meshes() { return this.root.children; }
 }
 
 export class Enemy {
@@ -565,6 +720,7 @@ export class Enemy {
       if (o.isMesh && o.userData.zone) { o.userData.enemy = this; this.hitMeshes.push(o); }
     });
     scene.add(this.group);
+    game.hostiles?.track(this.group);
 
     this.pos = new THREE.Vector3();
     this.vel = new THREE.Vector3();
