@@ -464,15 +464,20 @@ check('what stands on a perch holds you up', async (page) => {
   // that points up from a deck within jumping reach of it and is wide enough
   // to land on.
   //
-  // It stops at the deck's own footprint on purpose. Wall decoration is laid
-  // before the perches exist and is allowed to stand next to one: on seed 1 a
-  // fire escape's lowest platform is 1.4 m off one terrace and 1.15 m above
-  // it, which is a decoration rule meeting a placement rule, not this bug.
+  // And past the deck's edge, as far as a running jump carries (3 m) and as
+  // high as a mantle reaches (2.6 m): wall decoration is laid before the
+  // perches exist, and on seed 1 a fire escape's lowest platform hung 1.4 m
+  // off one terrace and 1.15 m above it — a jump you landed and fell straight
+  // through. Out there a face has to be big enough to land a foot on
+  // (0.25 m²), because a streetlight's head is within reach of one deck and
+  // nobody tries to stand on it.
   const r = await page.evaluate(() => {
     const g = window.__game;
     const decks = g.perches.map((p) => ({ p, b: g.world.boxes.find((b) => Math.abs(b.top - p.y) < 0.02 &&
       p.x > b.minX && p.x < b.maxX && p.z > b.minZ && p.z < b.maxZ) })).filter((d) => d.b);
-    let faces = 0, raised = 0;
+    const CARRY = 3, REACH = 2.6;
+    let faces = 0, raised = 0, ring = 0;
+    const off = [];
     const unsupported = [];
     for (const m of g.city.children) {
       if (!m.isMesh) continue;
@@ -488,21 +493,37 @@ check('what stands on a perch holds you up', async (page) => {
         const e3 = Math.hypot(c[0] - b[0], c[1] - b[1], c[2] - b[2]);
         if (len / Math.max(Math.hypot(...e1), Math.hypot(...e2), e3) < 0.3) continue;   // a sliver
         const x = (a[0] + b[0] + c[0]) / 3, y = (a[1] + b[1] + c[1]) / 3, z = (a[2] + b[2] + c[2]) / 3;
-        const d = decks.find(({ p, b: k }) => y > p.y + 0.2 && y < p.y + 2.6 &&
+        const d = decks.find(({ p, b: k }) => y > p.y + 0.2 && y < p.y + REACH &&
           x > k.minX && x < k.maxX && z > k.minZ && z < k.maxZ);
-        if (!d) continue;
+        if (!d) {
+          // the ring round a deck: anything wide enough to land on
+          if (len / 2 < 0.25) continue;
+          const near = decks.find(({ p, b: k }) => y > p.y - 0.3 && y < p.y + REACH &&
+            x > k.minX - CARRY && x < k.maxX + CARRY && z > k.minZ - CARRY && z < k.maxZ + CARRY);
+          if (!near) continue;
+          ring++;
+          const ground = g.world.groundHeight(x, z, 0.12, y + 0.25);
+          if (ground < y - 0.15) off.push([+x.toFixed(1), +y.toFixed(2), +z.toFixed(1), +ground.toFixed(2)]);
+          continue;
+        }
         faces++;
         if (y > d.p.y + 1) raised++;
         const ground = g.world.groundHeight(x, z, 0.12, y + 0.05);
         if (ground < y - 0.15) unsupported.push([+x.toFixed(1), +y.toFixed(2), +z.toFixed(1), +ground.toFixed(2)]);
       }
     }
-    return { decks: decks.length, faces, raised, unsupported: unsupported.length, sample: unsupported.slice(0, 4) };
+    return { decks: decks.length, faces, raised, unsupported: unsupported.length, sample: unsupported.slice(0, 4),
+      ring, offDeck: off.length, offSample: off.slice(0, 4) };
   });
   expect(r.decks > 0 && r.faces > 0, `${r.decks} decks with ${r.faces} faces on them to measure`);
   expect(r.raised > 0, 'no crate on any deck — this seed no longer tests the crates');
   expect(r.unsupported === 0,
     `${r.unsupported} of ${r.faces} faces on a deck are drawn but not stood on, e.g. ${JSON.stringify(r.sample)}`);
+  // Seed 1: 12 faces of fire escape within reach of a deck with nothing
+  // under them before the escapes near a perch were taken down.
+  expect(r.ring > 0, 'nothing to land on within reach of any deck — the ring measures nothing');
+  expect(r.offDeck === 0,
+    `${r.offDeck} of ${r.ring} faces within a jump of a deck are drawn but not stood on, e.g. ${JSON.stringify(r.offSample)}`);
   return r;
 });
 

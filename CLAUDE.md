@@ -146,7 +146,19 @@ These each cost real debugging time. Changing them needs a reason.
   of a stack is no longer slid off its collider; both still draw the rolls
   they used to, so the stream is unchanged. Measured on seeds 1, 7, 99991,
   20260101 and 20260813: every perch, every barrel, and every collider more
-  than 14 m from a perch is identical before and after.
+  than 14 m from a perch is identical before and after. What is *near* a
+  deck is the third half: wall decoration is laid before any perch exists,
+  and a fire escape's lowest platform hung 1.15 m above a terrace and
+  1.4 m off it on seed 1 — a jump you landed and fell through, because
+  decoration is in neither collision list. `clearEscapesNear` takes down,
+  whole, any fire escape with a part within a running jump (3 m,
+  `JUMP_CARRY`) and a mantle (2.6 m, `JUMP_REACH`) of a deck, after the
+  perches are placed; each piece carries `userData.escape` so it goes as
+  one. It is decoration, so removing it costs the stream nothing and the
+  layout check does not move. `what stands on a perch holds you up` reads
+  that ring too, counting faces big enough to land a foot on (0.25 m²,
+  because a streetlight's head is within reach of a deck on seed 99991);
+  with the clearing taken out it reports the platform.
 - **A floor is a collider, and it is registered last.** Every slab drawn as
   something to stand on — the 28 cm pavement apron on every lot, the plaza,
   a rubble lot's slab (0.35 m), a ruin's courtyard (0.45 m) — goes through
@@ -1608,11 +1620,9 @@ old builders: the stairs check, made strict (6/12 walked onto), and `what
 stands on a perch holds you up`, which reads the merged city — what you
 see — and asks the footing about every face on a deck (72 of 72
 unsupported). The layout check's numbers were re-measured once for it, with
-the before-and-after written into the check. One neighbour of the bug is
-left: wall decoration is laid before the perches and can end up beside one —
-on seed 1 a fire escape's lowest platform is 1.4 m off a terrace and 1.15 m
-above it — which is a decoration rule meeting a placement rule, and is on
-the list below.
+the before-and-after written into the check. The one neighbour of the bug
+it left — a fire escape within a jump of a terrace — was closed later; see
+the invariant.
 
 The lighting pass came out of one sentence — make the graphics more
 realistic — and out of looking at the frame before touching it. What read
@@ -2214,15 +2224,7 @@ Suggested next work, in the order I would do it:
    every crossing's footing moves, and the layout check's fingerprints have
    to be re-measured once. The tactile paving is already where the drops
    would go.
-4. **Keep wall decoration out of jumping reach of a perch.** Decoration is
-   built where you cannot stand, and a terrace can put you within a jump of
-   some — seed 1 has a fire escape platform 1.4 m off a terrace edge and
-   1.15 m above it, which you would fall through. Perches are placed after
-   the buildings, so either perch placement treats wall decoration as
-   occupied or the decoration is skipped near a perch; `decor` costs the
-   stream nothing either way. `what stands on a perch holds you up` stops at
-   the deck's footprint on purpose and would need widening to cover it.
-5. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+4. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make

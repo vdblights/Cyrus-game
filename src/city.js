@@ -341,6 +341,38 @@ function registerHeaps(world, heaps) {
   }
 }
 
+/** How far a running jump carries off a deck's edge, and how high a mantle reaches above it. */
+const JUMP_CARRY = 3, JUMP_REACH = 2.6;
+
+/**
+ * Take down every fire escape with a part within jumping reach of a perch's
+ * deck. Each piece of one carries `userData.escape`, so it goes whole.
+ */
+function clearEscapesNear(group, world, perches) {
+  const decks = [];
+  for (const p of perches) {
+    const b = world.boxes.find((k) => Math.abs(k.top - p.y) < 0.02 &&
+      p.x > k.minX && p.x < k.maxX && p.z > k.minZ && p.z < k.maxZ);
+    if (b) decks.push(b);
+  }
+  const pieces = new Map();
+  group.traverse((o) => {
+    if (o.userData.escape === undefined) return;
+    if (!pieces.has(o.userData.escape)) pieces.set(o.userData.escape, []);
+    pieces.get(o.userData.escape).push(o);
+  });
+  const box = new THREE.Box3();
+  for (const parts of pieces.values()) {
+    const near = parts.some((o) => {
+      box.setFromObject(o);
+      return decks.some((d) => box.max.y > d.top - 0.3 && box.min.y < d.top + JUMP_REACH &&
+        box.max.x > d.minX - JUMP_CARRY && box.min.x < d.maxX + JUMP_CARRY &&
+        box.max.z > d.minZ - JUMP_CARRY && box.min.z < d.maxZ + JUMP_CARRY);
+    });
+    if (near) for (const o of parts) o.removeFromParent();
+  }
+}
+
 /** What a prop does not need to be clear of: a kerb, a floor, a step. */
 const STEP_UP = 0.55;
 
@@ -1795,6 +1827,15 @@ export function buildCity(scene, painted = null) {
     if (i >= 0) world.solids.splice(i, 1);
   }
 
+  // The same for a fire escape, which is decoration — built on the facade
+  // before any perch existed, and in neither collision list, because nothing
+  // standing on the street can reach its lowest platform. A terrace can:
+  // seed 1 put one 1.15 m above a deck and 1.4 m off it, a jump you landed
+  // and fell straight through. Any fire escape with a part in reach of a
+  // deck — a running jump's carry off its edge, and from just under it to a
+  // mantle above it — is taken down, whole.
+  clearEscapesNear(group, world, perches);
+
   registerFloors(world, floors);
   registerHeaps(world, heaps);
 
@@ -2393,6 +2434,7 @@ export function buildCity(scene, painted = null) {
           y,
           onX ? z + along : z + side * (faceOff + outward));
         mesh.castShadow = true;
+        mesh.userData.escape = `${x},${z}`;           // one fire escape, for taking down whole
         gr.add(mesh);
       };
       const slab = (w, d) => boxGeo(onX ? d : w, 0.12, onX ? w : d, TILE.metal);
