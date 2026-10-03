@@ -213,7 +213,12 @@ These each cost real debugging time. Changing them needs a reason.
   every sloped face of pavement in the merged city against the footing
   (304 faces on seed 1, all within 0.3 mm), walks up a drop (0.041 m in the
   worst frame, against the 0.278 m a kerb takes at once) and shoots the
-  ramp.
+  ramp. Broken at the reader, it reports a face at 0.113 m held at 0.28
+  with `groundHeight` reading the slab flat, and a shot stopping at 0.28
+  over a ramp at 0.155 with the raycast copy left a box. Its kerb scan
+  first stepped `t += 0.1` along each edge, which lands a hair under the
+  far corner and never closed the run that ends there — 32 drops counted of
+  64. Step a scan by count.
 - **Anything you can see at body height is something you can bump into.**
   Every heap of rubble (`rubblePile`) and every fallen slab in a rubble lot
   was drawn and registered nowhere — the slabs were in the raycast list and
@@ -1361,7 +1366,11 @@ its base colour — paint is a dielectric, and only the wear shows bare
 metal. The drop halos are the gameplay half (invariant above).
 
 The kerb drops landed in the same pass as the drops, and were item 2 of
-the list (invariant above, under the floors).
+the list (invariant above, under the floors). They moved props off the
+corners they now slope, which is a layout change, re-measured once in the
+layout check with the reason: on seeds 7 and 20260101 a handful of prop
+colliders and nothing else, on seed 1 one barricade and one streetlight,
+and the perches placed round them.
 
 The fire escapes were rebuilt after the reload pass, from one line of
 play: they look fine from a distance, but there is no detail and they do

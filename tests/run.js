@@ -1132,12 +1132,11 @@ check('a crossing drops its kerb, and the ramp you see is the ramp you walk', as
       ramp: +ramp.toFixed(3), shot: hit ? +hit.point.y.toFixed(3) : null,
     };
   });
-  // Seed 1: 34 aprons dropped, 56 drops, 304 sloped faces all within 0.3 mm
+  // Seed 1: 34 aprons dropped, 64 drops, 304 sloped faces all within 0.3 mm
   // of the footing, a walk across stepping 0.041 m in its worst frame and a
-  // shot stopping on the ramp. With the surface left off the collider the
-  // faces stand 0.256 m clear of what holds you and the walk climbs the
-  // whole kerb in a frame; with the raycast copy left a box the shot stops
-  // at 0.28 over a ramp at 0.155.
+  // shot stopping on the ramp. With `groundHeight` reading a dropped slab as
+  // flat, a face of the ramp at 0.113 m is held at 0.28; with the raycast
+  // copy left a box, the shot stops at 0.28 over a ramp at 0.155.
   expect(r.drops >= 40, `only ${r.drops} dropped kerbs across ${r.aprons} pavements`);
   expect(r.sloped >= 100, `only ${r.sloped} sloped faces of pavement to measure`);
   expect(r.worst < 0.01, `a face of the ramp stands ${r.worst} m off the footing, at ${JSON.stringify(r.worstAt)}`);
@@ -3747,10 +3746,22 @@ check('a seed still lays out the city it did', async (page) => {
   // collider before and after: every building and every floor is identical
   // on all three seeds. Before it: 901/635/12 f77a4c34 (425 cd6eb736),
   // 880/580/10 faf144f5 (371 68d89f10), 923/626/12 7271e677 (417 f7c4a2df).
+  //
+  // And once more, for the dropped kerbs: a pavement with a crossing at its
+  // corner ramps down to the road there, so a prop settled on that corner is
+  // no longer level and moves, or is not put down. The stream is untouched
+  // (the apron pays for the box it was). Compared collider by collider:
+  // seeds 7 and 20260101 moved 7 and 6 prop colliders and nothing else; on
+  // seed 1 one barricade moved 1.5 m off a ramp and one streetlight found no
+  // level ground within reach, and the perches, placed round the props,
+  // re-sited — four went and three came, with the rubble cleared off them —
+  // while every collider further than 14 m from a perch that changed is
+  // identical. Before it: 801/580/13 88473ce5 (429 5d9b6755), 834/543/11
+  // dcd3d7d2 (376 d57389ac), 877/573/10 4f7b5ad (395 4f540362).
   const want = {
-    1: { boxes: 801, solids: 580, perches: 13, fp: '88473ce5', placed: 429, fpPlaced: '5d9b6755' },
-    7: { boxes: 834, solids: 543, perches: 11, fp: 'dcd3d7d2', placed: 376, fpPlaced: 'd57389ac' },
-    20260101: { boxes: 877, solids: 573, perches: 10, fp: '4f7b5ad', placed: 395, fpPlaced: '4f540362' },
+    1: { boxes: 771, solids: 561, perches: 12, fp: '43fc2161', placed: 413, fpPlaced: 'ff19bfd0' },
+    7: { boxes: 834, solids: 543, perches: 11, fp: 'f6d29176', placed: 376, fpPlaced: '86e2c858' },
+    20260101: { boxes: 877, solids: 573, perches: 10, fp: '79f7d600', placed: 395, fpPlaced: '985f0133' },
   };
 
   const got = {};
