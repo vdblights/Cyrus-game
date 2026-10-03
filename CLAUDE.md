@@ -180,6 +180,39 @@ These each cost real debugging time. Changing them needs a reason.
   a perch's pavement before its stairs and walked into its deck. What still
   assumes y=0 is wrong now: an effect that lands, a pickup, an objective
   ring and a test that says "on the street" all ask the floor instead.
+- **A floor may slope, and then its box answers for its own height.** Where
+  a zebra meets the pavement the kerb is dropped: a ramp from the apron's
+  corner to 2.5 m along the kerb, down to a 3 cm lip across 1.4 m of the
+  pavement, with a 1 m flare past it where the kerb climbs back along its
+  length, and a dish where both streets at a corner are crossed (`DROP`,
+  `apronDrops`, `apronSurface` in `city.js`). A ramp is not a box, and
+  stepping it — a stack of thin floors — would have been a few hundred boxes
+  more in every `groundHeight` loop. So an apron with a drop is still one
+  floor box, carrying `surface(lx, lz, r)`: its height at a point in its own
+  frame, the highest within `r`. `top` stays the slab's highest, so every
+  reader that only wants a bound (`resolve`, `lineOfSight`, `occupied`, the
+  nav bake) is unchanged and still right; `groundHeight` and `bounceSphere`
+  ask the surface. Two things keep the three copies of it — what is drawn,
+  what holds you up, what a bullet stops at — one surface rather than three
+  that agree. Every piece of it is a plane, and every crease between two
+  planes runs corner to corner across a cell of the grid `DROP_BREAKS` lays
+  (the flare's cell, and the corner square's when both streets are
+  crossed), so `drape` reproduces it exactly by choosing whichever diagonal
+  agrees with the surface at the cell's middle. And the drawn apron, its
+  raycast copy (the same grid without the bake's cells) and the paving on it
+  are all built off that one function. The paving cannot be level on a ramp,
+  so it is draped over the same grid plus its own edges, on both axes, which
+  keeps the corner's crease on a cell diagonal; where both streets are
+  crossed it turns the corner as an L rather than two pads overlapping, which
+  is what two flat pads did before and z-fought. The apron is built inside
+  `reserve` and pays `spend(UUID_COST)` for the box it used to be, so a drop
+  costs the stream nothing; what moves is the props, because `settle` asks
+  `floorAt` for one level under every corner and a ramp is not one. `a
+  crossing drops its kerb, and the ramp you see is the ramp you walk` reads
+  every sloped face of pavement in the merged city against the footing
+  (304 faces on seed 1, all within 0.3 mm), walks up a drop (0.041 m in the
+  worst frame, against the 0.278 m a kerb takes at once) and shoots the
+  ramp.
 - **Anything you can see at body height is something you can bump into.**
   Every heap of rubble (`rubblePile`) and every fallen slab in a rubble lot
   was drawn and registered nowhere — the slabs were in the raycast list and
@@ -536,18 +569,21 @@ These each cost real debugging time. Changing them needs a reason.
   is` guard them.
 - **What is set into the street asks the ground under every corner.**
   `streetIron` in `city.js` lays manhole covers in the lanes, gully grates
-  in the gutters and blister paving on the pavement at both ends of every
-  zebra crossing, and `roadMarkings` lays yellow paint — double lines along
-  some kerbs, boxes on some junctions — beside the white. All of it is
+  in the gutters and blister paving on the dropped kerb at both ends of
+  every zebra crossing, and `roadMarkings` lays yellow paint — double lines
+  along some kerbs, boxes on some junctions — beside the white. All of it is
   decoration by the flush rule, and the flush rule only holds if every
-  corner finds the surface the centre does: the ironwork and paving run
-  after the floors are registered, ask `groundHeight` at each corner with a
-  ceiling under every prop (0.5 m), and are not laid where the answers
-  disagree. The crossings the paving pads are found by the same roll the
-  paint laid them by. `what is set into the street lies flush on it, road
-  or pavement` reads the merged city: paving at road height reports 360
-  corners on the wrong side of a kerb, and grates pushed onto the kerb with
-  the corner test taken out stand 0.292 m off what is under them.
+  corner finds the surface the centre does: the ironwork runs after the
+  floors are registered, asks `groundHeight` at each corner with a ceiling
+  under every prop (0.5 m), and is not laid where the answers disagree. The
+  paving lies on a ramp, so it cannot be level and is draped instead — see
+  the next invariant. Every crossing, painted, paved or dropped, is
+  `crossingAt`'s, one roll per junction per street. `what is set into the
+  street lies flush on it, road or pavement` reads the merged city: paving
+  at road height reports 360 corners on the wrong side of a kerb, and grates
+  pushed onto the kerb with the corner test taken out stand 0.292 m off
+  what is under them. "The pavement" in that check is a floor's footprint
+  now, not a height over 0.2 m, because the paving comes down to 3 cm.
 - **Weathering is a thresholded fractal, never a filled shape.** Every large
   stain goes through `mottle`, which used to fill ellipses into a low-res
   layer. Upscaled, they came out soft-edged and still round, and a surface
@@ -2275,13 +2311,7 @@ Suggested next work, in the order I would do it:
 1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-2. **Drop the kerbs at the crossings.** The street pass did everything on
-   the ground but this, because a dropped kerb is a ramp in the pavement's
-   floor: `registerFloors` would register a sloped or stepped apron corner,
-   every crossing's footing moves, and the layout check's fingerprints have
-   to be re-measured once. The tactile paving is already where the drops
-   would go.
-3. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+2. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make

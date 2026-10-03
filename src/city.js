@@ -27,6 +27,180 @@ const STREETS = Array.from({ length: GRID - 1 }, (_, i) => lotCenter(i) + BLOCK 
 /** Where a street stops: the last sidewalk, short of the perimeter wall. */
 const STREET_END = (GRID * BLOCK) / 2 - ROAD_HALF;
 
+/** Half the side of a lot's pavement apron, and the height of its kerb. */
+const APRON = (LOT + 6) / 2;
+const KERB = 0.28;
+
+/**
+ * Whether the street running along X (`axisX`) or Z is crossed beside the
+ * junction at `node`. One roll per junction per street, off where it is, so
+ * the paint, the paving and the dropped kerb all find the same crossings.
+ */
+function crossingAt(axisX, node, across) {
+  return hash2(Math.round(node), Math.round(across), axisX ? 91 : 92) <= 0.45;
+}
+
+/**
+ * A dropped kerb, where a crossing meets the pavement. A crossing starts
+ * 0.3 m past the apron's corner and runs 2.2 m, so the drop is a ramp from
+ * the corner to `run` along the kerb, falling from the pavement to a `lip`
+ * over the road across `back` of the pavement's depth, with a `flare` past
+ * it where the kerb climbs back along its length. Where both streets at a
+ * corner are crossed the two ramps meet in a dish, the lower of the two.
+ *
+ * Every piece of it is a plane, and every crease between two planes runs
+ * corner to corner across a cell of the grid `apronBreaks` lays — the flare
+ * cell's diagonal, and the corner square's — so the drawn surface and the
+ * height `apronSurface` reports are the same surface, not two that agree.
+ */
+const DROP = { lip: 0.03, back: 1.4, run: 2.5, flare: 1.0 };
+
+/** The kerb drops on lot (i, j)'s apron: which corner, and which of its two edges. */
+function apronDrops(i, j) {
+  const drops = [];
+  const cx = lotCenter(i), cz = lotCenter(j);
+  for (const sx of [-1, 1]) {
+    if (i + sx < 0 || i + sx >= GRID) continue;     // the perimeter, not a street
+    for (const sz of [-1, 1]) {
+      if (j + sz < 0 || j + sz >= GRID) continue;
+      const jx = cx + (sx * BLOCK) / 2, jz = cz + (sz * BLOCK) / 2;
+      // the street along X at jz lands on the edge facing it; the one along Z
+      // at jx on the other
+      if (crossingAt(true, jx, jz)) drops.push({ sx, sz, alongX: true });
+      if (crossingAt(false, jz, jx)) drops.push({ sx, sz, alongX: false });
+    }
+  }
+  return drops;
+}
+
+/**
+ * The height of an apron's top at (lx, lz) off its centre, and the highest of
+ * it within `r` — the question `World.groundHeight` asks a box.
+ */
+function apronSurface(drops) {
+  const { lip, back, run, flare } = DROP, rise = KERB - lip;
+  const h = (lx, lz) => {
+    let y = KERB;
+    for (const d of drops) {
+      // in from the edge facing each street
+      const fromX = APRON - d.sx * lx, fromZ = APRON - d.sz * lz;
+      const s = d.alongX ? fromZ : fromX, t = d.alongX ? fromX : fromZ;
+      if (s >= back || t >= run + flare) continue;
+      const f = Math.max(0, s) / back + Math.max(0, t - run) / flare;
+      if (f < 1) y = Math.min(y, lip + rise * f);
+    }
+    return y;
+  };
+  const clampA = (v) => Math.max(-APRON, Math.min(APRON, v));
+  const near = (lx, lz, r) => {
+    const x = clampA(lx), z = clampA(lz);
+    let y = h(x, z);
+    if (r > 0) {
+      y = Math.max(y, h(clampA(lx + r), z), h(clampA(lx - r), z), h(x, clampA(lz + r)), h(x, clampA(lz - r)));
+    }
+    return y;
+  };
+  return { h, near };
+}
+
+/** Distances in from a corner where an apron's surface may change plane. */
+const DROP_BREAKS = [0, DROP.back, DROP.run, DROP.run + DROP.flare];
+
+/**
+ * Two triangles over every cell of a grid, lying on `h`. A cell is split
+ * along whichever diagonal agrees with `h` at its middle, which is the crease
+ * where there is one and makes no difference where there is not.
+ */
+function drape(xs, zs, h, tri) {
+  for (let a = 0; a + 1 < xs.length; a++) {
+    for (let b = 0; b + 1 < zs.length; b++) {
+      const x0 = xs[a], x1 = xs[a + 1], z0 = zs[b], z1 = zs[b + 1];
+      const p00 = [x0, h(x0, z0), z0], p10 = [x1, h(x1, z0), z0];
+      const p01 = [x0, h(x0, z1), z1], p11 = [x1, h(x1, z1), z1];
+      const mid = h((x0 + x1) / 2, (z0 + z1) / 2);
+      if (Math.abs((p00[1] + p11[1]) / 2 - mid) <= Math.abs((p10[1] + p01[1]) / 2 - mid)) {
+        tri(p00, p10, p11); tri(p00, p11, p01);
+      } else {
+        tri(p00, p10, p01); tri(p10, p11, p01);
+      }
+    }
+  }
+}
+
+/**
+ * Collects triangles wound to face `want` whatever order they arrive in —
+ * computed, never written, for the reason in the note on `shapes.js`.
+ */
+function triangles() {
+  const pos = [], nor = [], uv = [];
+  const add = (a, b, c, want, uvOf) => {
+    const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    const len = Math.hypot(...n);
+    if (len < 1e-9) return;
+    if (n[0] * want[0] + n[1] * want[1] + n[2] * want[2] < 0) { [b, c] = [c, b]; n = n.map((v) => -v); }
+    for (const p of [a, b, c]) {
+      pos.push(...p);
+      nor.push(n[0] / len, n[1] / len, n[2] / len);
+      uv.push(...uvOf(p));
+    }
+  };
+  const geometry = () => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    return g;
+  };
+  return { add, geometry };
+}
+
+/**
+ * A lot's pavement apron, kerbs dropped where it is crossed: the top draped
+ * over its surface and the four kerb faces under its edges, about its own
+ * centre, from the street up. `fine` adds the cells the bake hangs its
+ * shading on; the copy a bullet is traced against does without them.
+ */
+function apronGeo(surface, fine) {
+  const A = APRON, tile = TILE.concrete;
+  const cuts = new Set();
+  for (const o of DROP_BREAKS) { cuts.add(-A + o); cuts.add(A - o); }
+  if (fine) {
+    const inner = A - DROP.run - DROP.flare, n = Math.max(1, Math.round((2 * inner) / 2.6));
+    for (let k = 1; k < n; k++) cuts.add(-inner + (2 * inner * k) / n);
+  }
+  const xs = [...cuts].sort((a, b) => a - b);
+  const out = triangles();
+  const top = (p) => [(p[0] + A) / tile, (p[2] + A) / tile];
+  drape(xs, xs, surface.h, (a, b, c) => out.add(a, b, c, [0, 1, 0], top));
+  // the kerb faces, down to the street
+  for (const side of [-1, 1]) {
+    for (let k = 0; k + 1 < xs.length; k++) {
+      const u0 = xs[k], u1 = xs[k + 1];
+      const alongX = [[u0, 0, side * A], [u1, 0, side * A], [u1, surface.h(u1, side * A), side * A], [u0, surface.h(u0, side * A), side * A]];
+      const alongZ = [[side * A, 0, u0], [side * A, 0, u1], [side * A, surface.h(side * A, u1), u1], [side * A, surface.h(side * A, u0), u0]];
+      for (const [q, want, uvOf] of [
+        [alongX, [0, 0, side], (p) => [(p[0] + A) / tile, p[1] / tile]],
+        [alongZ, [side, 0, 0], (p) => [(p[2] + A) / tile, p[1] / tile]],
+      ]) {
+        out.add(q[0], q[1], q[2], want, uvOf);
+        out.add(q[0], q[2], q[3], want, uvOf);
+      }
+    }
+  }
+  return out.geometry();
+}
+
+/** The extent and top of a floor slab, whether it is a box or an apron. */
+function slabOf(slab) {
+  if (slab.userData.slab) return slab.userData.slab;
+  const { width, height, depth } = slab.geometry.parameters, p = slab.position;
+  return {
+    minX: p.x - width / 2, maxX: p.x + width / 2, minZ: p.z - depth / 2, maxZ: p.z + depth / 2,
+    top: p.y + height / 2,
+  };
+}
+
 /**
  * The sector's plan, which needs no seed: where the lots and their aprons sit
  * and where the walls are. The loading screen draws its street grid off this
@@ -240,12 +414,20 @@ function occlusionField(world, extent, cell = 1.6) {
 function registerFloors(world, slabs) {
   reserve(() => {
     for (const slab of slabs) {
-      const { width, height, depth } = slab.geometry.parameters;
-      const p = slab.position;
-      world.addFloor(p.x - width / 2, p.z - depth / 2, p.x + width / 2, p.z + depth / 2, p.y + height / 2);
+      const s = slabOf(slab), p = slab.position;
+      world.addFloor(s.minX, s.minZ, s.maxX, s.maxZ, s.top);
+      // a dropped kerb: the box's top is its highest, and this is the rest
+      if (s.surface) world.boxes[world.boxes.length - 1].surface = s.surface.near;
 
-      const hit = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), slab.material);
-      hit.position.copy(p);
+      let hit;
+      if (s.surface) {
+        hit = new THREE.Mesh(apronGeo(s.surface, false), slab.material);
+        hit.position.copy(p);
+      } else {
+        const h = slab.geometry.parameters.height;
+        hit = new THREE.Mesh(new THREE.BoxGeometry(s.maxX - s.minX, h, s.maxZ - s.minZ), slab.material);
+        hit.position.set((s.minX + s.maxX) / 2, s.top - h / 2, (s.minZ + s.maxZ) / 2);
+      }
       hit.updateMatrixWorld(true);
       hit.matrixAutoUpdate = false;
       world.solids.push(hit);
@@ -879,21 +1061,22 @@ function overgrowth(group, world, mat) {
 /**
  * What a street has set into it besides paint: manhole covers in the lanes,
  * gully grates in the gutter against each kerb, and blister paving on the
- * pavement at both ends of every zebra crossing.
+ * dropped kerb at both ends of every zebra crossing.
  *
  * All of it is decoration by the flush rule — it lies a centimetre over a
  * surface you already walk on and shoot at, and registers nothing — which
  * holds only if every corner finds the same ground the centre does. So this
- * runs after the floors are registered, asks `groundHeight` at every corner,
- * and lays nothing that would hang over a kerb. The crossings it pads are
- * found by the same roll `roadMarkings` paints them by.
+ * runs after the floors are registered, asks `groundHeight` at every corner
+ * of the ironwork, and lays nothing that would hang over a kerb; the paving
+ * is draped over the ramp it lies on. The crossings are `crossingAt`'s, the
+ * same ones `roadMarkings` paints.
  */
 function streetIron(group, world, coverMat, grateMat, tactileMat) {
   const r = (a, b, salt) => hash2(Math.round(a), Math.round(b), salt);
   const ground = (x, z) => world.groundHeight(x, z, 0.01, 0.5);
   const LIFT = 0.012;
   const kit = () => ({ pos: [], uv: [] });
-  const covers = kit(), grates = kit(), pads = kit();
+  const covers = kit(), grates = kit();
 
   // one corner of a flat quad, in the street's frame (u across, v along)
   const toWorld = (axisX, u, v) => (axisX ? [v, u] : [u, v]);
@@ -941,7 +1124,7 @@ function streetIron(group, world, coverMat, grateMat, tactileMat) {
         // the crossings `roadMarkings` laid on this span, by the same roll
         const crossings = [];
         for (const [node, dir, junction] of [[nodes[k], 1, k > 0], [nodes[k + 1], -1, k + 2 < nodes.length]]) {
-          if (!junction || r(node, across, axisX ? 91 : 92) > 0.45) continue;
+          if (!junction || !crossingAt(axisX, node, across)) continue;
           const clear = node + dir * (ROAD_HALF + 0.3);
           crossings.push({ v: clear + dir * 1.1, dir });
         }
@@ -966,20 +1149,51 @@ function streetIron(group, world, coverMat, grateMat, tactileMat) {
           }
         }
 
-        // blister paving on the pavement, the width of the crossing, at both ends
-        for (const c of crossings) {
-          for (const side of [-1, 1]) flat(pads, axisX, across + side * (ROAD_HALF + 0.62), c.v, 1.1, 2.2, TILE.tactile);
-        }
       }
     }
   }
 
-  for (const [buf, mat] of [[covers, coverMat], [grates, grateMat], [pads, tactileMat]]) {
-    if (!buf.pos.length) continue;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
-    geo.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(buf.pos.length).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uv, 2));
+  // Blister paving on every dropped kerb, the width of its crossing, lying on
+  // the ramp: draped over the apron's own surface on a grid that shares its
+  // creases, so it is flush the whole way down. Where both streets at a
+  // corner are crossed the paving turns the corner as an L, the second pad
+  // starting where the first one's edge is rather than lying over it.
+  const pad = { across: [0.07, 1.17], along: [0.3, 2.5] };
+  const padTris = triangles();
+  for (let i = 0; i < GRID; i++) {
+    for (let j = 0; j < GRID; j++) {
+      const drops = apronDrops(i, j);
+      if (!drops.length) continue;
+      const cx = lotCenter(i), cz = lotCenter(j), { h } = apronSurface(drops);
+      for (const d of drops) {
+        const turned = !d.alongX && drops.some((e) => e.alongX && e.sx === d.sx && e.sz === d.sz);
+        const s = pad.across, t = turned ? [pad.across[1], pad.along[1]] : pad.along;
+        // (s in from the kerb, t along it from the corner) onto the apron's axes
+        const [ox, oz] = d.alongX ? [t, s] : [s, t];
+        const marks = [...pad.across, ...pad.along, ...DROP_BREAKS];
+        const axis = (o, sign) => {
+          const inside = marks.filter((m) => m > o[0] && m < o[1]).concat(o);
+          return inside.map((m) => sign * (APRON - m)).sort((a, b) => a - b);
+        };
+        const xs = axis(ox, d.sx), zs = axis(oz, d.sz);
+        const mx = (xs[0] + xs[xs.length - 1]) / 2, mz = (zs[0] + zs[zs.length - 1]) / 2;
+        drape(xs, zs, (x, z) => h(x, z) + LIFT, (a, b, c) => padTris.add(
+          [a[0] + cx, a[1], a[2] + cz], [b[0] + cx, b[1], b[2] + cz], [c[0] + cx, c[1], c[2] + cz], [0, 1, 0],
+          (p) => [0.5 + (p[0] - cx - mx) / TILE.tactile, 0.5 + (p[2] - cz - mz) / TILE.tactile]));
+      }
+    }
+  }
+
+  for (const [buf, mat] of [[covers, coverMat], [grates, grateMat], [padTris, tactileMat]]) {
+    let geo;
+    if (buf === padTris) geo = padTris.geometry();
+    else {
+      if (!buf.pos.length) continue;
+      geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(buf.pos.length).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uv, 2));
+    }
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
     mesh.userData.tint = [1, 1, 1];
@@ -1656,13 +1870,23 @@ export function buildCity(scene, painted = null) {
   // how many props `settle` has stood up, so each one's colliders carry an id
   let settled = 0;
 
-  // sidewalks: a raised concrete apron around every lot
+  // sidewalks: a raised concrete apron around every lot, its kerb dropped
+  // wherever a crossing meets it. Built in a `reserve` and paid for at what
+  // the plain box cost, so a drop more or fewer moves no seed.
   const walkMat = concreteMat;
   for (let i = 0; i < GRID; i++) {
     for (let j = 0; j < GRID; j++) {
-      const walk = new THREE.Mesh(
-        boxGeo(LOT + 6, 0.28, LOT + 6, TILE.concrete, { cells: 11 }), walkMat);
-      walk.position.set(lotCenter(i), 0.14, lotCenter(j));
+      const drops = apronDrops(i, j);
+      const surface = drops.length ? apronSurface(drops) : null;
+      const geo = reserve(() => (surface ? apronGeo(surface, true)
+        : boxGeo(LOT + 6, KERB, LOT + 6, TILE.concrete, { cells: 11 }).translate(0, KERB / 2, 0)));
+      spend(UUID_COST);                              // what the box used to cost
+      const walk = new THREE.Mesh(geo, walkMat);
+      walk.position.set(lotCenter(i), 0, lotCenter(j));
+      walk.userData.slab = {
+        minX: lotCenter(i) - APRON, maxX: lotCenter(i) + APRON,
+        minZ: lotCenter(j) - APRON, maxZ: lotCenter(j) + APRON, top: KERB, surface,
+      };
       walk.receiveShadow = true;
       walk.userData.tint = tintAt(lotCenter(i), lotCenter(j), 5, 0.07);
       group.add(walk);
@@ -2618,7 +2842,7 @@ export function buildCity(scene, painted = null) {
         const clear = node + dir * (ROAD_HALF + 0.3);     // edge of the junction
         // one roll per junction per street, so a crossing is a property of the
         // junction and both approaches to it are marked or neither is
-        if (r(node, across, axisX ? 91 : 92) > 0.45) return clear;
+        if (!crossingAt(axisX, node, across)) return clear;
 
         const depth = 2.2, stripe = 0.46;
         const usable = ROAD_HALF * 2 - 0.3;
@@ -2932,8 +3156,9 @@ export function buildCity(scene, painted = null) {
   function floorAt(x, z) {
     let y = 0;
     for (const f of floors) {
-      const { width, height, depth } = f.geometry.parameters, p = f.position;
-      if (Math.abs(x - p.x) <= width / 2 && Math.abs(z - p.z) <= depth / 2) y = Math.max(y, p.y + height / 2);
+      const s = slabOf(f);
+      if (x < s.minX || x > s.maxX || z < s.minZ || z > s.maxZ) continue;
+      y = Math.max(y, s.surface ? s.surface.h(x - f.position.x, z - f.position.z) : s.top);
     }
     return y;
   }

@@ -271,10 +271,12 @@ aggregate — and roughly one marking in six is missing outright, which is what
 a decade without maintenance looks like. Some kerbs carry parking bays or
 double yellow lines instead of an edge line, and a few junctions are yellow
 boxes, hatched corner to corner. Set into the road are cast-iron manhole
-covers and gully grates in the gutter; on the pavement at each end of every
-zebra, a patch of buff blister paving. Every piece of it asks the ground
-under each of its corners and is only laid where they agree, so nothing
-hangs off a kerb. It costs the layout nothing: like the rest of the
+covers and gully grates in the gutter. At each end of every zebra the kerb
+is dropped to a lip over the road, the pavement ramping down to it with
+flared sides, and the ramp is laid with buff blister paving; where both
+streets at a corner are crossed, the two ramps meet in a dish and the paving
+turns the corner. Every piece of ironwork asks the ground under each of its
+corners and is only laid where they agree, so nothing hangs off a kerb. It costs the layout nothing: like the rest of the
 decorative pass it draws from its own generator, so a seed lays out exactly
 the city it did before.
 
@@ -508,7 +510,8 @@ is a 28 cm kerb above the road, and the plaza, the rubble lots and the ruins'
 courtyards are slabs of their own; you step up onto them, hostiles stand on
 them rather than in them, and a shot at the pavement stops at the pavement.
 Stepping up a kerb or a stair moves your feet at once and eases the view up
-after them, so a street crossing is not a jolt.
+after them, so a street crossing is not a jolt — and at a zebra there is no
+step at all, because the kerb is dropped and you walk up the ramp you see.
 
 ## How it is put together
 

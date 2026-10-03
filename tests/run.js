@@ -1050,6 +1050,100 @@ check('the pavement is a floor you stand on, step onto and shoot', async (page) 
   return r;
 });
 
+check('a crossing drops its kerb, and the ramp you see is the ramp you walk', async (page) => {
+  // Where a zebra crossing meets the pavement the kerb comes down to a 3 cm
+  // lip, ramping back up across the pavement and flaring back up along it.
+  // A ramp is not a box, so the pavement's collider carries its height as a
+  // function (`surface`), and its raycast copy is the ramp too. Three things
+  // have to agree: the drawn ramp and the footing, every sloped face of it;
+  // the walk across, with no 28 cm step left in it; and a shot at the ramp,
+  // which has to stop on it and not in the air where the slab used to be.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game, W = g.world;
+    const aprons = W.boxes.filter((b) => b.floor && b.surface);
+    // each dropped run along a kerb, 5 cm in from it
+    const drops = [];
+    for (const b of aprons) {
+      for (const [nx, nz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        let t0 = null;
+        for (let t = -b.hx; t <= b.hx + 0.05; t += 0.1) {
+          const lx = nx ? nx * (b.hx - 0.05) : t, lz = nz ? nz * (b.hz - 0.05) : t;
+          const low = t <= b.hx && b.surface(lx, lz, 0) < 0.1;
+          if (low && t0 === null) t0 = t;
+          if (!low && t0 !== null) {
+            const mid = (t0 + t) / 2;
+            if (t - t0 > 2) drops.push({ x: b.cx + (nx ? nx * b.hx : mid), z: b.cz + (nz ? nz * b.hz : mid), nx, nz });
+            t0 = null;
+          }
+        }
+      }
+    }
+
+    // every sloped face of the pavement, against the footing under it
+    let sloped = 0, worst = 0, worstAt = null;
+    for (const m of g.city.children) {
+      if (!m.isMesh || m.material.userData.name !== 'concrete') continue;
+      const p = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : p.count, at = (k) => (idx ? idx.getX(k) : k);
+      for (let k = 0; k < n; k += 3) {
+        const a = at(k), b = at(k + 1), c = at(k + 2);
+        const e1 = [p.getX(b) - p.getX(a), p.getY(b) - p.getY(a), p.getZ(b) - p.getZ(a)];
+        const e2 = [p.getX(c) - p.getX(a), p.getY(c) - p.getY(a), p.getZ(c) - p.getZ(a)];
+        const nx = e1[1] * e2[2] - e1[2] * e2[1], ny = e1[2] * e2[0] - e1[0] * e2[2], nz = e1[0] * e2[1] - e1[1] * e2[0];
+        const len = Math.hypot(nx, ny, nz);
+        // up-facing and not level, low, and bigger than a chip of debris
+        if (len / 2 < 0.05 || ny / len < 0.9 || ny / len > 0.999) continue;
+        const x = (p.getX(a) + p.getX(b) + p.getX(c)) / 3, y = (p.getY(a) + p.getY(b) + p.getY(c)) / 3, z = (p.getZ(a) + p.getZ(b) + p.getZ(c)) / 3;
+        if (y > 0.3) continue;
+        sloped++;
+        const gap = Math.abs(W.groundHeight(x, z, 0.001, y + 0.05) - y);
+        if (gap > worst) { worst = gap; worstAt = [+x.toFixed(2), +y.toFixed(3), +z.toFixed(2)]; }
+      }
+    }
+
+    // walk off the road, through the middle of a drop and onto the pavement
+    const d = drops[0];
+    g.startRun();
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.input.locked = true;
+    g.player.reset(d.x + d.nx * 2.5, d.z + d.nz * 2.5);
+    g.player.yaw = Math.atan2(d.nx, d.nz);
+    g.input.keys.clear(); g.input.keys.add('KeyW');
+    let feet = g.player.feetY, step = 0;
+    for (let f = 0; f < 90; f++) {
+      g.time += 1 / 60; g.step(1 / 60);
+      step = Math.max(step, Math.abs(g.player.feetY - feet)); feet = g.player.feetY;
+    }
+    g.input.keys.clear();
+
+    // and a shot straight down at the ramp, half way up it
+    const sx = d.x - d.nx * 0.7, sz = d.z - d.nz * 0.7;
+    const ramp = W.groundHeight(sx, sz, 0.001, 1);
+    const hit = new THREE.Raycaster(new THREE.Vector3(sx, 5, sz), new THREE.Vector3(0, -1, 0)).intersectObjects(W.solids, false)[0];
+    return {
+      aprons: aprons.length, drops: drops.length, sloped, worst: +worst.toFixed(4), worstAt,
+      walk: { step: +step.toFixed(3), end: +feet.toFixed(3) },
+      ramp: +ramp.toFixed(3), shot: hit ? +hit.point.y.toFixed(3) : null,
+    };
+  });
+  // Seed 1: 34 aprons dropped, 56 drops, 304 sloped faces all within 0.3 mm
+  // of the footing, a walk across stepping 0.041 m in its worst frame and a
+  // shot stopping on the ramp. With the surface left off the collider the
+  // faces stand 0.256 m clear of what holds you and the walk climbs the
+  // whole kerb in a frame; with the raycast copy left a box the shot stops
+  // at 0.28 over a ramp at 0.155.
+  expect(r.drops >= 40, `only ${r.drops} dropped kerbs across ${r.aprons} pavements`);
+  expect(r.sloped >= 100, `only ${r.sloped} sloped faces of pavement to measure`);
+  expect(r.worst < 0.01, `a face of the ramp stands ${r.worst} m off the footing, at ${JSON.stringify(r.worstAt)}`);
+  expect(r.walk.step < 0.1, `walking up a dropped kerb stepped ${r.walk.step} m in one frame`);
+  expect(Math.abs(r.walk.end - 0.28) < 0.01, `the walk over a dropped kerb ended at ${r.walk.end}, not on the pavement`);
+  expect(r.ramp > 0.05 && r.ramp < 0.25, `half way up the ramp the footing reads ${r.ramp}`);
+  expect(r.shot !== null && Math.abs(r.shot - r.ramp) < 0.01, `a shot at the ramp at ${r.ramp} m stopped at ${r.shot}`);
+  return r;
+});
+
 check('long falls hurt, short drops do not', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;
@@ -2598,8 +2692,11 @@ check('what is set into the street lies flush on it, road or pavement', async (p
             const floor = g.world.groundHeight(x, z, 0.001, y);
             const gap = y - floor;
             worst = Math.max(worst, gap < 0 ? 1 : gap);
-            // paving belongs on a pavement, everything else on the road
-            if ((name === 'tactile') !== (floor > 0.2)) wrongSurface++;
+            // paving belongs on a pavement, everything else on the road. The
+            // pavement is the slab's footprint rather than a height, because
+            // the paving lies on the dropped kerb, down to 3 cm off the road.
+            const paved = g.world.boxes.some((b) => b.floor && x > b.minX && x < b.maxX && z > b.minZ && z < b.maxZ);
+            if ((name === 'tactile') !== paved) wrongSurface++;
           }
         }
       }
