@@ -872,6 +872,35 @@ These each cost real debugging time. Changing them needs a reason.
   `a hostile follows you onto a car roof, and stays up there with you` puts
   the player on eight decks on seed 1: 8 of 8 up within 1.3 s and still up;
   0 of 8 with the climb taken out and 4 of 8 still up without the guard.
+- **A hostile runs dry, and a reload is a window.** Every ranged archetype
+  carries a magazine (`mag`) and a reload time (`reload`): a raider 30 and
+  2.2 s, a breaker 6 and 2.6 s fed a shell at a time, a marksman 5 and
+  2.4 s, a juggernaut's drum 60 and 3.2 s. When it empties, nothing fires
+  for the reload, the marksman's laser stays off, and the stages are heard
+  where they happen (`audio.reload` takes a place now, like every other
+  sound from somewhere). The pose is the rig's, as every pose is: the gun
+  dips and cants, and the support hand's IK target walks a path keyed to
+  the reload's progress (`_reloadHand`) — handguard, magazine (`hold.mag`,
+  a point on each weapon), down, a pouch on the hip, back — so nothing
+  about the arm is animated directly. The pouch sits on the hip and not on
+  the belt buckle because the first one was 2 cm from the magazine and the
+  trip was invisible. Cover is decided once, when the reload starts, by
+  asking two lines of sight from the target: if a standing chest is seen
+  and a crouched one is not, it kneels (`CROUCH`: hips down 0.36 m, one
+  foot planted, the other knee down, worked out from the 0.43 m thigh and
+  shin) and stops dead for the duration, and looks from its lowered eyes,
+  so it sees what its body can. In the ring of gunfire past the alert
+  radius (`alertNearby`, out to twice it) an unalerted hostile `hear`s the
+  shot and turns its head toward it for 2.5 s, clamped at a neck's turn
+  — a tell, not an alert. None of it draws on `Math.random`, though the
+  pauses it puts in the fire move every later runtime draw, which is the
+  ninth testing trap's noise. `a hostile reloads behind cover, and turns its
+  head to a far-off shot` measures the gap in the fire (0.17 s with the
+  hold taken out, against the 2.2 s reload), the fist at the magazine
+  (0.139 m off it with the hand left on the handguard), the kneel (a head
+  0.04 m lower with the body not lowered), and a head held 60 degrees off
+  a shot coming round to 0.99 (0.5 with the ring not heard or the neck not
+  turned).
 - **A sound from somewhere is placed there, and only its direction is the
   panner's.** Every sound was mono. Now anything that happens at a point —
   a hostile's shot (at its muzzle), an impact, a hit, a death, a blast, a
@@ -1247,6 +1276,17 @@ hit. Under software rendering it changes no frame time either, for the
 reason the Performance section gives: there calls are cheap and pixels are
 not. The machine this is for is a real GPU with a weak driver, where a
 call is CPU time the frame waits on.
+
+The reload pass is the nineteenth, and it was item 2 of the list, the
+poses the rig made possible: a reload visible from across a street, a
+crouch behind cover and a head turned toward a sound. Each turned out to
+want a reason to exist, because a pose with nothing driving it is a
+puppet. So a reload is real — a hostile's fire stops while it does it,
+which is the window it reads as — the crouch is what it does with cover
+during one, and the head turn is what gunfire does in the ring past the
+alert radius. The invariant above has all of it. The fire escape near a
+perch, item 4 of the same list, was closed in the same session; see the
+perch invariant.
 
 The guns-and-vehicles pass is the sixteenth, asked for in one line: work
 on the vehicle and gun models. Rendered before touching anything, both were
@@ -2211,20 +2251,13 @@ Suggested next work, in the order I would do it:
 1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
    clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
    beats holding the plaza is a play question, not a code one.
-2. **Finish what the rig made possible.** Hostiles now have knees, elbows,
-   a waist, a neck and a weapon their hands follow, so the rest is poses,
-   not plumbing: a reload visible from across the street (drop the
-   magazine's hold point and let the left hand follow it), a crouch behind
-   cover, a hip-fire spray from a breaker, a turn of the head toward a
-   sound. Each is a weapon pose plus maybe a waist angle; the arms come
-   free.
-3. **Drop the kerbs at the crossings.** The street pass did everything on
+2. **Drop the kerbs at the crossings.** The street pass did everything on
    the ground but this, because a dropped kerb is a ramp in the pavement's
    floor: `registerFloors` would register a sloped or stepped apron corner,
    every crossing's footing moves, and the layout check's fingerprints have
    to be re-measured once. The tactile paving is already where the drops
    would go.
-4. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
+3. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
    the ruins their own copies that `discard` the opening instead would make
