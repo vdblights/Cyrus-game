@@ -1512,6 +1512,27 @@ export const CITY_PAINT = [
       m.yellowMat.color.set(0xd6a93a);
     },
   },
+  {
+    label: 'Hanging the fire escapes',
+    weight: 1,
+    run(m) {
+      // the frame, rails, stringers and brackets: the painted metal's maps
+      // under the black a fire escape is painted, gone to rust underneath
+      m.ironMat = m.metalMat.clone();
+      m.ironMat.color.set(0x34322f);
+      // grating and baluster infill, cut out of their own textures
+      const cut = (tex, key) => {
+        const surface = TEX.surfaceFrom(tex, { dark: 1, lite: 0.4, metalDark: 0.3, metalLite: 0.8 }, key);
+        return new THREE.MeshStandardMaterial({
+          map: tex, alphaTest: 0.5, normalMap: TEX.normalFrom(tex, 1.4, key, 1),
+          normalScale: new THREE.Vector2(0.6, 0.6), roughnessMap: surface, metalnessMap: surface,
+          roughness: 1, metalness: 1, envMapIntensity: 0.8, vertexColors: true,
+        });
+      };
+      m.gratingMat = cut(TEX.grating(), 'grating');
+      m.railMat = cut(TEX.railing(), 'railing');
+    },
+  },
 ];
 
 /** Every step of `CITY_PAINT` at once, for a caller with nothing to show. */
@@ -1542,6 +1563,9 @@ function labelMaterials(m) {
   label(m.coverMat, 'cover', TILE.cover);
   label(m.grateMat, 'grate', TILE.grate);
   label(m.tactileMat, 'tactile', TILE.tactile);
+  label(m.ironMat, 'iron', TILE.metal);
+  label(m.gratingMat, 'grating', TILE.grating);
+  label(m.railMat, 'railing', TILE.railing);
   label(m.burntMat, 'burnt', TILE.metal);
   label(m.tireMat, 'tire', TILE.rubber);
   // cards and water, not surfaces: no tile, so the density check skips them
@@ -1567,7 +1591,7 @@ export function buildCity(scene, painted = null) {
   const mats = painted || paintCity();
   labelMaterials(mats);
   const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
-    asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
+    asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, ironMat, gratingMat, railMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
@@ -2406,13 +2430,26 @@ export function buildCity(scene, painted = null) {
   /**
    * A fire escape down one street face.
    *
-   * The strongest thing available against a flat wall: a stack of platforms
+   * The strongest thing available against a flat wall: a stack of landings
    * and stairs hanging a metre off it, casting a ladder of shadow down the
-   * whole elevation. Its lowest platform sits above head height, which is not
+   * whole elevation. Its lowest landing sits above head height, which is not
    * an aesthetic choice — decoration is registered in neither `world.boxes`
    * nor `world.solids`, so anything low enough to walk into would be
    * something you walk *through*, and anything at chest height would be
    * something bullets ignore.
+   *
+   * It used to be a slab, a bar and a tilted plank, which read from the far
+   * side of a street and fell apart up close. It is built the way one is:
+   * landings of open bar grating in an angle-iron frame, carried on bearers
+   * and diagonal braces back to the wall; railings of posts, a top rail, a
+   * toe rail and baluster infill; a stair between each pair of landings on
+   * two stringers with a tread at every step, coming up through a hatch in
+   * the landing above, every flight climbing the same way; and a drop ladder
+   * hung off the lowest landing. It stands 0.3 m off the face, so it clears
+   * the pilasters (0.24 m proud) it used to run straight through. The
+   * grating and the infill are cut out of their own textures (see
+   * `keepCoverage` in `textures.js`), so you see through a landing to the
+   * one above.
    */
   function fireEscape(gr, x, z, bw, bd, h, metal, cx, cz) {
     decor(() => {
@@ -2421,44 +2458,99 @@ export function buildCity(scene, painted = null) {
 
       const onX = r(81) < 0.5;                   // which elevation it hangs on
       const side = outward(onX ? x - cx : z - cz, r(82));
-      const out = 1.15;
-      const wide = 2.8;
       const faceOff = (onX ? bw : bd) / 2;
       const levels = Math.min(5, Math.floor((h - 5.5) / STOREY));
       if (levels < 2) return;
 
-      // (along, outward) in the face's own frame, mapped to world at the end
-      const place = (mesh, along, outward, y) => {
-        mesh.position.set(
-          onX ? x + side * (faceOff + outward) : x + along,
-          y,
-          onX ? z + along : z + side * (faceOff + outward));
-        mesh.castShadow = true;
-        mesh.userData.escape = `${x},${z}`;           // one fire escape, for taking down whole
-        gr.add(mesh);
-      };
-      const slab = (w, d) => boxGeo(onX ? d : w, 0.12, onX ? w : d, TILE.metal);
-      const bar = (w, d) => boxGeo(onX ? d : w, 0.09, onX ? w : d, TILE.metal);
+      const W = 2.8;            // along the wall
+      const D = 1.15;           // the landing's depth
+      const GAP = 0.3;          // off the face, clear of a pilaster
+      const LANE = 0.58;        // the stair's width, on the outer side of the deck
+      const OUT = GAP + D;      // the landing's outer edge, from the face
+      const tag = `${x},${z}`;  // one fire escape, for taking down whole
+      const along0 = (r(83) - 0.5) * ((onX ? bd : bw) - W - 1);
 
-      const along0 = (r(83) - 0.5) * ((onX ? bd : bw) - wide - 1);
+      // Everything is laid in the face's frame — `a` along the wall, `o` out
+      // from its face, `y` up — and mapped to the world at the last moment.
+      const put = (geo, mat, a, o, y, shadow = true) => {
+        const m = new THREE.Mesh(geo, mat);
+        m.position.set(
+          onX ? x + side * (faceOff + o) : x + along0 + a,
+          y,
+          onX ? z + along0 + a : z + side * (faceOff + o));
+        m.castShadow = shadow;
+        m.userData.escape = tag;
+        gr.add(m);
+        return m;
+      };
+      const box = (la, ly, lo, tile = TILE.metal) => boxGeo(onX ? lo : la, ly, onX ? la : lo, tile);
+      // turn a piece built along `a` so it climbs toward +a, or one built
+      // along `o` so it climbs away from the wall
+      const climbAlong = (m, t) => { if (onX) m.rotation.x = -t; else m.rotation.z = t; return m; };
+      const climbOut = (m, t) => { if (onX) m.rotation.z = side * t; else m.rotation.x = -side * t; return m; };
+
+      const L = W - 0.3, H = STOREY;            // a flight's run and rise
+      const aFoot = -L / 2, aHead = L / 2;     // where a flight starts and lands
+      const hatch = L * (2.0 / H);             // the stretch of it under head height
+      const laneIn = OUT - LANE, laneMid = OUT - LANE / 2;
+
       for (let k = 0; k < levels; k++) {
         const y = 4.6 + k * STOREY;
-        place(new THREE.Mesh(slab(wide, out), metal), along0, out / 2, y);
-        place(new THREE.Mesh(bar(wide, 0.09), metal), along0, out - 0.05, y + 0.95);
-        for (const end of [-1, 1]) {
-          place(new THREE.Mesh(boxGeo(0.08, 1.0, 0.08, TILE.metal), metal),
-            along0 + end * wide / 2, out - 0.05, y + 0.5);
+
+        // ---- the deck: grating, with a hatch where the flight below comes up
+        const deck = (a0, a1, o0, o1) => put(box(a1 - a0, 0.03, o1 - o0, TILE.grating), gratingMat,
+          (a0 + a1) / 2, (o0 + o1) / 2, y - 0.015, false);
+        deck(-W / 2, W / 2, GAP, laneIn);
+        if (k === 0) deck(-W / 2, W / 2, laneIn, OUT);
+        else {
+          deck(-W / 2, aHead - hatch, laneIn, OUT);
+          deck(aHead, W / 2, laneIn, OUT);
         }
-        // the stair run up to the next platform, as one raked slab
+        // its frame of angle iron
+        for (const o of [GAP + 0.025, OUT - 0.025]) put(box(W, 0.06, 0.05), ironMat, 0, o, y - 0.03);
+        for (const a of [-W / 2 + 0.025, W / 2 - 0.025]) put(box(0.05, 0.06, D), ironMat, a, GAP + D / 2, y - 0.03);
+        // carried on a bearer at each end back to the wall, braced from below
+        for (const a of [-W / 2 + 0.05, W / 2 - 0.05]) {
+          put(box(0.06, 0.08, OUT), ironMat, a, OUT / 2, y - 0.1);
+          const rise = 0.85, run = OUT - 0.12;
+          climbOut(put(box(0.05, 0.05, Math.hypot(rise, run)), ironMat, a, 0.06 + run / 2, y - 0.14 - rise / 2), Math.atan2(rise, run));
+        }
+
+        // ---- railings: outer side and both ends, the wall side left open
+        for (const [a, o] of [[-W / 2, OUT], [0, OUT], [W / 2, OUT], [-W / 2, GAP + 0.04], [W / 2, GAP + 0.04]]) {
+          put(box(0.045, 1.0, 0.045), ironMat, a, o, y + 0.5);
+        }
+        for (const ry of [y + 0.98, y + 0.1]) {
+          put(box(W, 0.04, 0.04), ironMat, 0, OUT, ry);
+          for (const a of [-W / 2, W / 2]) put(box(0.04, 0.04, D), ironMat, a, GAP + D / 2, ry);
+        }
+        put(box(W, 0.86, 0.012, TILE.railing), railMat, 0, OUT, y + 0.54, false);
+        for (const a of [-W / 2, W / 2]) put(box(0.012, 0.86, D, TILE.railing), railMat, a, GAP + D / 2, y + 0.54, false);
+
+        // ---- the flight up to the next landing, in the outer lane
         if (k < levels - 1) {
-          const run = new THREE.Mesh(slab(1.9, out * 0.7), metal);
-          place(run, along0 + (k % 2 ? -1 : 1) * (wide / 2 + 0.7), out * 0.55, y + STOREY / 2);
-          // rake it toward the platform above, alternating the way it climbs
-          const tilt = Math.atan2(STOREY - 0.6, 1.9);
-          if (onX) run.rotation.x = (k % 2 ? -1 : 1) * tilt;
-          else run.rotation.z = (k % 2 ? 1 : -1) * tilt;
+          const slope = Math.atan2(H, L), len = Math.hypot(L, H);
+          const steps = Math.round(H / 0.21);
+          for (let i = 1; i < steps; i++) {
+            put(box(L / steps + 0.02, 0.03, LANE - 0.07, TILE.grating), gratingMat,
+              aFoot + (i / steps) * L, laneMid, y + (i / steps) * H - 0.015, false);
+          }
+          for (const o of [laneIn + 0.015, OUT - 0.015]) {
+            climbAlong(put(box(len + 0.1, 0.2, 0.025), ironMat, 0, o, y + H / 2 - 0.1), slope);
+            // and a handrail on posts above each stringer
+            climbAlong(put(box(len, 0.04, 0.04), ironMat, 0, o, y + H / 2 + 0.85), slope);
+            for (const f of [0.2, 0.8]) {
+              put(box(0.035, 0.9, 0.035), ironMat, aFoot + f * L, o, y + f * H + 0.4);
+            }
+          }
         }
       }
+
+      // ---- a drop ladder hung off the lowest landing, outside its rail;
+      // its foot stays above a head on a car roof
+      const ya = 4.6, aL = aHead - 0.25, oL = OUT + 0.08;
+      for (const da of [-0.22, 0.22]) put(box(0.035, 2.2, 0.05), ironMat, aL + da, oL, ya - 0.1);
+      for (let yy = ya - 1.05; yy < ya + 0.95; yy += 0.28) put(box(0.44, 0.03, 0.03), ironMat, aL, oL, yy, false);
     });
   }
 

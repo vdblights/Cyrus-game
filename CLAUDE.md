@@ -289,7 +289,8 @@ These each cost real debugging time. Changing them needs a reason.
   because decoration is in neither list, it is something you walk through and
   something bullets ignore — so it has to live where you can do neither, on a
   wall, on a roof, or above head height. That is why the fire escape's lowest
-  platform is at 4.6 m and why there are no bollards. The road markings are
+  platform is at 4.6 m (its drop ladder's foot at 3.4, over a head on a car
+  roof) and why there are no bollards. The road markings are
   the fourth place and the one that is easy to miss: flat on a surface you
   already walk over and bullets already pass through to. A marking 2 cm off
   the ground is walked over because the ground under it is what the footing
@@ -1276,6 +1277,29 @@ hit. Under software rendering it changes no frame time either, for the
 reason the Performance section gives: there calls are cheap and pixels are
 not. The machine this is for is a real GPU with a weak driver, where a
 call is CPU time the frame waits on.
+
+The fire escapes were rebuilt after the reload pass, from one line of
+play: they look fine from a distance, but there is no detail and they do
+not look right close up. Rendered close before touching them, a landing was
+a solid slab, its railing one bar on two posts, its stair a plank tilted
+off the end into nothing, nothing held any of it to the wall, and every
+landing ran through a pilaster. `fireEscape` in `city.js` builds one the
+way one is built now — grated landings in an angle-iron frame on bearers
+and braces, railings of posts, rails and baluster infill, stairs of
+stringers and treads up through a hatch in the landing above, every flight
+climbing the same way, a drop ladder off the lowest — 0.3 m off the face,
+clear of the pilasters. Two things are worth keeping. **A cut-out texture
+needs mipmaps that keep its coverage** (`keepCoverage` in `textures.js`):
+averaged the ordinary way, a grating that is a third iron at full size
+keeps none of it two levels down, so the alpha test discards every texel
+and a fire escape vanishes from exactly the distance it used to look
+right from; each level's alpha is rescaled so the same fraction of it
+stands over the cut-off. And it is decoration, so it cost the layout
+nothing; seed 1's city gained 12k triangles (352k to 364k) in three new
+materials. `a fire escape is open grating near and far, and hangs above
+every head` asks every mip level for most of the full size's coverage (0
+with ordinary mips) and the lowest piece to clear a head on a car roof
+(2.4 m with the ladder dropped a metre).
 
 The reload pass is the nineteenth, and it was item 2 of the list, the
 poses the rig made possible: a reload visible from across a street, a
