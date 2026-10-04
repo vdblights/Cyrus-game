@@ -78,6 +78,26 @@ export async function installHelpers(page) {
      * `window.__game` exists, which is the first stage of boot, to the menu.
      * Boot that never yields draws none of them.
      */
+    /**
+     * Render an offline audio graph, and do not wait for ever doing it.
+     *
+     * `make` builds a fresh `OfflineAudioContext` with the sound already
+     * scheduled in it. On CI's headless Chrome a context's
+     * `startRendering()` has now and then never resolved, and a check
+     * awaiting it hung a whole shard until the job's 25-minute limit
+     * cancelled it with nothing in the log. So each try has a deadline, a
+     * stalled try is abandoned for a fresh context, and if every try
+     * stalls the check fails saying so rather than sitting there.
+     */
+    window.__offline = async (make, ms = 20000, tries = 3) => {
+      for (let i = 0; i < tries; i++) {
+        const ctx = make();
+        const buf = await Promise.race([ctx.startRendering(), new Promise((done) => setTimeout(() => done(null), ms))]);
+        if (buf) return buf;
+      }
+      throw new Error(`an offline audio render never finished: ${tries} tries of ${ms / 1000} s`);
+    };
+
     window.__bootFrames = 0;
     const count = () => {
       const g = window.__game;
