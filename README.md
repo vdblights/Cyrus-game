@@ -615,11 +615,16 @@ A few notes on the implementation:
   laid along the frame, sleeved forearms running off the bottom of the
   frame. Each finger is an arc round the grip's cross-section, so one
   function closes a hand on a pistol grip, a handguard, a vertical foregrip
-  and a pump; the sleeves have a hem and bunch in folds. Each gun carries the
+  and a pump, and every part of the hand is swept rather than boxed: fingers
+  that taper and stand up at each joint with the glove creased past it, no
+  two the same length, a thumb that swells into its root, the back of the
+  hand arched over a moulded knuckle guard, a strapped cuff, a watch on the
+  support wrist, and a sleeve that widens toward the elbow and bunches
+  where it meets the glove. Each gun carries the
   parts that make it that gun — a curved trigger in
   a real guard, ejection port, magwell, charging handle and forward assist,
-  slide serrations, a pump's grooves — and is merged by material into six to
-  nine meshes, fewer than it was before it had hands.
+  slide serrations, a pump's grooves — and is merged by material into eight
+  to eleven meshes.
 - **The city is drawn as a handful of meshes.** It is generated as some
   fifteen hundred boxes, then merged by material once it is finished — 567
   draw calls become 39, and the shadow pass falls with them. The meshes it

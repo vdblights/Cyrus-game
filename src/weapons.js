@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import * as TEX from './textures.js';
 import { TILE } from './textures.js';
-import { chamferGeo, mergeIntoOne, sideGeo, latheGeo } from './shapes.js';
+import { chamferGeo, sweepGeo, mergeIntoOne, sideGeo, latheGeo } from './shapes.js';
 import { audio } from './audio.js';
 
 /**
@@ -70,7 +70,17 @@ function mats() {
     ...clothBits, color: 0x3d3a36, roughness: 1, metalness: 0, envMapIntensity: 0.5,
   });
   MATS.SLEEVE = new THREE.MeshStandardMaterial({
-    ...clothBits, color: 0x5a5b4c, roughness: 1, metalness: 0, envMapIntensity: 0.45,
+    ...clothBits, color: 0x46493b, roughness: 1, metalness: 0, envMapIntensity: 0.45,
+  });
+  // The moulded parts of a tactical glove — the knuckle guard and the cuff's
+  // strap — in the stippled polymer of the gun, near black, so the hand reads
+  // as cloth over a hard shell rather than one dyed sock.
+  MATS.PAD = new THREE.MeshStandardMaterial({
+    ...polyBits, color: 0x3a3b3e, roughness: 1, metalness: 0, envMapIntensity: 0.5,
+  });
+  // a watch's crystal over its dial: dark, smooth and a little reflective
+  MATS.DIAL = new THREE.MeshStandardMaterial({
+    ...metalBits, color: 0x6f7e86, roughness: 0.35, metalness: 0.6, envMapIntensity: 1.2,
   });
   return MATS;
 }
@@ -78,10 +88,13 @@ function mats() {
 // The builders read these by name, so each one resolves through `mats()` at
 // the moment a model is built rather than at import.
 const POLY = 'POLY', METAL = 'METAL', DARK = 'DARK', ACCENT = 'ACCENT', GLOW = 'GLOW';
-const GLOVE = 'GLOVE', SLEEVE = 'SLEEVE';
+const GLOVE = 'GLOVE', SLEEVE = 'SLEEVE', PAD = 'PAD', DIAL = 'DIAL';
 
 /** The tile a material's parts unwrap at — see `TILE`. */
-const tileOf = (mat) => (mat === POLY ? TILE.gunPoly : mat === GLOVE ? TILE.glove
+// The glove's moulded pad declares the glove's tile, not the gun's: it is
+// part of the hand, and a check that measures the gun leaves the hand out by
+// the tile it declares.
+const tileOf = (mat) => (mat === POLY ? TILE.gunPoly : mat === GLOVE || mat === PAD || mat === DIAL ? TILE.glove
   : mat === SLEEVE ? TILE.kit : TILE.gunMetal);
 
 /**
@@ -229,61 +242,38 @@ function optic(g, z) {
 
 const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
 
-/** A tube through `points`, rounded at both ends — a finger, a thumb. */
-function digit(points, r, mat = GLOVE) {
-  const curve = new THREE.CatmullRomCurve3(points);
-  const geo = new THREE.TubeGeometry(curve, Math.max(6, points.length * 4), r, 10, false);
-  const tile = tileOf(mat), len = curve.getLength();
-  const uv = geo.attributes.uv;
-  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len / tile, uv.getY(i) * (2 * Math.PI * r) / tile);
-  uv.needsUpdate = true;
-  const out = [new THREE.Mesh(geo, mats()[mat])];
-  out[0].userData.tile = tile;
-  for (const p of [points[0], points[points.length - 1]]) {
-    const cap = new THREE.SphereGeometry(r, 10, 8);
-    const cuv = cap.attributes.uv;
-    for (let i = 0; i < cuv.count; i++) cuv.setXY(i, cuv.getX(i) * (2 * Math.PI * r) / tile, cuv.getY(i) * (Math.PI * r) / tile);
-    cuv.needsUpdate = true;
-    const m = new THREE.Mesh(cap, mats()[mat]);
-    m.position.copy(p);
-    m.userData.tile = tile;
-    out.push(m);
-  }
-  return out;
-}
-
-/** A tapered limb from `a` (radius ra) to `b` (radius rb): wrist, forearm. */
-function limb(a, b, ra, rb, mat) {
-  const len = a.distanceTo(b);
-  const cloth = mat === SLEEVE;
-  const geo = new THREE.CylinderGeometry(rb, ra, len, cloth ? 20 : 14, cloth ? 14 : 1, true);
-  const tile = tileOf(mat), uv = geo.attributes.uv;
-  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (Math.PI * (ra + rb)) / tile, uv.getY(i) * len / tile);
-  uv.needsUpdate = true;
-  if (cloth) {
-    // A sleeve is not a pipe: it has a hem at the wrist, and it bunches in
-    // folds that run round and across the forearm. Each vertex is pushed out
-    // by a hem band and two crossing waves of fold — the same shape on every
-    // weapon, so it costs nothing to look at twice.
-    const p = geo.attributes.position;
-    for (let i = 0; i < p.count; i++) {
-      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-      const t = y / len + 0.5, th = Math.atan2(z, x);
-      const hem = t < 0.07 ? 0.09 : t < 0.09 ? 0.03 : 0;
-      const fold = 0.05 * Math.sin(t * len * 52 + 1.6 * Math.sin(th * 2 + 0.5)) * (0.35 + 0.65 * t)
-        + 0.03 * Math.sin(th * 3 + t * 8);
-      const k = 1 + hem + fold;
-      p.setXYZ(i, x * k, y, z * k);
-    }
-    geo.computeVertexNormals();
-  }
-  // open-ended, so it is seen from inside where it leaves the frame
-  const m = new THREE.Mesh(geo, sided(mat));
-  m.position.copy(a).add(b).multiplyScalar(0.5);
-  m.quaternion.setFromUnitVectors(v3(0, 1, 0), b.clone().sub(a).normalize());
+/** One piece of a hand, swept along a path (see `sweepGeo`), in `mat`. */
+function piece(points, size, mat, opts) {
+  const tile = tileOf(mat);
+  const m = new THREE.Mesh(sweepGeo(points, size, tile, opts), opts.open ? sided(mat) : mats()[mat]);
   m.userData.tile = tile;
   return m;
 }
+
+/**
+ * A finger, or a thumb: wider than it is deep, tapering to the tip, standing
+ * up at each knuckle and creased just past it where the glove folds. `side`
+ * is the way across the finger's back — along the line its neighbours lie
+ * on — so the flat of it faces the way a finger's does.
+ */
+function finger(points, r, side, { joints = [0.42, 0.74], taper = 0.8, root = 1, kind = 'finger' } = {}) {
+  const width = (t) => r * (1 + (root - 1) * Math.max(0, 1 - t / 0.35)) * (1 - (1 - taper) * t);
+  // what it is and where it runs, for the check that asks whether it holds on
+  DIGITS.push({ kind, hand: HANDS, r, depth: r * 0.88, taper, path: points.map((p) => [p.x, p.y, p.z]) });
+  return piece(points, (t) => [width(t) * 1.1, width(t) * 0.88], GLOVE, {
+    side, around: 12, step: 0.004,
+    bump: (t) => {
+      let k = 1;
+      for (const j of joints) {
+        k += 0.09 * Math.exp(-(((t - j) / 0.05) ** 2));          // the knuckle
+        k -= 0.05 * Math.exp(-(((t - j - 0.075) / 0.03) ** 2));  // the fold past it
+      }
+      return k;
+    },
+  });
+}
+
+let DIGITS = [], HANDS = 0;
 
 const SIDED = {};
 function sided(mat) {
@@ -295,59 +285,136 @@ function sided(mat) {
  * A gloved hand closed around a grip, and the arm behind it.
  *
  * The grip is described by a frame rather than by the gun: `c` is where the
- * hand sits, `A` the axis the fingers stack along, `U` the side the palm is
- * on, `F` the way the fingers go first as they leave it, and `hu`/`hf` the
- * grip's half-thickness along `U` and `F`. Each finger is an arc around that
- * cross-section — the same four lines of arithmetic close a hand on a pistol
- * grip, a handguard, a vertical grip or a pump — and the arm runs from the
- * heel of the hand back to `elbow`, which is chosen off the bottom of the
- * frame so the sleeve leaves the picture rather than ending in it.
+ * hand sits, `A` the axis the fingers stack along, `U` the side the back of
+ * the hand is on, `F` the way the fingers go first as they leave it, and
+ * `hu`/`hf` the grip's half-thickness along `U` and `F`. Each finger is an
+ * arc around that cross-section — the same four lines of arithmetic close a
+ * hand on a pistol grip, a handguard, a vertical grip or a pump — and the arm
+ * runs from the heel of the hand back to `elbow`, which is chosen off the
+ * bottom of the frame so the sleeve leaves the picture rather than ending in
+ * it.
+ *
+ * Every part is swept along a path rather than boxed: fingers with knuckles
+ * and the fold of the glove past each one, a thumb that grows into the
+ * mound at its root, a back of the hand that narrows from the knuckles to
+ * the wrist and arches over them, a moulded knuckle guard, a cuff with its
+ * strap, and a forearm in a sleeve that bunches where it meets the glove.
+ * `watch` straps one to the wrist, on the support hand.
  *
  * `index` replaces the first finger with a path of its own, for a trigger
- * finger laid along the frame; `thumb` is a path likewise.
+ * finger laid along the frame; `thumb` is a path likewise, root first.
  */
-function hand(g, { c, A, U, F, hu, hf, stack, sweep = 3.6, r = 0.0088, index = null, thumb = null, elbow }) {
+function hand(g, { c, A, U, F, hu, hf, stack, sweep = 3.6, r = 0.0088, index = null, thumb = null, elbow, watch = false }) {
+  HANDS++;
   A = A.clone().normalize(); U = U.clone().normalize(); F = F.clone().normalize();
   const at = (a, th, out = 0) => c.clone()
     .addScaledVector(A, a)
     .addScaledVector(U, Math.cos(th) * (hu + r + out))
     .addScaledVector(F, Math.sin(th) * (hf + r + out));
+  // Fingers round the grip. No two are the same: the middle is the longest
+  // and stoutest, the ring a little less, the little finger shorter and finer
+  // than either — four equal tubes in a row read as a bunch of sausages.
+  const SIZES = [[0.97, 1.0], [1.0, 1.04], [0.95, 0.96], [0.84, 0.84]];   // [reach, girth]
   const fingers = index ? stack.slice(1) : stack;
+  const first = index ? 1 : 0;
   for (const [k, a] of fingers.entries()) {
-    const reach = sweep * (k === fingers.length - 1 ? 0.88 : 1);   // the little finger is short
+    const [long, girth] = SIZES[Math.min(3, k + first)];
+    const reach = sweep * long;
     const pts = [];
-    for (let i = 0; i <= 7; i++) pts.push(at(a, 0.32 + (reach - 0.32) * (i / 7), i === 0 ? r * 0.6 : 0));
-    for (const m of digit(pts, r * (k === fingers.length - 1 ? 0.88 : 1))) g.add(m);
+    for (let i = 0; i <= 8; i++) pts.push(at(a, 0.1 + (reach - 0.1) * (i / 8), i === 0 ? r * 0.9 : 0));
+    g.add(finger(pts, r * girth, A));
   }
-  if (index) for (const m of digit(index, r)) g.add(m);
-  if (thumb) for (const m of digit(thumb, r * 1.12)) g.add(m);
+  if (index) g.add(finger(index, r, A, { kind: 'index' }));
+  // the thumb, swelling into the mound at its root
+  if (thumb) g.add(finger(thumb, r * 1.08, A, { joints: [0.55], taper: 0.78, root: 1.45, kind: 'thumb' }));
 
-  // the back of the hand: from the knuckle line back to the wrist, lying on
-  // the palm side of the grip
+  // The back of the hand: from the knuckles to the wrist, on the back side of
+  // the grip, narrowing as it goes and arched across the knuckles.
   const a0 = stack[0], a1 = stack[stack.length - 1], mid = (a0 + a1) / 2;
-  const span = Math.abs(a1 - a0) + r * 3.2, length = 0.085, thick = 0.026;
-  const back = new THREE.Mesh(chamferGeo(thick, span, length, 0.0105, TILE.glove), mats()[GLOVE]);
-  back.userData.tile = TILE.glove;
-  const centre = c.clone().addScaledVector(A, mid).addScaledVector(U, hu + thick / 2 + 0.002)
-    .addScaledVector(F, hf * 0.55 - length / 2);
-  back.position.copy(centre);
-  back.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(U, A, F.clone().negate()));
-  g.add(back);
-  // the knuckles, a ridge across the front of it where the fingers leave
-  const knuckle = (a) => c.clone().addScaledVector(A, a).addScaledVector(U, hu + thick * 0.62)
-    .addScaledVector(F, hf * 0.55 - 0.004);
-  const kn = [];
-  for (let k = 0; k <= 4; k++) kn.push(knuckle(a0 + (a1 - a0) * (k / 4)));
-  for (const m of digit(kn, 0.0098)) g.add(m);
+  const span = Math.abs(a1 - a0) + r * 2.6;
+  const knuckles = c.clone().addScaledVector(A, mid).addScaledVector(U, hu + 0.009).addScaledVector(F, hf * 0.62);
+  const wrist = knuckles.clone().addScaledVector(F, -0.088).addScaledVector(U, 0.004);
+  const arch = knuckles.clone().lerp(wrist, 0.5).addScaledVector(U, 0.004);
+  g.add(piece([knuckles, arch, wrist], (t) => [span / 2 * (1 - 0.32 * t), 0.0115 + 0.006 * t], GLOVE, {
+    side: A, around: 18, step: 0.006,
+    // the knuckles stand up across the front of it, one to a finger
+    bump: (t, th) => 1 + 0.16 * Math.exp(-((t / 0.12) ** 2)) * Math.max(0, Math.sin(th)) ** 2
+      * (0.6 + 0.4 * Math.abs(Math.cos(th * 4))),
+  }));
+  // the knuckle guard: a moulded plate over them, ridged one to a finger
+  const guard = [];
+  for (let k = 0; k <= 4; k++) {
+    guard.push(c.clone().addScaledVector(A, a0 + (a1 - a0) * (k / 4) - (k === 0 ? r : k === 4 ? -r : 0))
+      .addScaledVector(U, hu + 0.0205).addScaledVector(F, hf * 0.62 - 0.012));
+  }
+  g.add(piece(guard, () => [0.0085, 0.0034], PAD, {
+    side: F, around: 10, step: 0.003,
+    bump: (t) => 1 + 0.35 * Math.abs(Math.sin(t * Math.PI * 4)),
+  }));
 
-  // wrist and arm, from the heel of the hand to the elbow
-  const heel = centre.clone().addScaledVector(F, -length / 2 + 0.01);
-  const toElbow = elbow.clone().sub(heel).normalize();
-  const cuff = heel.clone().addScaledVector(toElbow, 0.07);
-  g.add(limb(heel, cuff, 0.03, 0.036, GLOVE));
-  g.add(limb(cuff.clone().addScaledVector(toElbow, -0.006), elbow, 0.041, 0.054, SLEEVE));
+  // the wrist and the glove's cuff, flaring a little toward the arm
+  const toElbow = elbow.clone().sub(wrist).normalize();
+  const cuffEnd = wrist.clone().addScaledVector(toElbow, 0.075);
+  g.add(piece([wrist.clone().addScaledVector(toElbow, -0.012), cuffEnd], (t) => [0.029 + 0.007 * t, 0.025 + 0.006 * t], GLOVE, {
+    side: A, around: 18, step: 0.006, open: [false, true],
+  }));
+  // its strap, round the cuff near the end, and the tab you pull it by
+  const strapAt = wrist.clone().addScaledVector(toElbow, 0.05);
+  g.add(piece([strapAt, strapAt.clone().addScaledVector(toElbow, 0.019)], () => [0.0352, 0.0306], PAD, {
+    side: A, around: 18, step: 0.004,
+  }));
+  const tab = new THREE.Mesh(chamferGeo(0.006, 0.026, 0.022, 0.0025, TILE.glove), mats()[PAD]);
+  tab.userData.tile = TILE.glove;
+  tab.position.copy(strapAt).addScaledVector(toElbow, 0.0095).addScaledVector(U, 0.031).addScaledVector(A, 0.012);
+  tab.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(U, A, toElbow));
+  g.add(tab);
+
+  if (watch) {
+    // A watch over the cuff, its face on the back of the wrist: a moulded
+    // case and strap in the glove's polymer, and a crystal over a dark dial.
+    // It is part of the hand, so it is built in the hand's materials and at
+    // the glove's tile — merged into the gun's steel, it was the rearmost
+    // surface of the pistol and read as its grip raking forward.
+    const at2 = wrist.clone().addScaledVector(toElbow, 0.028);
+    g.add(piece([at2, at2.clone().addScaledVector(toElbow, 0.02)], () => [0.0345, 0.030], PAD, { side: A, around: 18, step: 0.005 }));
+    const basis = new THREE.Matrix4().makeBasis(U, A, toElbow);
+    const face = new THREE.Mesh(chamferGeo(0.012, 0.04, 0.036, 0.004, TILE.glove), mats()[PAD]);
+    face.userData.tile = TILE.glove;
+    face.position.copy(at2).addScaledVector(toElbow, 0.01).addScaledVector(U, 0.031);
+    face.quaternion.setFromRotationMatrix(basis);
+    g.add(face);
+    const dial = new THREE.Mesh(chamferGeo(0.003, 0.03, 0.027, 0.0012, TILE.glove), mats()[DIAL]);
+    dial.userData.tile = TILE.glove;
+    dial.position.copy(face.position).addScaledVector(U, 0.0065);
+    dial.quaternion.copy(face.quaternion);
+    g.add(dial);
+  }
+
+  // The forearm in its sleeve, from just over the cuff to the elbow. The
+  // sleeve ends in a hem, and it bunches in folds where it is pushed up
+  // against the glove; past them it hangs in a few long ones.
+  const sleeveFrom = cuffEnd.clone().addScaledVector(toElbow, -0.018);
+  const reach = elbow.distanceTo(sleeveFrom);
+  // A forearm is narrow at the wrist and swells toward the elbow, and that
+  // taper is most of what tells an arm from a pole when it points away.
+  g.add(piece([sleeveFrom, sleeveFrom.clone().lerp(elbow, 0.5), elbow], (t) => [0.039 + 0.026 * Math.sqrt(t), 0.034 + 0.017 * Math.sqrt(t)], SLEEVE, {
+    side: A, around: 26, step: 0.008, open: [true, true],
+    // Deep enough to be seen from where the eye is: a fold a few millimetres
+    // proud of a 4 cm sleeve was lit as one smooth pipe. The bunching rings
+    // run round the arm and wander along it; the long folds run across it
+    // on a slant, the way cloth hangs off a raised forearm.
+    bump: (t, th) => {
+      const s = t * reach;
+      const hem = s < 0.012 ? 0.06 : s < 0.017 ? 0.025 : 0;
+      const bunch = Math.max(0, 1 - s / 0.15) ** 0.7;
+      const ring = Math.sin(s * 120 + 2.2 * Math.sin(th * 2 + 0.6) + 0.9 * Math.sin(th * 5 + 1.3));
+      const folds = 0.14 * bunch * (ring > 0 ? ring : ring * 0.45)
+        + 0.07 * Math.sin(th * 3 + s * 26) * (0.35 + 0.65 * t)
+        + 0.035 * Math.sin(th * 7 - s * 41);
+      return 1 + hem + Math.max(-0.06, folds);
+    },
+  }));
 }
-
 
 /**
  * The frame of a grip built by `box(w, h, d, ..., rx)`: its axis runs down
@@ -369,7 +436,7 @@ function shootingHand(g, { c, rx, hu, hf, stack, index, thumb, elbow = v3(0.11, 
 
 /** Left hand under a handguard or a pump, fingers up its far side. */
 function supportHand(g, { c, hu, hf, stack, thumb, elbow = v3(-0.30, -0.46, 0.12) }) {
-  hand(g, { c, A: v3(0, 0, -1), U: v3(0, -1, 0), F: v3(1, 0, 0), hu, hf, stack, sweep: 2.5, thumb, elbow });
+  hand(g, { c, A: v3(0, 0, -1), U: v3(0, -1, 0), F: v3(1, 0, 0), hu, hf, stack, sweep: 2.5, thumb, elbow, watch: true });
 }
 
 /* ------------------------------------------------------------------ models */
@@ -429,10 +496,10 @@ function buildPistol() {
   // the support hand closes over the shooting hand's fingers from the left
   const { A, F } = gripFrame(GRIP.rx);
   hand(g, {
-    c: v3(0, GRIP.c[1] - 0.006, GRIP.c[0]), A, U: v3(-1, 0, 0), F, hu: 0.040, hf: 0.052,
-    stack: [-0.020, 0.003, 0.026, 0.047], sweep: 3.0,
+    c: v3(0, GRIP.c[1] - 0.006, GRIP.c[0]), A, U: v3(-1, 0, 0), F, hu: 0.036, hf: 0.047,
+    stack: [-0.024, -0.004, 0.014, 0.031], sweep: 2.8,
     thumb: [v3(-0.034, -0.050, 0.060), v3(-0.033, -0.034, 0.018), v3(-0.029, -0.028, -0.028)],
-    elbow: v3(-0.26, -0.44, 0.44),
+    elbow: v3(-0.26, -0.44, 0.44), watch: true,
   });
   const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.028, -0.200); g.add(muzzle);
   return { model: g, muzzle };
@@ -496,7 +563,7 @@ function buildSMG() {
     c: v3(0, -0.078, -0.19), A: fg.A, U: v3(-1, 0, 0), F: fg.F, hu: 0.0175, hf: 0.025,
     stack: [-0.022, -0.003, 0.016, 0.033], sweep: 3.3,
     thumb: [v3(-0.024, -0.04, -0.16), v3(-0.006, -0.032, -0.19), v3(0.014, -0.036, -0.215)],
-    elbow: v3(-0.30, -0.46, 0.10),
+    elbow: v3(-0.30, -0.46, 0.10), watch: true,
   });
   const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.012, -0.302); g.add(muzzle);
   return { model: g, muzzle };
@@ -737,7 +804,9 @@ export class WeaponSystem {
     this._flashLife = 0;
 
     this.weapons = WEAPON_DEFS.map((def) => {
+      DIGITS = [];
       const { model, muzzle } = def.build();
+      model.userData.digits = DIGITS;
       consolidate(model);
       model.visible = false;
       model.traverse((o) => { o.frustumCulled = false; });

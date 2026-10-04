@@ -473,6 +473,38 @@ These each cost real debugging time. Changing them needs a reason.
   object of its own — the muzzle point, the lens, the unlit dot — is
   excluded there by kind. Every part records the tile it unwraps at in
   `userData.tile`, and the check judges each material against its own.
+  **The hand's tile is what marks it as the hand**: `every grip rakes back`
+  leaves out every mesh at the glove's tile (0.25) or the sleeve's (0.9),
+  so anything worn on the hand — the knuckle guard and cuff strap (`PAD`),
+  the watch and its dial (`DIAL`) — declares the glove's tile and has a
+  material of its own. The first watch was built in the gun's dark steel,
+  merged into the gun's own mesh, sat behind the pistol's backstrap, and
+  the check read the grip as raking forward (−0.48).
+- **A hand is swept, and every finger holds something.** `sweepGeo` in
+  `shapes.js` sweeps an elliptical section along a path with
+  parallel-transported frames, so the section never twists. Each end is a
+  dome or an open ring, `bump(t, θ)` raises a knuckle or bunches a sleeve,
+  the UVs follow the texture contract, and the winding is computed. `hand`
+  in `weapons.js` builds everything from it, on the same grip frames as
+  before, so no weapon's tuning moved:
+  - fingers are wider than they are deep, taper to the tip, stand up at each
+    joint with the glove's fold just past it, and differ in length and
+    girth (`SIZES`);
+  - a thumb swells into the mound at its root;
+  - the back of the hand narrows to the wrist and arches over the knuckles,
+    with a moulded guard across them;
+  - the cuff carries a strap and tab, and the support hand a watch;
+  - the sleeve tapers out toward the elbow and bunches against the cuff.
+  Its folds had to be about a seventh of the sleeve's radius before a
+  render showed them: at 3% the sleeve still lit as one smooth pipe.
+  Each finger is recorded as it is built (`userData.digits`, with the hand
+  it belongs to). `every finger closes on the grip it holds, or on the hand
+  under it` measures the middle of each curl against the gun's surface or a
+  finger of the *other* hand, never its own hand, because a floating hand's
+  fingers still touch each other. The first version of that measure counted
+  them and passed everything. It found the pistol's support little finger
+  resting 17 mm off anything, refitted to 8 mm, and fails at 10.5 mm with
+  the rifle's support hand slid 12 mm off its handguard.
 - **The city you see and the city you shoot are different objects.** Once
   generation finishes, `bakeStatic` merges every static mesh by material and
   puts those in the scene; the meshes they were built from leave the scene
@@ -1346,6 +1378,15 @@ hit. Under software rendering it changes no frame time either, for the
 reason the Performance section gives: there calls are cheap and pixels are
 not. The machine this is for is a real GPU with a weak driver, where a
 call is CPU time the frame waits on.
+
+The arms and hands were rebuilt after the drops, asked for in one line:
+work on the visible parts of the player. Rendered close before touching
+them, every finger was the same tube with a ball on the end, the back of
+the hand a chamfered brick with a tube for its knuckles, and the forearm a
+smooth pale pipe that was the largest thing on screen at the hip. They are
+swept now (invariant above). What it cost: each weapon from 14-17k
+triangles to 24-28k and two more meshes (the moulded parts and the dial);
+one weapon is drawn at a time, in a scene that casts no shadow.
 
 The drops were rebuilt after the fire escapes, asked for in one line:
 improve the models for the player drops. Rendered close before touching
