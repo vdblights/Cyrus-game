@@ -388,6 +388,123 @@ export function latheGeo(profile, sides, tile, { uv = null, crease = 40 } = {}) 
   return g;
 }
 
+/**
+ * A tube of elliptical section swept along a path: a finger, the back of a
+ * hand, a forearm in its sleeve. What a lathe is to a barrel this is to
+ * anything that bends.
+ *
+ * `size(t)` gives the section's semi-axes `[a, b]` a fraction `t` of the way
+ * along — `a` across the side the frame starts on (`side`, kept square to the
+ * path by parallel transport, so the section never twists), `b` across the
+ * other — and `bump(t, th)`, if given, scales the radius at angle `th` round
+ * it, which is how a knuckle stands up or a sleeve bunches. Each closed end is
+ * a dome as long as the section is wide; an open end (`open: [start, end]`)
+ * is left a ring, for a sleeve seen from inside.
+ *
+ * UVs run round the section by arc length at its mean size and along the
+ * path by distance, both over `tile`, so the texel-density checks cover it.
+ * The winding is decided by comparing a facet with the way out from the path
+ * at its corner, never written down.
+ */
+export function sweepGeo(points, size, tile, { side, bump = null, around = 14, step = 0.005, open = [false, false], dome = 5 } = {}) {
+  const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
+  const len = curve.getLength();
+  const n = Math.max(4, Math.ceil(len / step));
+  // parallel-transported frames: N stays as square to the path as `side` was
+  const frames = [];
+  let N = null;
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const P = curve.getPointAt(t), T = curve.getTangentAt(t).normalize();
+    if (!N) N = side.clone().addScaledVector(T, -side.dot(T)).normalize();
+    else {
+      const prev = frames[i - 1].T;
+      N.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(prev, T));
+      N.addScaledVector(T, -N.dot(T)).normalize();
+    }
+    frames.push({ P, T, N: N.clone(), B: new THREE.Vector3().crossVectors(T, N), t, s: t * len });
+  }
+  // the rings, with a dome on each closed end
+  const rings = [];
+  const ring = (f, k, offset, s) => {
+    const [a, b] = size(f.t);
+    rings.push({ C: f.P.clone().addScaledVector(f.T, offset), N: f.N, B: f.B, a: a * k, b: b * k, t: f.t, s });
+  };
+  const capLen = (f) => Math.min(...size(f.t)) * 0.9;
+  if (!open[0]) {
+    const f = frames[0], L = capLen(f);
+    for (let j = dome; j >= 1; j--) {
+      const ph = (j / dome) * (Math.PI / 2);
+      ring(f, Math.cos(ph), -Math.sin(ph) * L, -Math.sin(ph) * L);
+    }
+  }
+  for (const f of frames) ring(f, 1, 0, f.s);
+  if (!open[1]) {
+    const f = frames[frames.length - 1], L = capLen(f);
+    for (let j = 1; j <= dome; j++) {
+      const ph = (j / dome) * (Math.PI / 2);
+      ring(f, Math.cos(ph), Math.sin(ph) * L, len + Math.sin(ph) * L);
+    }
+  }
+  // a mean circumference, so the weave is one size the whole way along
+  const [ma, mb] = size(0.5);
+  const round = Math.PI * (3 * (ma + mb) - Math.sqrt((3 * ma + mb) * (ma + 3 * mb)));
+  const pos = [], nor = [], uv = [], out = [];
+  for (const r of rings) {
+    for (let j = 0; j <= around; j++) {
+      const th = (j / around) * Math.PI * 2;
+      const k = bump ? bump(Math.min(1, Math.max(0, r.t)), th) : 1;
+      const c = Math.cos(th), s = Math.sin(th);
+      const p = r.C.clone().addScaledVector(r.N, c * r.a * k).addScaledVector(r.B, s * r.b * k);
+      pos.push(p.x, p.y, p.z);
+      // the ellipse's own normal; a dome's ring also leans along the path
+      const o = r.N.clone().multiplyScalar(c / Math.max(r.a, 1e-5)).addScaledVector(r.B, s / Math.max(r.b, 1e-5)).normalize();
+      out.push(o);
+      nor.push(0, 0, 0);
+      uv.push(((j / around) * round) / tile, r.s / tile);
+    }
+  }
+  const W = around + 1, idx = [];
+  for (let i = 0; i + 1 < rings.length; i++) {
+    for (let j = 0; j < around; j++) {
+      const a = i * W + j, b = a + 1, c = a + W, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  // which way a facet faces is asked of the first one big enough to answer
+  const P = (v) => new THREE.Vector3(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
+  for (let q = 0; q < idx.length; q += 3) {
+    const a = P(idx[q]), b = P(idx[q + 1]), c = P(idx[q + 2]);
+    const cr = b.sub(a).cross(c.sub(a));
+    if (cr.lengthSq() < 1e-16) continue;
+    if (cr.dot(out[idx[q]]) < 0) for (let k = 0; k < idx.length; k += 3) { const t = idx[k + 1]; idx[k + 1] = idx[k + 2]; idx[k + 2] = t; }
+    break;
+  }
+  g.setIndex(idx);
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.computeVertexNormals();
+  // the seam column is two copies of one ring of points; give both the same
+  // normal, or a line runs down the length of every finger
+  const nr = g.attributes.normal;
+  for (let i = 0; i < rings.length; i++) {
+    const a = i * W, b = a + around;
+    const x = nr.getX(a) + nr.getX(b), y = nr.getY(a) + nr.getY(b), z = nr.getZ(a) + nr.getZ(b);
+    const l = Math.hypot(x, y, z) || 1;
+    nr.setXYZ(a, x / l, y / l, z / l); nr.setXYZ(b, x / l, y / l, z / l);
+  }
+  // a dome's tip is a ring of one point, whose triangles have no area to
+  // average: hand it the way the path leaves
+  for (const [i, sign] of [[0, -1], [rings.length - 1, 1]]) {
+    if (rings[i].a > 1e-6) continue;
+    const T = (i === 0 ? frames[0] : frames[frames.length - 1]).T;
+    for (let j = 0; j <= around; j++) nr.setXYZ(i * W + j, T.x * sign, T.y * sign, T.z * sign);
+  }
+  return g;
+}
+
 /** Move every vertex of a geometry through `fn(v)`, then redo its normals. */
 export function bend(geo, fn, crease = 34) {
   const p = geo.attributes.position;

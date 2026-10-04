@@ -2384,6 +2384,73 @@ check('the gun in your hands is solid, held, and textured at its declared scale'
   return { ratios: r.ratios, tris: r.tris, inverted: r.inverted, held: r.held };
 });
 
+check('every finger closes on the grip it holds, or on the hand under it', async (page) => {
+  // The hands are swept now — fingers with knuckles and the fold past each,
+  // wider than they are deep — and a finger built a few millimetres off is
+  // either buried in the grip or holding air, both of which nothing errors
+  // on. Each finger is recorded as it is built (`userData.digits`), and this
+  // measures the middle of every curl against what it closes on: the gun's
+  // own surface, or a finger of the *other* hand, because the pistol's
+  // support hand wraps over the shooting hand's fingers rather than the grip.
+  // A finger's own hand does not count, or a hand floating clear of the gun
+  // would pass on its fingers touching each other.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    const out = {};
+    for (const w of g.weapons.weapons) {
+      // the gun's own surface, in the model's frame, hands left out
+      const tris = [];
+      for (const m of w.model.children) {
+        if (!m.isMesh || m.userData.tile === 0.25 || m.userData.tile === 0.9) continue;
+        const p = m.geometry.attributes.position, idx = m.geometry.index;
+        const n = idx ? idx.count : p.count, at = (k) => (idx ? idx.getX(k) : k);
+        m.updateMatrix();
+        const e = m.matrix.elements;
+        const tf = (i) => { const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+          return [e[0] * x + e[4] * y + e[8] * z + e[12], e[1] * x + e[5] * y + e[9] * z + e[13], e[2] * x + e[6] * y + e[10] * z + e[14]]; };
+        for (let k = 0; k < n; k += 3) tris.push([tf(at(k)), tf(at(k + 1)), tf(at(k + 2))]);
+      }
+      const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      const add = (a, b, s) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
+      // closest point on a triangle (Ericson)
+      const closest = (p, [a, b, c]) => {
+        const ab = sub(b, a), ac = sub(c, a), ap = sub(p, a);
+        const d1 = dot(ab, ap), d2 = dot(ac, ap); if (d1 <= 0 && d2 <= 0) return a;
+        const bp = sub(p, b), d3 = dot(ab, bp), d4 = dot(ac, bp); if (d3 >= 0 && d4 <= d3) return b;
+        const vc = d1 * d4 - d3 * d2; if (vc <= 0 && d1 >= 0 && d3 <= 0) return add(a, ab, d1 / (d1 - d3));
+        const cp = sub(p, c), d5 = dot(ab, cp), d6 = dot(ac, cp); if (d6 >= 0 && d5 <= d6) return c;
+        const vb = d5 * d2 - d1 * d6; if (vb <= 0 && d2 >= 0 && d6 <= 0) return add(a, ac, d2 / (d2 - d6));
+        const va = d3 * d6 - d5 * d4; if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) return add(b, sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)));
+        const den = 1 / (va + vb + vc); return add(add(a, ab, vb * den), ac, vc * den);
+      };
+      const dist = (p) => { let best = Infinity; for (const t of tris) { const q = closest(p, t); const d = Math.hypot(...sub(p, q)); if (d < best) best = d; } return best; };
+      const digits = w.model.userData.digits;
+      // distance from a point to another digit's centre line, less both depths
+      const segDist = (p, a, b) => { const ab = sub(b, a), t = Math.max(0, Math.min(1, dot(sub(p, a), ab) / dot(ab, ab))); return Math.hypot(...sub(p, add(a, ab, t))); };
+      const toDigit = (p, o) => { let best = Infinity; for (let i = 0; i + 1 < o.path.length; i++) best = Math.min(best, segDist(p, o.path[i], o.path[i + 1])); return best - o.depth; };
+      out[w.def.id] = digits.filter((d) => d.kind === 'finger').map((d) => {
+        // the middle of the curl, where a finger is either on something or not
+        const n = d.path.length, mid = d.path.slice(Math.floor(n * 0.3), Math.ceil(n * 0.8));
+        const gaps = mid.map((p) => Math.min(dist(p), ...digits.filter((o) => o.hand !== d.hand).map((o) => toDigit(p, o))) - d.depth);
+        gaps.sort((a, b) => a - b);
+        return +gaps[gaps.length >> 1].toFixed(4);
+      });
+    }
+    return out;
+  });
+  // Seed-independent: the guns are the guns. Measured: every curled finger's
+  // median gap between -6.1 and +8.0 mm (a glove squeezes; the pistol's
+  // support little finger lies on the shooting one's). With the pistol's
+  // old support hand put back, that little finger rests 17 mm off anything.
+  const bad = [];
+  for (const [id, gaps] of Object.entries(r)) {
+    expect(gaps.length >= 6, `only ${gaps.length} fingers recorded on the ${id}`);
+    gaps.forEach((gap, i) => { if (gap < -0.008 || gap > 0.009) bad.push(`${id} #${i}: ${(gap * 1000).toFixed(1)} mm`); });
+  }
+  expect(bad.length === 0, `fingers off what they hold: ${bad.join(', ')}`);
+  return r;
+});
+
 check('every grip rakes back toward the shooter', async (page) => {
   // A pistol grip leans back from the trigger: the web of the hand sits under
   // the slide and the heel of it further back, which is what points the
