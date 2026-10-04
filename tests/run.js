@@ -3390,12 +3390,14 @@ check('a shot from your right is heard on your right', async (page) => {
     // play it: the real chain, into an offline context
     const saved = { ctx: audio.ctx, master: audio.master, noiseBuf: audio.noiseBuf };
     const render = async (at) => {
-      audio.ctx = null;
-      const off = new OfflineAudioContext(2, 44100 * 0.5, 44100);
-      audio.init(off);
-      audio.listen(ears.x, ears.y, ears.z, ears.f);
-      audio.shot('rifle', 1, at);
-      const buf = await off.startRendering();
+      const buf = await window.__offline(() => {
+        audio.ctx = null;
+        const off = new OfflineAudioContext(2, 44100 * 0.5, 44100);
+        audio.init(off);
+        audio.listen(ears.x, ears.y, ears.z, ears.f);
+        audio.shot('rifle', 1, at);
+        return off;
+      });
       const energy = (ch) => buf.getChannelData(ch).reduce((a, v) => a + v * v, 0);
       return +(energy(1) / energy(0)).toFixed(2);           // right over left
     };
@@ -3465,12 +3467,14 @@ check('a hostile is heard walking, where it walks, and only while it walks', asy
     const step = walking[0];
     const saved = { ctx: audio.ctx, master: audio.master, noiseBuf: audio.noiseBuf };
     const render = async (at) => {
-      audio.ctx = null;
-      const ctx = new OfflineAudioContext(2, 44100 * 0.3, 44100);
-      audio.init(ctx);
-      audio.listen(cam.x, cam.y, cam.z, fwd);
-      audio.footfall(at, 1);
-      const buf = await ctx.startRendering();
+      const buf = await window.__offline(() => {
+        audio.ctx = null;
+        const ctx = new OfflineAudioContext(2, 44100 * 0.3, 44100);
+        audio.init(ctx);
+        audio.listen(cam.x, cam.y, cam.z, fwd);
+        audio.footfall(at, 1);
+        return ctx;
+      });
       const energy = (ch) => buf.getChannelData(ch).reduce((a, v) => a + v * v, 0);
       return +(energy(1) / energy(0)).toFixed(2);            // right over left
     };
@@ -4466,6 +4470,7 @@ if (ONLY && !selected.length) {
   process.exit(1);
 }
 
+const CHECK_LIMIT_S = 300;
 for (const { name, fn } of selected) {
   // Every check gets a freshly booted game on the same seed. Sharing one
   // instance made results depend on what the previous check left behind.
@@ -4473,7 +4478,17 @@ for (const { name, fn } of selected) {
   await game.reload();
   const before = pageErrors.length;
   try {
-    const detail = await fn(page);
+    // A check that never settles would hold its shard until CI's job limit
+    // cancels it with nothing in the log, and that is how both audio checks
+    // failed for a while (see \`__offline\` in the harness). Past the
+    // deadline it fails by name, and the next check's reload takes the page
+    // back. The slowest check here takes about 95 s.
+    const run = fn(page);
+    run.catch(() => {});
+    let timer;
+    const detail = await Promise.race([run, new Promise((_, no) => {
+      timer = setTimeout(() => no(new Failure(`did not finish in ${CHECK_LIMIT_S} s`)), CHECK_LIMIT_S * 1000);
+    })]).finally(() => clearTimeout(timer));
     const errs = pageErrors.slice(before);
     if (errs.length) throw new Failure(`page errors: ${[...new Set(errs)].join(' | ')}`);
     const took = `${((Date.now() - began) / 1000).toFixed(0)}s`.padStart(4);

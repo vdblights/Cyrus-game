@@ -1191,13 +1191,27 @@ CI and on another. If a check only needs to know what would compile, ask
 `renderer.compile(scene, camera)`, which builds programs under the current
 lights and draws nothing; if it needs pixels, sync each frame it draws.
 And a check that drives `g.frame()` for what it does besides drawing — the
-ears follow the camera there, the frame clock is read there — stubs
-`g.render` while it does: `a shot from your right is heard on your right`
-did not, waited up to 90 frames for a raider to fire, and hung CI's second
-shard to its 25-minute limit twice while firing on the first frame here.
-`frame` steps by the wall clock, so on a slow runner the hostile's AI takes
-another path through the seeded stream and the loop runs long, each turn of
-it a software frame.
+ears follow the camera there — stubs `g.render` while it does, because
+nothing in it is looked at and each drawn frame is seconds of software
+rendering.
+
+**No check may wait for ever.** CI's shards were cancelled at the job's
+25-minute limit three times, each with nothing in the log after the last
+check that passed, and each time the next check was one of the two that
+play a sound through an `OfflineAudioContext`: `a shot from your right…`
+twice, and `a hostile is heard walking…` once, which draws nothing at all.
+So the hang is `startRendering()` now and then never resolving on CI's
+headless Chrome. It never reproduced here, in dozens of runs. The first
+diagnosis blamed the shot check's drawn frames, and stubbing them was
+pushed as the fix; the next CI run hung on the walking check, which is
+what showed the two had only the offline render in common. Two guards now:
+`__offline` in the harness gives every offline render a deadline and a
+fresh context to retry on, failing by name if every try stalls; and the
+runner gives every check 300 s (`CHECK_LIMIT_S`, against about 95 for the
+slowest), so any hang still to come fails as itself instead of taking its
+shard down with it. Confirmed both ways: a 1 ms render deadline fails the
+shot check saying so, and a 3 s limit fails the scripted run by name and
+lets the run finish.
 
 An eighth, from the perch pass, and it is the expensive kind again: a
 tolerance is a place for a bug to live. `stairs carry the player onto a
