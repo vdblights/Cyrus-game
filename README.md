@@ -370,11 +370,20 @@ knee height that make it a jersey barrier; a shipping container has corner
 castings, sill and roof rails and doors with locking bars; a burning drum has
 its rolling hoops.
 
-Hostiles are wearing something. A raider has a plate carrier with pouches and
-shoulder straps, a breaker heavy plate and pauldrons behind a visor, a
-juggernaut plate everywhere and a pack, a scavenger whatever was to hand
-strapped on one side, a marksman a hood and a coat that hangs past the belt.
-That is not decoration: a wave is read at forty metres against a dusk skyline
+Hostiles are bodies, not stacks of boxes: a chest broader than the waist, a
+thigh tapering to the knee, a calf, a gloved fist, a boot on a sole, a head
+in a gas mask whose goggles glow — each piece swept along its own line or
+turned on a lathe. And they are wearing something, cut from the body's own
+shape so a plate lies on the chest it is strapped to. A raider has front and
+back plates on a cummerbund, shoulder straps, magazine pouches and a radio,
+under a helmet with ear defenders; a breaker a vest all round with a trauma
+plate, tassets, a neck guard, pauldrons and a guard over its jaw; a
+juggernaut all of that heavier, with two-layer pauldrons, a gorget and a
+pack of two tanks whose hoses run over its shoulders; a scavenger a hood, a
+sheet of tin over one side of its chest, a bandolier and one pauldron; a
+marksman a hood, a chest rig and a coat. A coat hangs from the hips rather
+than the waist, so the shoulders can turn into a stance without swinging it
+through a leg. That is not decoration: a wave is read at forty metres against a dusk skyline
 where the archetype's colour is barely a colour, and the outline is what tells
 you what is coming. So are their weapons, drawn by their side view like
 yours: a rifle with its magazine curving forward and a stock, a breaker's
@@ -550,8 +559,8 @@ A few notes on the implementation:
 
 - **Nothing is loaded from disk or network.** Every texture is painted into a
   canvas at boot, every sound is synthesised from noise bursts and oscillator
-  envelopes, and every model is assembled out of chamfered boxes and profiles
-  described by their cross-sections.
+  envelopes, and every model is assembled out of chamfered boxes, side
+  profiles, lathes, and sections swept along a line.
 - **What you can see, you can bump into.** Every heap of rubble and every
   fallen slab carries colliders cut to its own shape — a stack of tiers
   shallower than a step, each fitted to the heap's cross-section at that

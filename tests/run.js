@@ -4207,6 +4207,108 @@ check('every archetype is kitted, textured, and keeps its hit zones', async (pag
   return r;
 });
 
+check('a hostile is a body in kit, not a stack of boxes, and costs a spawn what it did', async (page) => {
+  // Every hostile was chamfered boxes: a brick for a torso, a cube for a
+  // head, a box for a fist, boots that were blocks. Under one low sun a box
+  // is two lit faces and two dark ones, so half of every body faced
+  // straight down one axis or another, and a wave read as robots. The
+  // bodies are swept and turned now, and what is worn is cut from the body's
+  // own section (`wrap`), so this measures how much of a body's surface
+  // faces square along an axis: 0.53-0.56 for the boxes, against 0.15-0.19.
+  //
+  // Two things came with it. A coat's skirt hangs from the hips (`skirt`),
+  // because on the waist it turned with the shoulders as they bladed into a
+  // stance and swung a leg out through its front; this counts the thigh
+  // that comes through it. And a new Enemy is built mid-run out of the
+  // stream that picks the next spawn, so the skirt mesh that no hostile
+  // used to have is minted in a reserve: a spawn costs the draws it did
+  // (measured on the commit before, 100 a body, 112 for the marksman, whose
+  // laser is a mesh more).
+  const r = await page.evaluate(async () => {
+    const g = window.__game;
+    const { Enemy } = await import('/src/enemies.js');
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const real = Math.random;
+    const V = g.player.position.constructor;
+    const v = new V();
+    const out = {};
+    for (const key of Object.keys(g.enemyTypes)) {
+      // what one more hostile of this kind costs the seeded stream
+      const before = real.mark();
+      const e = new Enemy(key, g.scene, g);
+      const after = real.mark();
+      real.rewind(before);
+      let draws = 0;
+      while (real.mark() !== after && draws < 2000) { real(); draws++; }
+      real.rewind(after);
+
+      // how much of the body faces square along an axis of its own part
+      let area = 0, square = 0;
+      for (const m of e.group.userData.drawn) {
+        if (['gun', 'band', 'eye'].includes(m.userData.batch)) continue;
+        const p = m.geometry.attributes.position, idx = m.geometry.index;
+        const n = idx ? idx.count : p.count, at = (k) => (idx ? idx.getX(k) : k);
+        for (let k = 0; k < n; k += 3) {
+          const a = at(k), b = at(k + 1), c = at(k + 2);
+          const ux = p.getX(b) - p.getX(a), uy = p.getY(b) - p.getY(a), uz = p.getZ(b) - p.getZ(a);
+          const wx = p.getX(c) - p.getX(a), wy = p.getY(c) - p.getY(a), wz = p.getZ(c) - p.getZ(a);
+          const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+          const l = Math.hypot(cx, cy, cz);
+          if (l < 1e-12) continue;
+          area += l / 2;
+          if (Math.max(Math.abs(cx), Math.abs(cy), Math.abs(cz)) / l > 0.99) square += l / 2;
+        }
+      }
+
+      // shouldered and bladed, standing: does a thigh come out through the coat?
+      let through = null;
+      const skirt = e.parts.skirt;
+      if (skirt) {
+        e.spawn(g.player.position.x + 6, g.player.position.z, 1, g.player.position.y);
+        e.alerted = true; e.vel.set(0, 0, 0);
+        for (let k = 0; k < 60; k++) e._animate(1 / 60, 7);
+        e.group.updateMatrixWorld(true);
+        const inv = skirt.matrixWorld.clone().invert();
+        // the coat's own outline, by height and bearing round it
+        const sp = skirt.geometry.attributes.position;
+        const ring = [];
+        for (let i = 0; i < sp.count; i++) ring.push([sp.getY(i), Math.atan2(sp.getZ(i), sp.getX(i)), Math.hypot(sp.getX(i), sp.getZ(i))]);
+        const top = Math.max(...ring.map((q) => q[0])), bottom = Math.min(...ring.map((q) => q[0]));
+        through = 0;
+        for (const thigh of [e.parts.legL, e.parts.legR]) {
+          const tp = thigh.geometry.attributes.position;
+          for (let i = 0; i < tp.count; i++) {
+            v.fromBufferAttribute(tp, i).applyMatrix4(thigh.matrixWorld).applyMatrix4(inv);
+            // below the hips, where the coat hangs clear of the body
+            if (v.y > top - 0.12 || v.y < bottom) continue;
+            const th = Math.atan2(v.z, v.x);
+            let best = null, gap = Infinity;
+            for (const q of ring) {
+              if (Math.abs(q[0] - v.y) > 0.06) continue;
+              let d = Math.abs(q[1] - th); if (d > Math.PI) d = Math.PI * 2 - d;
+              if (d < gap) { gap = d; best = q; }
+            }
+            if (best && Math.hypot(v.x, v.z) > best[2] + 0.005) through++;
+          }
+        }
+      }
+      out[key] = { draws, square: +(square / area).toFixed(3), through };
+      g.scene.remove(e.group);
+      g.hostiles?.untrack(e.group);
+    }
+    return out;
+  });
+  const cost = { scavenger: 100, raider: 100, shotgunner: 100, marksman: 112, brute: 100 };
+  for (const [key, row] of Object.entries(r)) {
+    expect(row.square < 0.3, `${Math.round(row.square * 100)}% of a ${key}'s body faces square down an axis: it is built of boxes`);
+    expect(row.draws === cost[key], `a ${key} costs the spawn stream ${row.draws} draws, not the ${cost[key]} it did`);
+    if (row.through !== null) expect(row.through === 0, `${row.through} points of a ${key}'s thighs come out through its coat`);
+  }
+  expect(Object.values(r).some((row) => row.through !== null), 'no archetype wears a coat to measure');
+  return r;
+});
+
 check('a wave is drawn a part at a time, and looks like the hostiles it is', async (page) => {
   // A hostile was fourteen drawn meshes, nine casting a shadow, so about
   // forty calls a frame across the main pass and both cascades, and a wave
@@ -4449,7 +4551,7 @@ async function screenshots(page) {
 
 console.log(`seed ${SEED}${SHARD.length === 2 ? ` · shard ${SHARD.join('/')}` : ''}\n`);
 const game = await openGame({ seed: SEED, port: PORT, headed: HEADED });
-const { page, errors: pageErrors } = game;
+const pageErrors = game.errors;
 // checks that need a mid-check reload go through the harness, so the seed,
 // the freeze and the injected helpers all survive it
 reloadGame = game.reload;
@@ -4470,12 +4572,27 @@ if (ONLY && !selected.length) {
   process.exit(1);
 }
 
+/**
+ * Boot a fresh game for the next check. True if the page came back; false
+ * if it had wedged and the browser was replaced to get one. A wedged page
+ * used to take the whole run down with it: the reload threw outside any
+ * check, the runner died on it, and every check still to come went unrun.
+ */
+async function fresh() {
+  try {
+    await game.reload();
+    return true;
+  } catch (err) {
+    console.log(`       the page did not come back (${err.message.split('\n')[0]}); relaunching the browser`);
+    await game.renew();
+    await game.reload();
+    return false;
+  }
+}
+
 const CHECK_LIMIT_S = 300;
-for (const { name, fn } of selected) {
-  // Every check gets a freshly booted game on the same seed. Sharing one
-  // instance made results depend on what the previous check left behind.
-  const began = Date.now();
-  await game.reload();
+/** One run of one check on whatever is loaded: `{ ok, detail }` or `{ ok: false, err }`. */
+async function attempt(fn) {
   const before = pageErrors.length;
   try {
     // A check that never settles would hold its shard until CI's job limit
@@ -4483,7 +4600,7 @@ for (const { name, fn } of selected) {
     // failed for a while (see \`__offline\` in the harness). Past the
     // deadline it fails by name, and the next check's reload takes the page
     // back. The slowest check here takes about 95 s.
-    const run = fn(page);
+    const run = fn(game.page);
     run.catch(() => {});
     let timer;
     const detail = await Promise.race([run, new Promise((_, no) => {
@@ -4491,19 +4608,43 @@ for (const { name, fn } of selected) {
     })]).finally(() => clearTimeout(timer));
     const errs = pageErrors.slice(before);
     if (errs.length) throw new Failure(`page errors: ${[...new Set(errs)].join(' | ')}`);
-    const took = `${((Date.now() - began) / 1000).toFixed(0)}s`.padStart(4);
-    console.log(`  ok   ${took} ${name}${detail ? '  ' + JSON.stringify(detail).slice(0, 120) : ''}`);
+    return { ok: true, detail };
   } catch (err) {
+    return { ok: false, err };
+  }
+}
+
+// Every check gets a freshly booted game on the same seed. Sharing one
+// instance made results depend on what the previous check left behind.
+let loaded = false;     // whether the page already holds a game nothing has touched
+for (const [i, { name, fn }] of selected.entries()) {
+  const began = Date.now();
+  if (!loaded) await fresh();
+  let out = await attempt(fn);
+  // A check that fails and leaves the browser wedged behind it failed because
+  // of the browser: it gets one more run, on a new one. A failure that leaves
+  // the page healthy is the game's, and stands. (After the last check there
+  // is nothing to load unless it failed.)
+  loaded = out.ok && i === selected.length - 1 ? true : await fresh();
+  if (!out.ok && !loaded) {
+    console.log(`       "${name}" wedged the browser; running it again on a new one`);
+    out = await attempt(fn);
+    loaded = await fresh();
+  }
+  const took = `${((Date.now() - began) / 1000).toFixed(0)}s`.padStart(4);
+  if (out.ok) {
+    console.log(`  ok   ${took} ${name}${out.detail ? '  ' + JSON.stringify(out.detail).slice(0, 120) : ''}`);
+  } else {
     failed++;
-    console.log(`  FAIL ${name}\n       ${err.message}`);
-    if (!(err instanceof Failure)) console.log(err.stack?.split('\n').slice(1, 4).join('\n'));
+    console.log(`  FAIL ${name}\n       ${out.err.message}`);
+    if (!(out.err instanceof Failure)) console.log(out.err.stack?.split('\n').slice(1, 4).join('\n'));
   }
 }
 
 if (SHOTS) {
   console.log('\nscreenshots:');
   await game.reload({ freeze: false });
-  await screenshots(page);
+  await screenshots(game.page);
 }
 
 await game.close();

@@ -401,12 +401,17 @@ export function latheGeo(profile, sides, tile, { uv = null, crease = 40 } = {}) 
  * a dome as long as the section is wide; an open end (`open: [start, end]`)
  * is left a ring, for a sleeve seen from inside.
  *
+ * `arc: [from, to]` sweeps only that span of angle round the path rather
+ * than the whole ring — a plate over a chest, which is a strip of the body's
+ * own section and has no business paying for the back of it.
+ *
  * UVs run round the section by arc length at its mean size and along the
  * path by distance, both over `tile`, so the texel-density checks cover it.
  * The winding is decided by comparing a facet with the way out from the path
  * at its corner, never written down.
  */
-export function sweepGeo(points, size, tile, { side, bump = null, around = 14, step = 0.005, open = [false, false], dome = 5 } = {}) {
+export function sweepGeo(points, size, tile, { side, bump = null, around = 14, step = 0.005, open = [false, false], dome = 5, arc = null } = {}) {
+  const [th0, th1] = arc || [0, Math.PI * 2];
   const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
   const len = curve.getLength();
   const n = Math.max(4, Math.ceil(len / step));
@@ -452,7 +457,7 @@ export function sweepGeo(points, size, tile, { side, bump = null, around = 14, s
   const pos = [], nor = [], uv = [], out = [];
   for (const r of rings) {
     for (let j = 0; j <= around; j++) {
-      const th = (j / around) * Math.PI * 2;
+      const th = th0 + (j / around) * (th1 - th0);
       const k = bump ? bump(Math.min(1, Math.max(0, r.t)), th) : 1;
       const c = Math.cos(th), s = Math.sin(th);
       const p = r.C.clone().addScaledVector(r.N, c * r.a * k).addScaledVector(r.B, s * r.b * k);
@@ -461,7 +466,7 @@ export function sweepGeo(points, size, tile, { side, bump = null, around = 14, s
       const o = r.N.clone().multiplyScalar(c / Math.max(r.a, 1e-5)).addScaledVector(r.B, s / Math.max(r.b, 1e-5)).normalize();
       out.push(o);
       nor.push(0, 0, 0);
-      uv.push(((j / around) * round) / tile, r.s / tile);
+      uv.push(((j / around) * round * (th1 - th0)) / (Math.PI * 2 * tile), r.s / tile);
     }
   }
   const W = around + 1, idx = [];
@@ -489,7 +494,7 @@ export function sweepGeo(points, size, tile, { side, bump = null, around = 14, s
   // the seam column is two copies of one ring of points; give both the same
   // normal, or a line runs down the length of every finger
   const nr = g.attributes.normal;
-  for (let i = 0; i < rings.length; i++) {
+  for (let i = 0; i < rings.length && !arc; i++) {
     const a = i * W, b = a + around;
     const x = nr.getX(a) + nr.getX(b), y = nr.getY(a) + nr.getY(b), z = nr.getZ(a) + nr.getZ(b);
     const l = Math.hypot(x, y, z) || 1;

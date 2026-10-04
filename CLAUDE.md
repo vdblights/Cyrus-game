@@ -739,7 +739,45 @@ These each cost real debugging time. Changing them needs a reason.
   raycast: kit hung on loose would be a silhouette bullets pass through, and
   would also put another dozen meshes per hostile into the per-pellet
   intersect list. The same merge is why a hostile is now 12 meshes rather than
-  15 while carrying six times the triangles.
+  15 while carrying six times the triangles (13 in a coat; see the next item).
+- **A hostile is swept, and what it wears is cut from its body.** Every
+  hostile was chamfered boxes — a brick for a torso, a cube for a head, a box
+  for a fist, blocks for boots — and a wave read as robots: 53-56% of each
+  body's surface faced square down an axis, 15-19% now. The body's section
+  is one table, `BODY` in `makeKit` (height, half-width, half-depth, how far
+  forward its middle sits, from the hips to the shoulder line). The torso is
+  swept through it and domed over the shoulders, `face` and `crown` say
+  where its surface is, and anything worn over it is a `wrap`: the same
+  section grown by `out`, standing proud across the arcs given and scaled
+  under the cloth everywhere else, so its edges roll into the body instead
+  of standing off it. A plate is only the span that shows (`sweepGeo`'s
+  `arc`). Change a row and every plate, strap, pouch and the marker band
+  move with it. Four things about it are load-bearing. **Vertex colours
+  shade a piece against its material** — a glove is the sleeve's cloth at
+  0.32, a boot the trouser's at 0.42 — so `cloth`, `gear` and `skin` are
+  `vertexColors: true` and anything merged into a hostile part needs a
+  `color` attribute (`tone`; `mergeIntoOne` fills white where one is
+  missing), the same rule as the city's materials. **A flat sweep is
+  creased** (`flat`): smoothed the way a limb is, the knife edge down a
+  strap averaged its top face with its bottom one, and the facet at its end
+  was lit as if it faced inward — 11 of them, which `nothing is built inside
+  out` found. **A coat hangs from the hips**: its skirt is a part of its own
+  (`skirt`, on the group, not on `upper`), because the waist turns 0.48 rad
+  into a stance and a coat on it swung a thigh out through its front. It is
+  batched like every other part, for the archetypes that have one, and it is
+  a mesh no hostile used to have — and a new `Enemy` is built mid-run, out
+  of the stream that picks the next spawn — so it is minted in a `reserve`,
+  and a spawn still costs 100 draws (112 for the marksman). And **the eye is
+  two lenses** in goggle cups at the middle of the face (`AT.eye` at x = 0),
+  which is what the facing check reads. What it costs: 6.3-8.5k triangles a
+  hostile with its gun, against about 2k; the first cut was 13-17k, and the
+  rings and sides came down until no silhouette moved. Draw calls are
+  unchanged but for three per coated archetype in view. `a hostile is a
+  body in kit, not a stack of boxes, and costs a spawn what it did` fails
+  three ways: on the old builders (53% square), with the skirt minted
+  outside the reserve (104 draws), and with the skirt hung on the waist (2
+  points of thigh through the coat — weak, because a near-round skirt hides
+  most of the turn, but it bites).
 - **A hostile is built facing -z, and the weapon decides where the hands
   go.** The turn used to point the body's +z at its target, so every
   hostile that ever fought you did it facing away — eye glowing from the
@@ -768,7 +806,8 @@ These each cost real debugging time. Changing them needs a reason.
 - **A hostile is drawn by its archetype's batches, and shot through its
   rig.** `HostileBatches` in `enemies.js` keeps one `InstancedMesh` per
   archetype and part — torso, rig, head, head kit, upper and lower arm,
-  thigh, shin, gun, band and eye — and writes every shown hostile into them
+  thigh, shin, gun, band and eye, and a coat's skirt for the archetypes that
+  wear one — and writes every shown hostile into them
   from `scene.onBeforeRender`, which three calls after it has brought every
   matrix up to date, so every pass in a frame (both cascades, the occlusion
   depth, the scene) draws the same instances. The rig's own meshes are
@@ -1212,6 +1251,21 @@ slowest), so any hang still to come fails as itself instead of taking its
 shard down with it. Confirmed both ways: a 1 ms render deadline fails the
 shot check saying so, and a 3 s limit fails the scripted run by name and
 lets the run finish.
+
+It finally reproduced here, in the hostile-bodies pass: the walking check
+stalled in two runs of eight, the last five clean, while `main` passed four
+of four alongside — too few runs to call a difference, and the same stall
+CI had already shown three times on the old code. What
+it showed is that a stall is not one render: once one hangs, every later
+offline render in that page hangs too (all three of `__offline`'s tries),
+and the page will not navigate either. The reload after it timed out at
+30 s, outside any check, and the runner died on the uncaught exception with
+every check after it unrun. So a reload that fails now relaunches the
+browser (`renew` in the harness), and a check that failed *and* left the
+browser wedged runs once more on the new one: a wedge is the browser's
+failure, and a failure that leaves the page healthy still stands. Confirmed
+with a simulated wedge — the check's first run failing and the reload after
+it throwing — which relaunched, reran and passed.
 
 An eighth, from the perch pass, and it is the expensive kind again: a
 tolerance is a place for a bug to live. `stairs carry the player onto a
