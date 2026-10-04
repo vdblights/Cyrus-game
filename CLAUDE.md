@@ -1444,6 +1444,17 @@ What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
 
+The hostile-bodies pass came after the hands, asked for in one line: the
+enemy models need more work. Rendered close before touching them, every
+hostile was a block robot — a brick torso, a cube head, box fists and block
+boots, kit hung on as more boxes. They are swept and worn now (invariant
+above). What it cost, twelve alerted hostiles on seed 1 under software
+rendering, interleaved against `main`: high 2,540 → 2,680 ms a frame (+6%),
+triangles 579k → 766k, calls 417 → 423; low 525 → 535 ms, which is about
+noise, triangles 193k → 257k. The spawn stream and the layout are
+untouched. The same pass made the runner survive a wedged browser (testing
+traps, under "No check may wait for ever").
+
 The instancing pass is the eighteenth, and it was item 1 of the list: a
 hostile was about forty draw calls a frame, and a wave was most of the
 frame's calls. Every archetype is drawn as one instanced batch a part now
