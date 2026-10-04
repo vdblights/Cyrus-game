@@ -619,6 +619,9 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
         // room for a body on the deck, and a deck there to stand on
         if (g.world.groundHeight(px, lz, R, Infinity) > box.top + 0.05) continue;
         if (g.world.groundHeight(px, lz, R, box.top + 0.05) < box.top - 0.25) continue;
+        // and headroom over it: a window sill under the floors of an open
+        // building is a ledge with a ceiling a body's height too low over it
+        if (g.world.ceilingAbove(px, lz, R, box.top) < box.top + 1.9) continue;
         return { px, pz };
       }
       return null;
@@ -646,7 +649,7 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
     for (const b of g.world.boxes) {
       if (ledges.length < 8 && b.top > 0.8 && b.top < 1.75) {
         const a = attempt(b); if (a) ledges.push(a);
-      } else if (walls.length < 5 && b.top > 6) {
+      } else if (walls.length < 5 && b.top > 6 && !b.base) {
         const a = attempt(b); if (a) walls.push(a);
       }
     }
@@ -3774,6 +3777,102 @@ check('auto quality keeps watching, and gives back resolution before shaders', a
   return r;
 });
 
+check('a building opens onto the street: you walk in under its floors, and it hides you from above', async (page) => {
+  // A third of the towers have a ground floor you can walk into: a
+  // shopfront, a room, the floors of the building over it. Every box used to
+  // run from the street to its top, so the floors over a room are a box that
+  // starts above the head (`base`), and every reader of the box list had to
+  // learn it. This asks each of them, for every room on the seed:
+  //   - you walk in off the pavement through one of its doorways;
+  //   - the route field from the street reaches every open cell of its floor;
+  //   - a jump inside stops at the ceiling;
+  //   - a sight line from high above it is cut by the floors, and one from
+  //     the street through the doorway is not;
+  //   - a grenade thrown up inside comes back off the ceiling.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const w = g.world, p = g.player;
+    const V = p.position.constructor;
+    const rows = [];
+    // the route field from the street where a run starts: how much of each
+    // room's floor it reaches
+    const nav = g.nav;
+    nav.update(p.position.x, p.position.z, true);
+    for (const room of w.rooms) {
+      const row = { walked: false, open: 0, routed: 0, jump: null, hidden: false, seen: false, grenade: null };
+      const cx = (room.minX + room.maxX) / 2, cz = (room.minZ + room.maxZ) / 2;
+      for (let i = nav.col(room.minX) + 1; i < nav.col(room.maxX); i++) {
+        for (let j = nav.col(room.minZ) + 1; j < nav.col(room.maxZ); j++) {
+          if (nav.blocked[j * nav.size + i]) continue;
+          row.open++;
+          if (nav.dist[j * nav.size + i] >= 0) row.routed++;
+        }
+      }
+      for (const d of room.doors) {
+        // from the pavement in front of the doorway, straight in
+        const sx = d.x + d.nx * 2.5, sz = d.z + d.nz * 2.5;
+        if (w.blocked(sx, sz, p.radius + 0.05)) continue;
+        p.reset(sx, sz);
+        p.yaw = Math.atan2(d.nx, d.nz);
+        p.pitch = 0;
+        g.input.keys.add('KeyW');
+        for (let f = 0; f < 150; f++) { g.time += 1 / 60; g.step(1 / 60); }
+        g.input.keys.clear();
+        const inside = -((p.position.x - d.x) * d.nx + (p.position.z - d.z) * d.nz);
+        if (inside < 1.5) continue;
+        row.walked = true;
+
+
+        // a jump, standing where the walk stopped
+        let top = 0;
+        g.input.keys.add('Space');
+        g.time += 1 / 60; g.step(1 / 60);
+        g.input.keys.clear();
+        for (let f = 0; f < 70; f++) { g.time += 1 / 60; g.step(1 / 60); top = Math.max(top, p.feetY); }
+        row.jump = { rose: +(top - room.floor).toFixed(2), crown: +(top + 1.85).toFixed(2), ceiling: +room.ceiling.toFixed(2) };
+
+        // seen through the doorway from the street, not from far over the roof
+        const ex = d.x - d.nx * 2, ez = d.z - d.nz * 2, ey = room.floor + 1.5;
+        row.seen = w.lineOfSight(sx, room.floor + 1.6, sz, ex, ey, ez);
+        row.hidden = !w.lineOfSight(cx + 3, 80, cz + 3, ex, ey, ez);
+
+        // a grenade lobbed straight up off the floor
+        const pos = new V(ex, room.floor + 0.5, ez), vel = new V(0.4, 9, 0.2);
+        let high = 0, out = 0;
+        for (let f = 0; f < 90; f++) {
+          vel.y -= 22 / 60;
+          pos.addScaledVector(vel, 1 / 60);
+          w.bounceSphere(pos, vel, 0.09);
+          high = Math.max(high, pos.y);
+          out = Math.max(out, room.minX - pos.x, pos.x - room.maxX, room.minZ - pos.z, pos.z - room.maxZ);
+        }
+        row.grenade = { high: +high.toFixed(2), out: +out.toFixed(2) };
+        break;
+      }
+      rows.push(row);
+    }
+    return { rooms: rows.length, rows };
+  });
+  expect(r.rooms >= 8, `only ${r.rooms} buildings open on this seed`);
+  const bad = (pred) => r.rows.filter((row) => !pred(row)).length;
+  expect(bad((row) => row.walked) === 0, `${bad((row) => row.walked)} of ${r.rooms} open buildings could not be walked into`);
+  const walked = r.rows.filter((row) => row.walked);
+  const unrouted = r.rows.reduce((n, row) => n + row.open - row.routed, 0);
+  expect(r.rows.every((row) => row.open > 0) && unrouted === 0,
+    `the route field from the street misses ${unrouted} cells of open floor inside the buildings (${r.rows.map((row) => `${row.routed}/${row.open}`).join(' ')})`);
+  for (const row of walked) {
+    expect(row.jump.rose > 0.5, `a jump indoors rose only ${row.jump.rose} m`);
+    expect(row.jump.crown <= row.jump.ceiling + 0.01, `a jump indoors put the crown at ${row.jump.crown} through a ceiling at ${row.jump.ceiling}`);
+    expect(row.grenade.high <= row.jump.ceiling && row.grenade.out <= 0,
+      `a grenade thrown up indoors went to ${row.grenade.high} m under a ceiling at ${row.jump.ceiling}, and ${row.grenade.out} m out of the building`);
+  }
+  expect(bad((row) => !row.walked || row.seen) === 0, `${bad((row) => !row.walked || row.seen)} rooms cannot be seen into through their own doorway`);
+  expect(bad((row) => !row.walked || row.hidden) === 0, `${bad((row) => !row.walked || row.hidden)} rooms are seen into through the floors above them`);
+  return { rooms: r.rooms, sample: r.rows[0] };
+});
+
 check('a seed still lays out the city it did', async (page) => {
   // The most expensive lesson in this repo, finally made into a check.
   //
@@ -3835,10 +3934,21 @@ check('a seed still lays out the city it did', async (page) => {
   // while every collider further than 14 m from a perch that changed is
   // identical. Before it: 801/580/13 88473ce5 (429 5d9b6755), 834/543/11
   // dcd3d7d2 (376 d57389ac), 877/573/10 4f7b5ad (395 4f540362).
+  //
+  // And once more, for the open ground floors: a third of the towers lost
+  // the block that ran from the street to their roof and gained a ceiling
+  // over a room — shopfront piers, sills, shutters, columns, a counter,
+  // shelving and crates, about 25 colliders a building. Everything is
+  // placed by position and built inside a reserve, so the stream is
+  // untouched (the same mark after boot). Compared collider by collider on
+  // all three seeds: the only colliders gone are the 21, 16 and 25 blocks
+  // that opened, every new one lies inside one of their footprints, and the
+  // perches are identical. Before it: 771/561/12 43fc2161 (413 ff19bfd0),
+  // 834/543/11 f6d29176 (376 86e2c858), 877/573/10 79f7d600 (395 985f0133).
   const want = {
-    1: { boxes: 771, solids: 561, perches: 12, fp: '43fc2161', placed: 413, fpPlaced: 'ff19bfd0' },
-    7: { boxes: 834, solids: 543, perches: 11, fp: 'f6d29176', placed: 376, fpPlaced: '86e2c858' },
-    20260101: { boxes: 877, solids: 573, perches: 10, fp: '79f7d600', placed: 395, fpPlaced: '985f0133' },
+    1: { boxes: 1258, solids: 1069, perches: 12, fp: '6b6c3506', placed: 900, fpPlaced: 'f85850b3' },
+    7: { boxes: 1275, solids: 1000, perches: 11, fp: 'c712ab7e', placed: 817, fpPlaced: 'f6fca580' },
+    20260101: { boxes: 1382, solids: 1103, perches: 10, fp: '30c19881', placed: 900, fpPlaced: '634ea5d6' },
   };
 
   const got = {};

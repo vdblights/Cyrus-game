@@ -50,7 +50,7 @@ builds, never to play.
 | File | Owns |
 | --- | --- |
 | `src/main.js` | `Game`: loop, scene, lighting, waves, hit resolution, blasts |
-| `src/world.js` | Box collision (square or turned), ground height, line of sight, sphere bounce |
+| `src/world.js` | Box collision (square, turned, or a ceiling overhead), ground height, line of sight, sphere bounce, the grid that indexes them |
 | `src/city.js` | Procedural generation; returns `{ world, fireBarrels, perches }` |
 | `src/player.js` | `Input` and `Player`: look, movement, footing, health |
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
@@ -219,6 +219,57 @@ These each cost real debugging time. Changing them needs a reason.
   first stepped `t += 0.1` along each edge, which lands a hair under the
   far corner and never closed the run that ends there — 32 drops counted of
   64. Step a scan by count.
+- **A box may stand off the ground, and then it is a ceiling.** About one
+  tower in three (`opensAt`, by position) has a ground floor you walk into
+  (`groundFloor` in `city.js`): a shopfront of piers with doorways, windows
+  over a sill and shutters on the street faces, blank walls onto the
+  building next door, a slab ceiling, and inside columns, aisles of
+  shelving, a counter and crates. Every box used to run from the street to
+  its top, so the floors over the room are a box with a `base`
+  (`addCeiling`, at `GROUND - SLAB`, 3.03 m) and every reader had to learn
+  it. `resolve` walks a body under one when the base clears its `height`;
+  `groundHeight` never stands anything on one, so nothing is lifted onto a
+  roof it walked under and a mantle is not refused for a "wall" that is the
+  floor above; `ceilingAbove` stops a jump (the player's crown, 1.85 m over
+  the feet) and refuses a mantle onto a counter with no headroom
+  (`HEADROOM`); `lineOfSight` runs its Y slab from `base`; `bounceSphere`
+  has a fourth escape, down off the underside; `blocked` and the nav bake
+  let a body through under it. `occupied` deliberately does not: everything
+  that places a thing — a spawn, an objective, a weed — still treats a room
+  as taken. Five things are load-bearing. **A doorway is 4 m and more**,
+  because the route field keeps a shoulder clear of every wall, and the
+  first counter stood behind a doorway and sealed seven rooms from the
+  street (a 10 m shop with a partition had both bands of clearance meeting
+  across it, so the partition went); the counter now stands at the end of
+  the shopfront away from its doorways, crates only against blank walls,
+  and the aisles off the column lines, which had closed the aisle between
+  them into a pocket. **The open building still costs the stream what the
+  closed one did**: the block, the glass band and the shutter are minted
+  and their rolls drawn as before, the block's shape is swapped inside a
+  reserve, and the room is built inside one — so the mark after boot is
+  identical, and compared collider by collider on seeds 1, 7 and 20260101
+  the only colliders gone are the 21, 16 and 25 blocks that opened and every
+  new one lies inside one of their footprints. **The bake darkens what is
+  under a ceiling** (`indoorField`) by how far it is from the building's
+  faces, or a room is as bright as the pavement: under half the light at
+  the back of a wide floor, most of it by the shopfront, and nothing on the
+  faces themselves. **Hostiles collide at their archetype's height**, not an
+  elite's, so a warlord can follow you in; an elite juggernaut's head goes
+  through the slab, which is the price. And **the boxes are indexed once
+  the city is built** (`World.seal`): 500 more colliders on seed 1 doubled
+  the game step in a fight (0.45 → 0.85 ms median), and walking only the
+  cells a query touches brings it to 0.2. The index hands boxes back in list
+  order and is only trusted while the list is the length it was sealed at,
+  so generation never sees it and a 25-second fight ends in exactly the
+  same state either way. `world.rooms` lists each room and its doorways for
+  anything that wants to find one. `a building opens onto the street: you
+  walk in under its floors, and it hides you from above` walks into every
+  room through a doorway, reads the route field over every open cell of its
+  floor, jumps, sights it from over the roof and through the door, and
+  throws a grenade at the ceiling; it fails with each of the five readers
+  put back the way it was (21 of 21 rooms not entered; every room's floor
+  blocked to the route field; a crown through the ceiling; 21 doorways
+  blind; a grenade shoved out of the building).
 - **Anything you can see at body height is something you can bump into.**
   Every heap of rubble (`rubblePile`) and every fallen slab in a rubble lot
   was drawn and registered nowhere — the slabs were in the raycast list and

@@ -1461,7 +1461,7 @@ export class Enemy {
     const speed = this.type.speed * (this.alerted ? 1 : 0.45);
     this.vel.lerp(V3.copy(moveDir).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
-    world.resolve(this.pos, this.radius, this.pos.y, 0.55);
+    world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
     world.clampToBounds(this.pos, this.radius);
 
     // Follow the surface underfoot: stairs and platforms carry hostiles too,

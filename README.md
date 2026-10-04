@@ -188,11 +188,20 @@ already inside your guard.
 | Juggernaut | Heavy, 420 HP, suppressing fire (wave 5+) |
 | Warlord | Elite juggernaut that closes out every fifth wave |
 
+About one building in three has a ground floor you can walk into — the ones
+with a concrete ground storey and a shopfront of piers, rust shutters and
+windows over a sill. Inside is a dim shop under the floors above: columns,
+aisles of shelving, a counter, crates. It is cover from a marksman on a
+roof, whose sight line the floors cut, and a fight at close range through
+doorways and windows; a jump indoors stops at the ceiling, and so does a
+grenade. Hostiles follow you in.
+
 Hostiles route around buildings rather than walking into them: a coarse
 walkable grid over the city carries a cost field rebuilt from wherever you are
-standing, so one that loses sight of you takes the way round the block instead
-of sliding along the wall between you. With a clear view it comes straight at
-you, as it always did.
+standing, so one that loses sight of you takes the way round the block, or in
+through the doorway of a shop you are hiding in, instead of sliding along the
+wall between you. With a clear view it comes straight at you, as it always
+did.
 
 A marksman claims a rooftop or terrace and stays there while it can see you.
 Before each shot it paints you with an aiming laser for about a second — that
