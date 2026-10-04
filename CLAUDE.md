@@ -1190,6 +1190,14 @@ It looked like a flake: it passed at 41 s on one local run and failed on
 CI and on another. If a check only needs to know what would compile, ask
 `renderer.compile(scene, camera)`, which builds programs under the current
 lights and draws nothing; if it needs pixels, sync each frame it draws.
+And a check that drives `g.frame()` for what it does besides drawing — the
+ears follow the camera there, the frame clock is read there — stubs
+`g.render` while it does: `a shot from your right is heard on your right`
+did not, waited up to 90 frames for a raider to fire, and hung CI's second
+shard to its 25-minute limit twice while firing on the first frame here.
+`frame` steps by the wall clock, so on a slow runner the hostile's AI takes
+another path through the seeded stream and the loop runs long, each turn of
+it a software frame.
 
 An eighth, from the perch pass, and it is the expensive kind again: a
 tolerance is a place for a bug to live. `stairs carry the player onto a

@@ -3372,13 +3372,19 @@ check('a shot from your right is heard on your right', async (page) => {
     const realShot = audio.shot.bind(audio), realListen = audio.listen.bind(audio);
     audio.shot = (kind, gain, at) => { if (at && !shotAt) shotAt = { x: at.x, y: at.y, z: at.z }; if (!at) shotAt = shotAt || null; };
     audio.listen = (x, y, z, f) => { ears = { x, y, z, f: { x: f.x, y: f.y, z: f.z } }; };
+    // \`frame\` is what puts the ears on the camera, but it also draws, and a
+    // drawn frame under software rendering is seconds on a slow runner: the
+    // loop that waits for the raider to fire hung a CI shard for 25 minutes,
+    // twice, where here it fires on the first frame. Nothing here is looked at.
+    const realRender = g.render;
+    g.render = () => {};
     try {
       for (let i = 0; i < 90 && !shotAt; i++) {
         g.time += 1 / 30; g.player.health = 100;
         g.frame();
         g.player.yaw = Math.atan2(-dx, -dz) + Math.PI / 2;
       }
-    } finally { audio.shot = realShot; audio.listen = realListen; }
+    } finally { audio.shot = realShot; audio.listen = realListen; g.render = realRender; }
     if (!shotAt || !ears) return { shotAt: shotAt || null, ears: !!ears };
 
     // play it: the real chain, into an offline context
