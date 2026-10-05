@@ -1239,6 +1239,26 @@ view direction stack up in depth and look like one hostile — spread them
 across it. And they charge: stub `e.update` or the lineup is gone by the time
 the shutter opens.
 
+Two more framings came out of the hostile-bodies and open-buildings passes.
+A close-up from the player's side of a lineup is usually backlit — the sun
+is low and behind whatever stands in the plaza — and a backlit body is a
+silhouette that hides every fault in its shape. Put the camera between the
+sun and the subject instead (`SUN_DIR` from `atmosphere.js`, camera at
+subject + sun·d looking along −sun, the subject turned to face it). And a
+room is framed off its own doorways, not off its footprint: `world.rooms`
+gives each doorway's middle and outward normal, so stand 8 m out along the
+normal looking in, on the threshold, and at the back looking out. Placing
+the camera by footprint alone put it inside the next building twice.
+
+When a change is meant to move the layout in one place only, prove it
+collider by collider rather than by fingerprint: dump every box (rounded
+to a centimetre) on both trees for the three pinned seeds, diff them as
+multisets, and require that everything gone and everything new lies inside
+the footprints that were meant to change, with the perches and
+`Math.random.mark()` after boot identical. That is what the open-buildings
+pass recorded in the layout check, and a fingerprint alone could not have
+said it.
+
 A sixth, which is really a tool rather than a trap: the bot that plays the
 scripted run lives in `tests/harness.js` as `window.__botRun(seconds)`, not
 inside a check, because more than one check now reads it and two divergent
@@ -2575,6 +2595,20 @@ Suggested next work, in the order I would do it:
    the courtyard would show through. The shadow map would still see a solid
    wall, and so would `hitscan`, which is the bigger question: a hole you can
    see through and not shoot through reads as a bug.
+3. **Furnish the small shops.** A 10 m room is a counter, a shelf unit and
+   a crate or two, and some read bare. Anything added is a collider (body
+   height) and has to keep the route field reaching every open cell — the
+   open-buildings check reads exactly that, and the counter's first
+   placement sealed seven rooms. Flush litter and chips on the floor finish
+   are free by the decoration rules.
+4. **Upper floors, if play asks for them.** The user chose ground floors
+   only. Going up means a stairwell, a second `base`, and a route field that
+   knows about floors, which it does not: it is one grid at street level.
+   That is the real cost, not the geometry.
+5. **An elite under a ceiling.** Hostiles collide at their archetype's
+   height so a warlord can follow you in; an elite juggernaut is 3.7 m and
+   its head shows through the slab. A crouched walk under a ceiling (the
+   rig already has `CROUCH`) would hide it.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403
