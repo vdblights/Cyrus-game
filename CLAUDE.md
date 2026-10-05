@@ -1379,6 +1379,15 @@ on a pattern such as `tests/run.js` matches the shell running the
 command, which kills it (exit 144); select by the process listing
 instead (`ps -eo pid,args | grep "node tests/run"`).
 
+An eleventh, from the open-buildings pass: a ceiling turns a ledge into
+something else. Two checks sampled every chest-high box as somewhere to
+climb or to stand — the ledge check took the window sills of the open
+shops, and the car-roof check stood the player on a shop counter, its
+crown through the slab, and waited for a scavenger that rightly could not
+follow. Both now ask `ceilingAbove` for a body's height of headroom before
+calling a box a deck. Anything that samples decks, ledges or standing spots
+from the box list has to ask the same.
+
 A check that samples "the first N" of a list is a check on the list's
 order. `a hostile follows you onto a car roof` took the first eight decks
 in `world.boxes`, which after the fountain became sixteen staves were all
@@ -1494,6 +1503,16 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The open-buildings pass came straight after it, asked for in one line:
+can we make it so we can enter buildings? Asked back, the answer was
+ground floors only, in about a third of the buildings (the invariant on
+ceilings has the rest). What it cost, the same twelve hostiles on seed 1,
+against `main`: high 2,550 → 2,730 ms a frame (+7% with the hostile bodies
+under it, of which this pass is about 2%), triangles 579k → 807k, calls
+417 → 434; low 520 → 530 ms. The game step went the other way, 0.45 →
+0.2 ms median, because the grid index came with it. Seed 1 lays out 1,258
+boxes and 1,069 solids against 771 and 561, in 21 rooms.
 
 The hostile-bodies pass came after the hands, asked for in one line: the
 enemy models need more work. Rendered close before touching them, every

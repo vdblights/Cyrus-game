@@ -3164,6 +3164,8 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
       if (b.floor || b.top < 0.8 || b.top > 1.7) continue;
       const cx = b.cx ?? (b.minX + b.maxX) / 2, cz = b.cz ?? (b.minZ + b.maxZ) / 2;
       if (Math.abs(W.groundHeight(cx, cz, 0.42, 99) - b.top) > 0.05) continue;
+      // somewhere a body can stand, not a shop counter under the floors above
+      if (W.ceilingAbove(cx, cz, 0.42, b.top) < b.top + 1.9) continue;
       // one deck per place: the fountain's rim is sixteen staves, first in
       // the list, and eight of them were all this sampled
       if (out.some((o) => Math.hypot(o.at[0] - cx, o.at[1] - cz) < 4)) continue;
