@@ -127,6 +127,7 @@ const EYE_STAND = 1.68;
 const EYE_CROUCH = 1.05;
 const GRAVITY = 22;
 const STEP_HEIGHT = 0.55;      // how high you can walk up without jumping
+const BODY_HEIGHT = 1.85;      // feet to the crown, for ceilings
 const FALL_SAFE = 13;          // impact speed you can absorb unhurt (~4 m drop)
 const MANTLE_HEIGHT = 1.8;     // highest ledge you can haul yourself onto
 // A pull-up runs at a roughly constant climb rate rather than a fixed
@@ -303,12 +304,18 @@ export class Player {
     }
     this.velocity.y -= GRAVITY * dt;
     this.feetY += this.velocity.y * dt;
+    // a jump indoors stops against the ceiling instead of passing into it
+    const over = this.world.ceilingAbove(this.position.x, this.position.z, this.radius * 0.5, this.feetY + 0.5);
+    if (this.feetY + BODY_HEIGHT > over) {
+      this.feetY = over - BODY_HEIGHT;
+      if (this.velocity.y > 0) this.velocity.y = 0;
+    }
 
     // Move horizontally first. Anything no taller than a step above the feet
     // is walkable, so it does not block — the support check below lifts you.
     this.position.x += this.velocity.x * dt;
     this.position.z += this.velocity.z * dt;
-    this.world.resolve(this.position, this.radius, this.feetY, STEP_HEIGHT);
+    this.world.resolve(this.position, this.radius, this.feetY, STEP_HEIGHT, BODY_HEIGHT);
     this.world.clampToBounds(this.position, this.radius);
 
     // ---- footing ---------------------------------------------------------

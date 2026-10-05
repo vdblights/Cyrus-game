@@ -50,7 +50,7 @@ builds, never to play.
 | File | Owns |
 | --- | --- |
 | `src/main.js` | `Game`: loop, scene, lighting, waves, hit resolution, blasts |
-| `src/world.js` | Box collision (square or turned), ground height, line of sight, sphere bounce |
+| `src/world.js` | Box collision (square, turned, or a ceiling overhead), ground height, line of sight, sphere bounce, the grid that indexes them |
 | `src/city.js` | Procedural generation; returns `{ world, fireBarrels, perches }` |
 | `src/player.js` | `Input` and `Player`: look, movement, footing, health |
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
@@ -219,6 +219,57 @@ These each cost real debugging time. Changing them needs a reason.
   first stepped `t += 0.1` along each edge, which lands a hair under the
   far corner and never closed the run that ends there — 32 drops counted of
   64. Step a scan by count.
+- **A box may stand off the ground, and then it is a ceiling.** About one
+  tower in three (`opensAt`, by position) has a ground floor you walk into
+  (`groundFloor` in `city.js`): a shopfront of piers with doorways, windows
+  over a sill and shutters on the street faces, blank walls onto the
+  building next door, a slab ceiling, and inside columns, aisles of
+  shelving, a counter and crates. Every box used to run from the street to
+  its top, so the floors over the room are a box with a `base`
+  (`addCeiling`, at `GROUND - SLAB`, 3.03 m) and every reader had to learn
+  it. `resolve` walks a body under one when the base clears its `height`;
+  `groundHeight` never stands anything on one, so nothing is lifted onto a
+  roof it walked under and a mantle is not refused for a "wall" that is the
+  floor above; `ceilingAbove` stops a jump (the player's crown, 1.85 m over
+  the feet) and refuses a mantle onto a counter with no headroom
+  (`HEADROOM`); `lineOfSight` runs its Y slab from `base`; `bounceSphere`
+  has a fourth escape, down off the underside; `blocked` and the nav bake
+  let a body through under it. `occupied` deliberately does not: everything
+  that places a thing — a spawn, an objective, a weed — still treats a room
+  as taken. Five things are load-bearing. **A doorway is 4 m and more**,
+  because the route field keeps a shoulder clear of every wall, and the
+  first counter stood behind a doorway and sealed seven rooms from the
+  street (a 10 m shop with a partition had both bands of clearance meeting
+  across it, so the partition went); the counter now stands at the end of
+  the shopfront away from its doorways, crates only against blank walls,
+  and the aisles off the column lines, which had closed the aisle between
+  them into a pocket. **The open building still costs the stream what the
+  closed one did**: the block, the glass band and the shutter are minted
+  and their rolls drawn as before, the block's shape is swapped inside a
+  reserve, and the room is built inside one — so the mark after boot is
+  identical, and compared collider by collider on seeds 1, 7 and 20260101
+  the only colliders gone are the 21, 16 and 25 blocks that opened and every
+  new one lies inside one of their footprints. **The bake darkens what is
+  under a ceiling** (`indoorField`) by how far it is from the building's
+  faces, or a room is as bright as the pavement: under half the light at
+  the back of a wide floor, most of it by the shopfront, and nothing on the
+  faces themselves. **Hostiles collide at their archetype's height**, not an
+  elite's, so a warlord can follow you in; an elite juggernaut's head goes
+  through the slab, which is the price. And **the boxes are indexed once
+  the city is built** (`World.seal`): 500 more colliders on seed 1 doubled
+  the game step in a fight (0.45 → 0.85 ms median), and walking only the
+  cells a query touches brings it to 0.2. The index hands boxes back in list
+  order and is only trusted while the list is the length it was sealed at,
+  so generation never sees it and a 25-second fight ends in exactly the
+  same state either way. `world.rooms` lists each room and its doorways for
+  anything that wants to find one. `a building opens onto the street: you
+  walk in under its floors, and it hides you from above` walks into every
+  room through a doorway, reads the route field over every open cell of its
+  floor, jumps, sights it from over the roof and through the door, and
+  throws a grenade at the ceiling; it fails with each of the five readers
+  put back the way it was (21 of 21 rooms not entered; every room's floor
+  blocked to the route field; a crown through the ceiling; 21 doorways
+  blind; a grenade shoved out of the building).
 - **Anything you can see at body height is something you can bump into.**
   Every heap of rubble (`rubblePile`) and every fallen slab in a rubble lot
   was drawn and registered nowhere — the slabs were in the raycast list and
@@ -739,7 +790,45 @@ These each cost real debugging time. Changing them needs a reason.
   raycast: kit hung on loose would be a silhouette bullets pass through, and
   would also put another dozen meshes per hostile into the per-pellet
   intersect list. The same merge is why a hostile is now 12 meshes rather than
-  15 while carrying six times the triangles.
+  15 while carrying six times the triangles (13 in a coat; see the next item).
+- **A hostile is swept, and what it wears is cut from its body.** Every
+  hostile was chamfered boxes — a brick for a torso, a cube for a head, a box
+  for a fist, blocks for boots — and a wave read as robots: 53-56% of each
+  body's surface faced square down an axis, 15-19% now. The body's section
+  is one table, `BODY` in `makeKit` (height, half-width, half-depth, how far
+  forward its middle sits, from the hips to the shoulder line). The torso is
+  swept through it and domed over the shoulders, `face` and `crown` say
+  where its surface is, and anything worn over it is a `wrap`: the same
+  section grown by `out`, standing proud across the arcs given and scaled
+  under the cloth everywhere else, so its edges roll into the body instead
+  of standing off it. A plate is only the span that shows (`sweepGeo`'s
+  `arc`). Change a row and every plate, strap, pouch and the marker band
+  move with it. Four things about it are load-bearing. **Vertex colours
+  shade a piece against its material** — a glove is the sleeve's cloth at
+  0.32, a boot the trouser's at 0.42 — so `cloth`, `gear` and `skin` are
+  `vertexColors: true` and anything merged into a hostile part needs a
+  `color` attribute (`tone`; `mergeIntoOne` fills white where one is
+  missing), the same rule as the city's materials. **A flat sweep is
+  creased** (`flat`): smoothed the way a limb is, the knife edge down a
+  strap averaged its top face with its bottom one, and the facet at its end
+  was lit as if it faced inward — 11 of them, which `nothing is built inside
+  out` found. **A coat hangs from the hips**: its skirt is a part of its own
+  (`skirt`, on the group, not on `upper`), because the waist turns 0.48 rad
+  into a stance and a coat on it swung a thigh out through its front. It is
+  batched like every other part, for the archetypes that have one, and it is
+  a mesh no hostile used to have — and a new `Enemy` is built mid-run, out
+  of the stream that picks the next spawn — so it is minted in a `reserve`,
+  and a spawn still costs 100 draws (112 for the marksman). And **the eye is
+  two lenses** in goggle cups at the middle of the face (`AT.eye` at x = 0),
+  which is what the facing check reads. What it costs: 6.3-8.5k triangles a
+  hostile with its gun, against about 2k; the first cut was 13-17k, and the
+  rings and sides came down until no silhouette moved. Draw calls are
+  unchanged but for three per coated archetype in view. `a hostile is a
+  body in kit, not a stack of boxes, and costs a spawn what it did` fails
+  three ways: on the old builders (53% square), with the skirt minted
+  outside the reserve (104 draws), and with the skirt hung on the waist (2
+  points of thigh through the coat — weak, because a near-round skirt hides
+  most of the turn, but it bites).
 - **A hostile is built facing -z, and the weapon decides where the hands
   go.** The turn used to point the body's +z at its target, so every
   hostile that ever fought you did it facing away — eye glowing from the
@@ -768,7 +857,8 @@ These each cost real debugging time. Changing them needs a reason.
 - **A hostile is drawn by its archetype's batches, and shot through its
   rig.** `HostileBatches` in `enemies.js` keeps one `InstancedMesh` per
   archetype and part — torso, rig, head, head kit, upper and lower arm,
-  thigh, shin, gun, band and eye — and writes every shown hostile into them
+  thigh, shin, gun, band and eye, and a coat's skirt for the archetypes that
+  wear one — and writes every shown hostile into them
   from `scene.onBeforeRender`, which three calls after it has brought every
   matrix up to date, so every pass in a frame (both cascades, the occlusion
   depth, the scene) draws the same instances. The rig's own meshes are
@@ -1213,6 +1303,21 @@ shard down with it. Confirmed both ways: a 1 ms render deadline fails the
 shot check saying so, and a 3 s limit fails the scripted run by name and
 lets the run finish.
 
+It finally reproduced here, in the hostile-bodies pass: the walking check
+stalled in two runs of eight, the last five clean, while `main` passed four
+of four alongside — too few runs to call a difference, and the same stall
+CI had already shown three times on the old code. What
+it showed is that a stall is not one render: once one hangs, every later
+offline render in that page hangs too (all three of `__offline`'s tries),
+and the page will not navigate either. The reload after it timed out at
+30 s, outside any check, and the runner died on the uncaught exception with
+every check after it unrun. So a reload that fails now relaunches the
+browser (`renew` in the harness), and a check that failed *and* left the
+browser wedged runs once more on the new one: a wedge is the browser's
+failure, and a failure that leaves the page healthy still stands. Confirmed
+with a simulated wedge — the check's first run failing and the reload after
+it throwing — which relaunched, reran and passed.
+
 An eighth, from the perch pass, and it is the expensive kind again: a
 tolerance is a place for a bug to live. `stairs carry the player onto a
 perch` passed a perch once the feet came within 0.7 m of the deck, which the
@@ -1273,6 +1378,15 @@ serves on a fixed port**, so it cannot run while the suite does (it fails
 on a pattern such as `tests/run.js` matches the shell running the
 command, which kills it (exit 144); select by the process listing
 instead (`ps -eo pid,args | grep "node tests/run"`).
+
+An eleventh, from the open-buildings pass: a ceiling turns a ledge into
+something else. Two checks sampled every chest-high box as somewhere to
+climb or to stand — the ledge check took the window sills of the open
+shops, and the car-roof check stood the player on a shop counter, its
+crown through the slab, and waited for a scavenger that rightly could not
+follow. Both now ask `ceilingAbove` for a body's height of headroom before
+calling a box a deck. Anything that samples decks, ledges or standing spots
+from the box list has to ask the same.
 
 A check that samples "the first N" of a list is a check on the list's
 order. `a hostile follows you onto a car roof` took the first eight decks
@@ -1389,6 +1503,27 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The open-buildings pass came straight after it, asked for in one line:
+can we make it so we can enter buildings? Asked back, the answer was
+ground floors only, in about a third of the buildings (the invariant on
+ceilings has the rest). What it cost, the same twelve hostiles on seed 1,
+against `main`: high 2,550 → 2,730 ms a frame (+7% with the hostile bodies
+under it, of which this pass is about 2%), triangles 579k → 807k, calls
+417 → 434; low 520 → 530 ms. The game step went the other way, 0.45 →
+0.2 ms median, because the grid index came with it. Seed 1 lays out 1,258
+boxes and 1,069 solids against 771 and 561, in 21 rooms.
+
+The hostile-bodies pass came after the hands, asked for in one line: the
+enemy models need more work. Rendered close before touching them, every
+hostile was a block robot — a brick torso, a cube head, box fists and block
+boots, kit hung on as more boxes. They are swept and worn now (invariant
+above). What it cost, twelve alerted hostiles on seed 1 under software
+rendering, interleaved against `main`: high 2,540 → 2,680 ms a frame (+6%),
+triangles 579k → 766k, calls 417 → 423; low 525 → 535 ms, which is about
+noise, triangles 193k → 257k. The spawn stream and the layout are
+untouched. The same pass made the runner survive a wedged browser (testing
+traps, under "No check may wait for ever").
 
 The instancing pass is the eighteenth, and it was item 1 of the list: a
 hostile was about forty draw calls a frame, and a wave was most of the

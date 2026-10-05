@@ -3,7 +3,7 @@ import { audio } from './audio.js';
 import { randRange, SUPPORT_RADIUS } from './world.js';
 import * as TEX from './textures.js';
 import { TILE, blobShadow } from './textures.js';
-import { chamferGeo, mergeIntoOne, sideGeo, latheGeo } from './shapes.js';
+import { chamferGeo, mergeIntoOne, sideGeo, latheGeo, sweepGeo, bend, creaseNormals } from './shapes.js';
 import { reserve } from './rng.js';
 
 const V1 = new THREE.Vector3();
@@ -182,10 +182,11 @@ const KITS = new Map();
  */
 const AT = {
   torso: [0, 1.18, 0], rig: [0, 1.22, 0], head: [0, 1.66, 0], headKit: [0, 1.66, 0],
-  band: [0, 1.36, 0], eye: [0.07, 1.63, -0.175],
+  band: [0, 1.36, 0], eye: [0, 1.672, -0.116],
   armL: [-0.34, 1.45, 0], armR: [0.34, 1.45, 0],
   legL: [-0.14, 0.86, 0], legR: [0.14, 0.86, 0],
   weapon: [0.30, 1.28, -0.12],
+  skirt: [0, 0.9, 0],
   // the upper body turns, leans and flinches about the waist
   waist: [0, 0.88, 0],
 };
@@ -299,9 +300,6 @@ export function sampleBodies() {
 function makeKit(type) {
   const k = type.kit;
   const T = TILE.kit;
-  /** A chamfered part, offset from the origin of the part it belongs to. */
-  const box = (w, h, d, at, bevel) =>
-    chamferGeo(w, h, d, bevel ?? Math.min(w, h, d) * 0.22, T, at);
 
   const clothTex = TEX.fatigues();
   const gearTex = TEX.webbing();
@@ -310,9 +308,11 @@ function makeKit(type) {
 
   // The maps are pale and carry only the weave, the strapping and the wear —
   // the archetype's own colours still say what it is, the way `paintedMetal`
-  // lets one texture paint a grey streetlight and a maroon wreck.
+  // lets one texture paint a grey streetlight and a maroon wreck. Vertex
+  // colours darken what is cut from the same stuff but is not the same
+  // thing: a glove at the end of a sleeve, a boot under a trouser leg.
   const cloth = new THREE.MeshStandardMaterial({
-    color: type.color, map: clothTex,
+    color: type.color, map: clothTex, vertexColors: true,
     normalMap: TEX.normalFrom(clothTex, 1.3, 'fatigues', 1),
     normalScale: new THREE.Vector2(0.75, 0.75),
     roughnessMap: TEX.surfaceFrom(clothTex, { dark: 1, lite: 0.86 }, 'fatigues'),
@@ -321,14 +321,14 @@ function makeKit(type) {
     roughness: 1, metalness: 0, envMapIntensity: 0.75,
   });
   const gear = new THREE.MeshStandardMaterial({
-    color: type.accent, map: gearTex,
+    color: type.accent, map: gearTex, vertexColors: true,
     normalMap: TEX.normalFrom(gearTex, 1.4, 'webbing', 1),
     normalScale: new THREE.Vector2(0.85, 0.85),
     roughnessMap: gearSurface, metalnessMap: gearSurface,
     roughness: 1, metalness: 1, envMapIntensity: 0.8,
   });
   const skin = new THREE.MeshStandardMaterial({
-    color: 0x8c7159, map: clothTex,
+    color: 0x8c7159, map: clothTex, vertexColors: true,
     normalMap: TEX.normalFrom(clothTex, 1.3, 'fatigues', 1),
     normalScale: new THREE.Vector2(0.5, 0.5),
     roughness: 0.92, metalness: 0, envMapIntensity: 0.4,
@@ -341,73 +341,325 @@ function makeKit(type) {
     roughness: 1, metalness: 1, envMapIntensity: 0.8,
   });
 
-  // ------------------------------------------------------------ the body
-  const heavy = k.armour === 'heavy' || k.armour === 'plated';
-  const limb = heavy ? 0.04 : 0;
+  // ------------------------------------------------------------ the tools
+  const lerp = THREE.MathUtils.lerp;
+  const clamp01 = (x) => Math.min(1, Math.max(0, x));
+  /** 0 below `a`, 1 past `b`, eased between; `a > b` runs it the other way. */
+  const ramp = (a, b, x) => smooth(clamp01((x - a) / (b - a)));
+  const ACROSS = new THREE.Vector3(1, 0, 0), UP = new THREE.Vector3(0, 1, 0);
+  /** One shade over a whole piece, multiplied into its material's colour. */
+  const tone = (geo, c = 1) => {
+    const n = geo.attributes.position.count;
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(n * 3).fill(c), 3));
+    return geo;
+  };
+  /** A chamfered part, in the frame of whatever it is merged into. */
+  const box = (w, h, d, at, bevel, c = 1) =>
+    tone(chamferGeo(w, h, d, bevel ?? Math.min(w, h, d) * 0.22, T, at), c);
+  /** A swept piece: a limb, a strap, a hood (see `sweepGeo`). */
+  const tube = (points, size, opts = {}, c = 1) => tone(sweepGeo(points.map((p) => new THREE.Vector3(...p)), size, T,
+    { side: ACROSS, around: 10, step: 0.06, dome: 2, ...opts }), c);
+  /**
+   * A flat swept piece — a strap, a plate edge-on. Smoothed the way a limb is,
+   * the knife edge down each side averages its top face with its bottom one
+   * and a facet there ends up lit as if it faced inward; creased, each face
+   * keeps its own.
+   */
+  const flat = (points, size, opts = {}, c = 1) => creaseNormals(tube(points, size, { around: 6, ...opts }, c), 40);
+  /** Turned about +Z, then laid where it goes by the caller. */
+  const turned = (profile, sides, c = 1) => tone(latheGeo(profile, sides, T, { crease: 50 }), c);
 
-  const torso = [
-    box(0.52, 0.66, 0.30, [0, 0, 0], 0.07),
-    box(0.36, 0.10, 0.26, [0, 0.32, 0], 0.03),                   // collar
-    box(0.16, 0.16, 0.22, [-0.28, 0.29, 0], 0.04),               // shoulder caps
-    box(0.16, 0.16, 0.22, [0.28, 0.29, 0], 0.04),
+  // ------------------------------------------------------------ the body
+  //
+  // The body's own section from the hips to the shoulder line: height,
+  // half-width, half-depth and how far forward its middle sits, in the
+  // body's frame. Everything worn over the torso is cut from these rows
+  // (`wrap`), so a plate lies on the chest it is strapped to and a belt goes
+  // round the waist it is on, rather than a box standing off a box.
+  const BODY = [
+    [0.84, 0.190, 0.112, 0.012],
+    [0.95, 0.200, 0.116, 0.010],
+    [1.05, 0.178, 0.106, 0.004],
+    [1.20, 0.200, 0.120, -0.004],
+    [1.33, 0.225, 0.128, -0.010],
+    [1.43, 0.240, 0.118, -0.002],
   ];
+  const TOP = BODY[BODY.length - 1];
+  const at = (y) => {
+    let i = 0;
+    while (i < BODY.length - 2 && y > BODY[i + 1][0]) i++;
+    const [y0, w0, d0, z0] = BODY[i], [y1, w1, d1, z1] = BODY[i + 1];
+    const t = clamp01((y - y0) / (y1 - y0));
+    return { w: lerp(w0, w1, t), d: lerp(d0, d1, t), z: lerp(z0, z1, t) };
+  };
+  /** The body's surface at a height and across, at the front (-1) or the back (+1). */
+  const face = (x, y, side) => { const s = at(y); return s.z + side * s.d * Math.sqrt(Math.max(0, 1 - (x / s.w) ** 2)); };
+  // The torso closes over the shoulders in a dome (as `sweepGeo` domes an
+  // end), which is the slope from the neck to the shoulder; a strap over it
+  // has to know where it is.
+  const DOME = 0.9 * Math.min(TOP[1], TOP[2]);
+  const crown = (x, z) => TOP[0] + DOME * Math.sqrt(Math.max(0, 1 - (x / TOP[1]) ** 2 - ((z - TOP[3]) / TOP[2]) ** 2));
+  const FRONT = Math.PI / 2, BACK = Math.PI * 1.5, TAU = Math.PI * 2;
+
+  /**
+   * Something worn over the torso between two heights: the body's own
+   * section grown by `out`, standing proud across `arcs` (angles round the
+   * body: 0 its right side, `FRONT`, `BACK`) and tucked under the cloth
+   * everywhere else, so its edges roll into the body instead of standing off
+   * it. No arcs is all the way round, which is a belt or a vest.
+   */
+  const wrap = (y0, y1, out, arcs = null, { edge = 0.3, lip = 0.035 } = {}, c = 1) => {
+    const n = Math.max(2, Math.round((y1 - y0) / 0.05));
+    const pts = [];
+    for (let i = 0; i <= n; i++) { const y = lerp(y0, y1, i / n); pts.push([0, y, at(y).z]); }
+    const span = y1 - y0;
+    const of = (t) => at(lerp(y0, y1, t));
+    const one = arcs && arcs.length === 1 ? arcs[0] : null;
+    const range = one ? [one[0] - one[1] - 0.05, one[0] + one[1] + 0.05] : null;
+    return tube(pts, (t) => { const s = of(t); return [s.w + out, s.d + out]; }, {
+      open: [true, true], step: lip, arc: range,
+      around: range ? Math.max(6, Math.ceil((range[1] - range[0]) / 0.26)) : 18,
+      bump: (t, th) => {
+        const s = of(t);
+        const hide = (Math.min(s.w, s.d) - 0.008) / (Math.min(s.w, s.d) + out);
+        let on = 1;
+        if (arcs) {
+          on = 0;
+          for (const [mid, half] of arcs) {
+            let d = (th - mid) % TAU;
+            if (d > Math.PI) d -= TAU;
+            if (d < -Math.PI) d += TAU;
+            on = Math.max(on, ramp(half, half - edge, Math.abs(d)));
+          }
+        }
+        on *= ramp(0, lip, Math.min(t, 1 - t) * span);
+        return lerp(hide, 1, on);
+      },
+    }, c);
+  };
+  /** A strap from the chest, over the shoulder and down the back, on whatever it lies over. */
+  const strap = (x, out, wide = 0.028, c = 0.8) => {
+    const pts = [
+      [x, 1.25, face(x, 1.25, -1) - out], [x, 1.38, face(x, 1.38, -1) - out - 0.004],
+      [x, crown(x, -0.07) + 0.012, -0.07], [x, crown(x, 0) + 0.012, 0], [x, crown(x, 0.07) + 0.012, 0.07],
+      [x, 1.38, face(x, 1.38, 1) + out + 0.004], [x, 1.25, face(x, 1.25, 1) + out],
+    ];
+    return flat(pts, () => [wide / 2, 0.006], { step: 0.05, open: [true, true] }, c);
+  };
+  /** A pouch on the front (-1) or the back (+1), its inside face on what it is clipped to. */
+  const pouch = (x, y, w, h, d, out, side = -1, c = 0.85) =>
+    box(w, h, d, [x, y, face(x, y, side) + side * (out + d / 2 - 0.006)], 0.014, c);
+  /** A short sleeve round the neck, or round anything upright. */
+  const collar = (y0, y1, r0, r1, c = 1, z = 0) =>
+    tube([[0, y0, z], [0, y1, z + 0.004]], (t) => [lerp(r0[0], r1[0], t), lerp(r0[1], r1[1], t)],
+      { open: [true, true], around: 14, step: 0.06 }, c);
+  /** A shoulder plate: a shallow lens laid over the deltoid, tipped out. */
+  const pauldron = (side, x, y, r, tilt, c = 0.9) => {
+    const g = turned([[0, 0.062], [r * 0.6, 0.05], [r, 0], [r * 0.95, -0.014], [0, -0.014]], 12, c);
+    g.rotateX(-Math.PI / 2);
+    g.scale(1, 1, 1.15);
+    g.rotateZ(-side * tilt);
+    return g.translate(side * x, y, 0);
+  };
+
+  const heavy = k.armour === 'heavy' || k.armour === 'plated';
+  const L = heavy ? 0.02 : 0;
+
+  // The torso proper, a neck and a jacket collar, in the body's frame.
+  // The dome that closes the bottom of it is flattened into a seat, or it
+  // hangs between the legs.
+  const torso = [
+    bend(tube(BODY.map((r) => [0, r[0], r[3]]), (t) => { const s = at(lerp(BODY[0][0], TOP[0], t)); return [s.w, s.d]; },
+      { around: 16, step: 0.07, dome: 4 }), (v) => { if (v.y < BODY[0][0]) v.y = BODY[0][0] - (BODY[0][0] - v.y) * 0.45; }),
+    tube([[0, 1.46, 0.006], [0, 1.60, 0.0]], () => [0.052, 0.056], { around: 8, step: 0.14, dome: 1 }, 0.95),
+    collar(1.47, 1.53, [0.088, 0.082], [0.076, 0.072], 0.85),
+  ];
+  // A coat that hangs past the belt, flaring as it falls, which is most of
+  // what reads as a long-range shooter standing still on a roof. Its skirt
+  // hangs from the hips rather than the waist (`skirt`), so the upper body
+  // can blade into a stance without swinging it through a leg, and it is
+  // near round for the same reason: the waist turns inside its top.
+  let skirt = null;
   if (k.coat) {
-    // a coat that hangs past the belt, which is most of what reads as a
-    // long-range shooter standing still on a roof
-    torso.push(box(0.52, k.coat, 0.34, [0, -0.33 - k.coat / 2, 0], 0.05));
+    const y0 = 0.985, y1 = 0.84 - k.coat;
+    skirt = tube([[0, y0, 0.006], [0, 0.90, 0.02], [0, y1, 0.04]],
+      // flaring fast off the belt and then falling straight, or the tops of
+      // the thighs stand out through it
+      (t) => [lerp(0.212, 0.29, Math.sqrt(t)), lerp(0.172, 0.26, Math.sqrt(t))], { around: 16, step: 0.06, open: [true, true] }, 0.92);
+    torso.push(collar(1.44, 1.55, [0.13, 0.12], [0.1, 0.09], 0.9));   // its collar, turned up
   }
 
-  const rig = [];
+  // What is worn over it.
+  const rig = [
+    wrap(0.955, 1.005, heavy ? 0.018 : 0.013, null, { lip: 0.016 }, 0.6),             // belt
+    wrap(0.80, 0.965, 0.006, null, { lip: 0.04 }),                                      // the seat of the trousers
+  ];
+  let band = 0.03;     // how far proud the archetype's marker band stands
   if (k.armour === 'carrier') {
-    rig.push(box(0.56, 0.36, 0.36, [0, 0, 0], 0.05));
-    for (const px of [-0.17, 0, 0.17]) rig.push(box(0.14, 0.14, 0.10, [px, -0.15, -0.20], 0.03));
-    for (const px of [-0.16, 0.16]) rig.push(box(0.08, 0.28, 0.07, [px, 0.20, -0.15], 0.02));
+    rig.push(wrap(1.07, 1.27, 0.022, null, { lip: 0.02 }, 0.9));                       // cummerbund
+    rig.push(wrap(1.09, 1.41, 0.036, [[FRONT, 0.95]]));                                 // front plate
+    rig.push(wrap(1.09, 1.41, 0.036, [[BACK, 0.95]]));                                  // back plate
+    for (const x of [-0.115, 0.115]) rig.push(strap(x, 0.036));
+    for (const x of [-0.088, 0, 0.088]) rig.push(pouch(x, 1.19, 0.078, 0.13, 0.05, 0.036));
+    rig.push(pouch(0.11, 1.30, 0.07, 0.16, 0.05, 0.036, 1));                            // radio
+    rig.push(pouch(-0.2, 1.0, 0.07, 0.1, 0.06, 0.0, 1, 0.75));                         // dump pouch
+    band = 0.044;
   } else if (k.armour === 'heavy') {
-    rig.push(box(0.60, 0.44, 0.40, [0, 0, 0], 0.06));
-    rig.push(box(0.46, 0.14, 0.34, [0, -0.26, 0], 0.04));        // belly plate
-    for (const px of [-0.35, 0.35]) rig.push(box(0.22, 0.18, 0.30, [px, 0.28, 0], 0.05));
+    rig.push(wrap(1.03, 1.42, 0.05, null, { lip: 0.04 }));                              // the vest, all round
+    rig.push(wrap(1.12, 1.38, 0.068, [[FRONT, 0.8]]));                                  // a trauma plate over it
+    rig.push(wrap(0.86, 1.02, 0.036, [[FRONT, 0.55], [0.15, 0.35], [Math.PI - 0.15, 0.35]], { edge: 0.25, lip: 0.02 }, 0.85));
+    rig.push(collar(1.42, 1.52, [0.135, 0.125], [0.105, 0.098], 0.85));                 // neck guard
+    for (const s of [-1, 1]) rig.push(pauldron(s, 0.31, 1.49, 0.135, 0.55));
+    for (const x of [-0.12, 0.12]) rig.push(pouch(x, 1.08, 0.09, 0.09, 0.06, 0.05));
+    band = 0.074;
   } else if (k.armour === 'plated') {
-    rig.push(box(0.64, 0.50, 0.44, [0, 0, 0], 0.07));
-    rig.push(box(0.50, 0.16, 0.38, [0, -0.28, 0], 0.04));
-    for (const px of [-0.40, 0.40]) rig.push(box(0.26, 0.24, 0.34, [px, 0.30, 0], 0.06));
-    rig.push(box(0.40, 0.44, 0.20, [0, 0.04, 0.26], 0.05));      // pack
-    for (const px of [-0.13, 0.13]) rig.push(box(0.10, 0.34, 0.10, [px, 0.38, 0.26], 0.03));
+    rig.push(wrap(1.0, 1.42, 0.066, null, { lip: 0.04 }));
+    rig.push(wrap(1.10, 1.39, 0.09, [[FRONT, 0.75]]));
+    rig.push(wrap(0.84, 1.0, 0.05, [[FRONT, 0.6], [0.25, 0.4], [Math.PI - 0.25, 0.4]], { edge: 0.25, lip: 0.02 }, 0.85));
+    rig.push(collar(1.40, 1.54, [0.155, 0.14], [0.112, 0.104], 0.85));                  // gorget
+    for (const s of [-1, 1]) {
+      rig.push(pauldron(s, 0.33, 1.50, 0.16, 0.5));
+      rig.push(pauldron(s, 0.37, 1.41, 0.125, 0.95, 0.8));
+    }
+    // a pack on the back, two tanks strapped to it, and the hoses over the shoulders
+    const back = face(0, 1.25, 1) + 0.066;
+    rig.push(box(0.38, 0.42, 0.18, [0, 1.25, back + 0.09], 0.04, 0.8));
+    for (const x of [-0.11, 0.11]) {
+      const tank = turned([[0, -0.2], [0.05, -0.185], [0.062, -0.16], [0.062, 0.16], [0.05, 0.185], [0, 0.2]], 10, 0.95);
+      rig.push(tank.rotateX(-Math.PI / 2).translate(x, 1.27, back + 0.22));
+      const front = face(x * 0.7, 1.3, -1) - 0.1;
+      rig.push(tube([[x, 1.47, back + 0.2], [x * 1.4, 1.53, back * 0.5 + 0.02], [x * 1.5, crown(x * 1.5, 0) + 0.03, -0.01],
+        [x * 1.3, 1.45, front], [x * 0.8, 1.32, front]], () => [0.018, 0.018], { around: 6, step: 0.05, dome: 1 }, 0.5));
+    }
+    band = 0.098;
   } else if (k.armour === 'scrap') {
     // whatever was to hand, strapped on one side and not the other
-    rig.push(box(0.42, 0.30, 0.34, [-0.05, 0.02, 0], 0.04));
-    rig.push(box(0.24, 0.20, 0.28, [0.30, 0.26, 0], 0.05));
-    rig.push(box(0.09, 0.40, 0.08, [0.10, 0.12, -0.16], 0.02));
-    rig.push(box(0.14, 0.14, 0.10, [-0.18, -0.16, -0.19], 0.03));
+    rig.push(wrap(1.15, 1.37, 0.022, [[FRONT + 0.4, 0.55]], { edge: 0.2 }, 0.85));       // a sheet of tin
+    rig.push(pauldron(1, 0.31, 1.49, 0.13, 0.6, 0.8));
+    // a bandolier, over the left shoulder and round under the right arm
+    const R = 0.02;
+    const pts = [
+      [-0.13, crown(-0.13, -0.05) + R, -0.05], [-0.09, 1.38, face(-0.09, 1.38, -1) - R],
+      [0.02, 1.24, face(0.02, 1.24, -1) - R], [0.14, 1.08, face(0.14, 1.08, -1) - R],
+      [at(1.0).w + R, 1.0, 0.0],
+      [0.13, 1.1, face(0.13, 1.1, 1) + R], [-0.03, 1.26, face(-0.03, 1.26, 1) + R],
+      [-0.12, 1.4, face(-0.12, 1.4, 1) + R], [-0.14, crown(-0.14, 0.04) + R, 0.04],
+    ];
+    rig.push(tube(pts, () => [0.018, 0.015], { around: 6, step: 0.05, open: [true, true] }, 0.7));
+    rig.push(pouch(0.1, 1.08, 0.12, 0.1, 0.06, 0.0, -1, 0.75));
+    rig.push(pouch(-0.21, 0.98, 0.1, 0.14, 0.07, 0.0, 1, 0.7));                        // a satchel on the hip
+    band = 0.036;
   } else {
-    rig.push(box(0.50, 0.24, 0.33, [0, 0.08, 0], 0.04));
-    for (const px of [-0.16, 0.16]) rig.push(box(0.13, 0.13, 0.09, [px, -0.12, -0.19], 0.03));
+    // a chest rig: a row of magazine pouches on a yoke
+    rig.push(wrap(1.15, 1.32, 0.03, [[FRONT, 1.0]]));
+    for (const x of [-0.12, -0.04, 0.04, 0.12]) rig.push(pouch(x, 1.22, 0.07, 0.11, 0.045, 0.03));
+    for (const x of [-0.12, 0.12]) rig.push(strap(x, 0.03, 0.03));
+    rig.push(pouch(0, 1.03, 0.18, 0.1, 0.07, 0.0, 1, 0.75));                           // a butt pack
+    band = 0.038;
   }
 
-  const headKit = [box(0.27, 0.14, 0.10, [0, -0.04, -0.12], 0.03)];  // respirator
-  headKit.push(box(0.10, 0.10, 0.09, [0, -0.075, -0.20], 0.03));     // filter
+  // ------------------------------------------------------------ the head
+  // A head, about its own middle: the eyes on the line through it.
+  const head = [tube([[0, -0.035, 0.008], [0, 0.0, 0.004], [0, 0.03, 0]],
+    (t) => [lerp(0.084, 0.096, t), lerp(0.1, 0.108, t)], { around: 14, step: 0.032, dome: 4 })];
+
+  const headKit = [];
+  // goggles: two cups over the eyes, the lenses (`eye`) in them, and a strap round the back
+  for (const x of [-0.042, 0.042]) {
+    headKit.push(turned([[0.025, 0.002], [0.034, 0.002], [0.032, -0.018], [0.025, -0.018], [0.025, 0.002]], 10, 0.5)
+      .translate(x, 0.012, -0.097));
+  }
+  const ring = [];
+  for (let i = 0; i <= 8; i++) {
+    const a = lerp(0.3, 1.7, i / 8) * Math.PI;
+    ring.push([Math.sin(a) * 0.1, 0.012, 0.004 - Math.cos(a) * 0.113]);
+  }
+  headKit.push(flat(ring, () => [0.011, 0.004], { side: UP, step: 0.05, open: [true, true] }, 0.55));
+  // a canister filter, pointing forward and down from wherever it is screwed in
+  const filter = (x, y, z, c = 0.7) => turned([[0, 0], [0.034, 0], [0.036, -0.006], [0.036, -0.034], [0, -0.04]], 10, c)
+    .rotateX(-0.45).rotateY(-x * 4).translate(x, y, z);
+  if (k.head === 'visor') {
+    // a face guard over the mouth and jaw, the filters out at its cheeks
+    headKit.push(flat([[-0.104, -0.048, -0.02], [-0.075, -0.05, -0.095], [0, -0.052, -0.128], [0.075, -0.05, -0.095], [0.104, -0.048, -0.02]],
+      () => [0.046, 0.008], { side: UP, around: 8, step: 0.03, dome: 1 }, 0.9));
+    for (const x of [-0.07, 0.07]) headKit.push(filter(x, -0.06, -0.115));
+  } else {
+    // a respirator: a moulded cup over the nose and mouth
+    headKit.push(tube([[0, -0.042, -0.07], [0, -0.05, -0.1], [0, -0.056, -0.122]],
+      (t) => [lerp(0.072, 0.05, t), lerp(0.056, 0.04, t)], { around: 12, step: 0.025, open: [true, false] }, 0.75));
+    if (k.head === 'hood') headKit.push(filter(0, -0.072, -0.15));
+    else for (const x of [-0.05, 0.05]) headKit.push(filter(x, -0.07, -0.13));
+  }
   if (k.head === 'hood') {
-    headKit.push(box(0.35, 0.32, 0.35, [0, 0.05, 0.02], 0.11));
+    // a hood: an arch over the crown from shoulder to shoulder, open at the
+    // face, closed behind the head, and a cowl round the neck under it
+    const arch = [];
+    for (let i = 0; i <= 10; i++) {
+      const a = lerp(-0.5, Math.PI + 0.5, i / 10);
+      arch.push([Math.cos(a) * 0.128, -0.02 + Math.sin(a) * 0.166, 0.004]);
+    }
+    headKit.push(tube(arch, () => [0.125, 0.022], { side: new THREE.Vector3(0, 0, 1), around: 10, step: 0.055, dome: 1 }, 1));
+    headKit.push(tube([[0, -0.11, 0.075], [0, 0.0, 0.1], [0, 0.09, 0.07]], () => [0.112, 0.05], { around: 10, step: 0.07 }, 1));
+    headKit.push(collar(-0.21, -0.09, [0.17, 0.15], [0.124, 0.118], 1, 0.012));
   } else {
-    headKit.push(box(0.30, 0.13, 0.30, [0, 0.13, 0], 0.05));
-    headKit.push(box(0.30, 0.05, 0.13, [0, 0.095, -0.16], 0.02));    // brim
-    if (k.head === 'visor') headKit.push(box(0.32, 0.12, 0.09, [0, -0.005, -0.145], 0.03));
+    // a helmet, turned, with the back brought down over the nape
+    const helmet = turned([[0, 0.128], [0.068, 0.116], [0.112, 0.082], [0.13, 0.038], [0.134, 0.0], [0.131, -0.012], [0, -0.012]], 16);
+    helmet.rotateX(-Math.PI / 2);
+    bend(helmet, (v) => { v.y -= (Math.max(0, v.z) / 0.134) * 0.05 * (1 - ramp(-0.012, 0.07, v.y)); });
+    headKit.push(helmet.scale(1, 1, 1.12).translate(0, 0.035, 0.008));
+    if (k.armour === 'plated') {
+      // a brow plate riveted across the front of it
+      const brow = [];
+      for (let i = 0; i <= 8; i++) {
+        const a = lerp(-1.2, 1.2, i / 8);
+        brow.push([Math.sin(a) * 0.142, 0.048, 0.008 - Math.cos(a) * 0.158]);
+      }
+      headKit.push(flat(brow, () => [0.024, 0.008], { side: UP, step: 0.04, dome: 1 }, 0.85));
+    } else if (k.head === 'helm') {
+      // ear defenders, and a night-vision mount on the brow
+      for (const s of [-1, 1]) {
+        headKit.push(turned([[0, 0], [0.044, 0], [0.044, -0.022], [0, -0.034]], 10, 0.65)
+          .rotateY(-s * Math.PI / 2).translate(s * 0.096, -0.004, 0.006));
+      }
+      headKit.push(box(0.045, 0.05, 0.026, [0, 0.085, -0.148], 0.008, 0.6));
+    }
   }
 
-  // Limbs in two pieces each, so a knee and an elbow can bend: each piece is
-  // built hanging from its own joint, and the lower one is parented at the
-  // end of the upper (`ARM` and `LEG` below have the lengths).
-  const arm = [box(0.15 + limb, 0.28, 0.16 + limb, [0, -0.14, 0], 0.04)];
-  if (heavy) arm.push(box(0.20, 0.14, 0.22, [0, -0.13, 0], 0.04));   // vambrace
+  // ------------------------------------------------------------ the limbs
+  // Each piece hangs from its own joint, and the lower one is parented at the
+  // end of the upper (`ARM` and `LEG` have the lengths). A joint is a dome
+  // at each end of the pieces that meet there, so a bent knee or elbow
+  // stays closed.
+  const arm = [tube([[0, 0.012, 0], [0, -0.13, 0.004], [0, -0.28, 0]],
+    (t) => [lerp(0.074, 0.054, t) + L, lerp(0.078, 0.058, t) + L], { step: 0.07 })];
+  if (heavy) arm.push(tube([[0, -0.05, 0], [0, -0.19, 0]], () => [0.074 + L, 0.078 + L], { open: [true, true], step: 0.14 }, 0.85));
   const fore = [
-    box(0.135 + limb, 0.26, 0.145 + limb, [0, -0.13, 0], 0.035),
-    box(0.11, 0.11, 0.12, [0, -0.30, -0.01], 0.035),                  // gloved fist
+    // a sleeve, bunched where it meets the glove
+    tube([[0, 0, 0], [0, -0.12, -0.004], [0, -0.24, 0]], (t) => [lerp(0.058, 0.043, t) + L, lerp(0.061, 0.046, t) + L],
+      { step: 0.04, bump: (t) => 1 + 0.14 * Math.exp(-(((t - 0.84) / 0.07) ** 2)) }),
+    // the gloved fist, its middle where the arm's reach puts the hand, and a thumb across the front
+    tube([[0, -0.255, -0.004], [0, -0.28, -0.009], [0, -0.305, -0.006]], () => [0.045, 0.053], { step: 0.05, dome: 3 }, 0.32),
+    tube([[0, -0.262, -0.044], [0, -0.302, -0.06]], () => [0.016, 0.018], { around: 6, step: 0.04, dome: 1 }, 0.32),
   ];
-  const leg = [box(0.19 + limb, 0.45, 0.20 + limb, [0, -0.22, 0], 0.04)];
+  if (heavy) fore.push(tube([[0, -0.04, -0.002], [0, -0.19, -0.002]], (t) => [lerp(0.066, 0.056, t) + L, lerp(0.07, 0.06, t) + L], { open: [true, true], step: 0.15 }, 0.85));
+  const leg = [tube([[0, 0.035, 0.004], [0, -0.2, -0.01], [0, -0.43, 0]],
+    (t) => [lerp(0.1, 0.072, t) + L, lerp(0.108, 0.076, t) + L], { step: 0.09 })];
+  // a calf, and a trouser leg gathered into a boot
   const shin = [
-    box(0.17 + limb, 0.40, 0.18 + limb, [0, -0.20, 0], 0.04),
-    box(0.22 + limb, 0.15, 0.27, [0, -0.375, -0.03], 0.04),          // boot
+    tube([[0, 0, 0], [0, -0.12, 0.012], [0, -0.3, 0.004]], (t) => {
+      const calf = Math.exp(-(((t - 0.3) / 0.25) ** 2));
+      return [lerp(0.07, 0.054, t) + 0.004 * calf + L, lerp(0.072, 0.056, t) + 0.01 * calf + L];
+    }, { step: 0.045, bump: (t) => 1 + 0.1 * Math.exp(-(((t - 0.86) / 0.06) ** 2)) }),
+    tone(sideGeo([[0.068, -0.434, 0.012], [0.066, -0.29, 0.01], [-0.05, -0.29, 0.01], [-0.06, -0.335, 0.03],
+      [-0.135, -0.38, 0.035], [-0.178, -0.40, 0.02], [-0.182, -0.434, 0.008]], 0.112 + L, { bevel: 0.012, tile: T, segs: 1, curve: 1 }), 0.42),
+    box(0.122 + L, 0.022, 0.262, [0, -0.443, -0.057], 0.006, 0.22),                  // sole
   ];
-  if (heavy) shin.push(box(0.22, 0.16, 0.12, [0, -0.01, -0.10], 0.03));  // knee plate
+  if (k.armour === 'carrier' || heavy) {
+    // knee pads
+    const r = heavy ? 0.068 : 0.056;
+    shin.push(turned([[0, -0.03], [r * 0.7, -0.022], [r, 0], [0, 0]], 8, 0.7)
+      .scale(1, 1.25, 1).translate(0, -0.02, -0.06 - L));
+  }
 
   // ---------------------------------------------------------- the weapon
   const gun = hostileGun(k.weapon);
@@ -422,21 +674,26 @@ function makeKit(type) {
     : { grip: [0, -0.12, 0.06], fore: [0, -0.085, -0.26],
       mag: k.weapon === 'drum' ? [0, -0.28, -0.15] : k.weapon === 'shotgun' ? [0, -0.075, -0.12] : [0, -0.21, -0.20] };
 
+  /** Merge pieces built in the body's frame, and take them back to the part's own origin. */
+  const about = (geos, where) => mergeIntoOne(geos).translate(-where[0], -where[1], -where[2]);
   return {
     hold,
     materials: { cloth, gear, skin, steel },
     geo: {
-      torso: mergeIntoOne(torso),
-      rig: mergeIntoOne(rig),
-      head: box(0.25, 0.27, 0.25, [0, 0, 0], 0.05),
+      torso: about(torso, AT.torso),
+      skirt: skirt && about([skirt], AT.skirt),
+      rig: about(rig, AT.rig),
+      head: mergeIntoOne(head),
       headKit: mergeIntoOne(headKit),
       arm: mergeIntoOne(arm),
       fore: mergeIntoOne(fore),
       leg: mergeIntoOne(leg),
       shin: mergeIntoOne(shin),
       gun: mergeIntoOne(gun),
-      band: new THREE.BoxGeometry(0.58, 0.09, 0.38),
-      eye: new THREE.BoxGeometry(0.05, 0.03, 0.02),
+      // the marker band, round the chest over whatever is worn there
+      band: about([wrap(1.325, 1.385, band, null, { lip: 0.02 })], AT.band),
+      // two lenses, in the goggles' cups
+      eye: mergeIntoOne([-0.042, 0.042].map((x) => turned([[0, 0.002], [0.025, 0.002], [0.025, -0.004], [0, -0.006]], 10).translate(x, 0, 0))),
       shadow: new THREE.PlaneGeometry(1.5, 1.5),
       beam: null,
     },
@@ -479,6 +736,10 @@ function buildBody(type) {
 
   add(new THREE.Mesh(geo.torso, cloth), AT.torso, 'body', 'torso', upper);
   add(new THREE.Mesh(geo.rig, gear), AT.rig, 'body', 'rig', upper);
+  // A coat's skirt is a mesh no hostile used to have, and a hostile is built
+  // mid-run out of the stream that picks the next spawn; minted inside
+  // `reserve`, a spawn still costs that stream what it always did.
+  if (geo.skirt) add(reserve(() => new THREE.Mesh(geo.skirt, cloth)), AT.skirt, 'body', 'skirt');
   // the head turns on a neck of its own, so it can stay on the target while
   // the shoulders blade into a stance
   const neck = new THREE.Group();
@@ -585,7 +846,7 @@ function buildBody(type) {
  * each fades on its own opacity, which an instance cannot carry, and neither
  * casts a shadow, so each is one call rather than three.
  */
-const BATCHED = ['torso', 'rig', 'head', 'headKit', 'arm', 'fore', 'leg', 'shin', 'gun', 'band', 'eye'];
+const BATCHED = ['torso', 'skirt', 'rig', 'head', 'headKit', 'arm', 'fore', 'leg', 'shin', 'gun', 'band', 'eye'];
 const PER_BODY = { arm: 2, fore: 2, leg: 2, shin: 2 };
 const TINTED = new Set(['band', 'eye']);
 const NO_RAYCAST = () => {};
@@ -625,14 +886,15 @@ export class HostileBatches {
       const kit = kitFor(type);
       const { cloth, gear, skin, steel } = kit.materials;
       const material = {
-        torso: cloth, rig: gear, head: skin, headKit: gear, arm: cloth, fore: cloth,
+        torso: cloth, skirt: cloth, rig: gear, head: skin, headKit: gear, arm: cloth, fore: cloth,
         leg: gear, shin: gear, gun: steel,
         band: new THREE.MeshBasicMaterial({ color: 0xffffff }),
         eye: new THREE.MeshBasicMaterial({ color: 0xffffff }),
       };
       const set = {};
+      // an archetype draws only the parts it has: not everyone wears a coat
       for (const key of BATCHED) {
-        set[key] = this._make(kit.geo[key], material[key], capacity * (PER_BODY[key] || 1), key);
+        if (kit.geo[key]) set[key] = this._make(kit.geo[key], material[key], capacity * (PER_BODY[key] || 1), key);
       }
       this.byType.set(type.name, set);
     }
@@ -669,7 +931,7 @@ export class HostileBatches {
 
   /** Write every shown hostile into its archetype's batches. */
   sync() {
-    for (const set of this.byType.values()) for (const key of BATCHED) set[key].count = 0;
+    for (const set of this.byType.values()) for (const batch of Object.values(set)) batch.count = 0;
     for (const group of this.bodies) {
       if (!this._shown(group)) continue;
       const set = this.byType.get(group.userData.archetype);
@@ -684,8 +946,7 @@ export class HostileBatches {
       }
     }
     for (const set of this.byType.values()) {
-      for (const key of BATCHED) {
-        const batch = set[key];
+      for (const batch of Object.values(set)) {
         batch.visible = batch.count > 0;
         if (!batch.visible) continue;
         batch.instanceMatrix.needsUpdate = true;
@@ -1200,7 +1461,7 @@ export class Enemy {
     const speed = this.type.speed * (this.alerted ? 1 : 0.45);
     this.vel.lerp(V3.copy(moveDir).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
-    world.resolve(this.pos, this.radius, this.pos.y, 0.55);
+    world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
     world.clampToBounds(this.pos, this.radius);
 
     // Follow the surface underfoot: stairs and platforms carry hostiles too,

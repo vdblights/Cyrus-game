@@ -286,26 +286,41 @@ export async function openGame(opts = {}) {
   const viewport = opts.viewport || { width: 1100, height: 620 };
 
   const server = await serve(port);
-  const browser = await launchBrowser({ headed });
-  const page = await browser.newPage({ viewport });
-
   const errors = [];
-  page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-
-  await installHelpers(page);
+  let browser, page;
+  const launch = async () => {
+    browser = await launchBrowser({ headed });
+    page = await browser.newPage({ viewport });
+    page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    await installHelpers(page);
+  };
+  await launch();
   const url = `http://localhost:${port}/index.html?seed=${seed}`;
   await page.goto(url, { waitUntil: 'load' });
   await waitForBoot(page, { freeze, seed });
 
   return {
-    page, browser, errors, url,
+    // getters, because `renew` swaps both out from under whoever holds this
+    get page() { return page; },
+    get browser() { return browser; },
+    errors, url,
     // The city comes from the URL, so a check that needs a particular layout
     // — one that trips a bug the pinned seed happens not to — reboots on its
     // own seed rather than asserting against whatever the suite is pinned to.
     reload: async ({ freeze: f = freeze, seed: s = seed } = {}) => {
       await page.goto(`http://localhost:${port}/index.html?seed=${s}`, { waitUntil: 'load' });
       await waitForBoot(page, { freeze: f, seed: s });
+    },
+    // A browser to replace one that has wedged. An offline audio render that
+    // never returns (see `__offline`) takes the page's navigation down with
+    // it, so the next reload times out however long it is given; closing a
+    // wedged browser can hang as well, so it is given a few seconds and then
+    // left behind.
+    renew: async () => {
+      const old = browser;
+      await Promise.race([old.close().catch(() => {}), new Promise((done) => setTimeout(done, 5000))]);
+      await launch();
     },
     close: async () => { await browser.close(); server.close(); },
   };

@@ -619,6 +619,9 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
         // room for a body on the deck, and a deck there to stand on
         if (g.world.groundHeight(px, lz, R, Infinity) > box.top + 0.05) continue;
         if (g.world.groundHeight(px, lz, R, box.top + 0.05) < box.top - 0.25) continue;
+        // and headroom over it: a window sill under the floors of an open
+        // building is a ledge with a ceiling a body's height too low over it
+        if (g.world.ceilingAbove(px, lz, R, box.top) < box.top + 1.9) continue;
         return { px, pz };
       }
       return null;
@@ -646,7 +649,7 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
     for (const b of g.world.boxes) {
       if (ledges.length < 8 && b.top > 0.8 && b.top < 1.75) {
         const a = attempt(b); if (a) ledges.push(a);
-      } else if (walls.length < 5 && b.top > 6) {
+      } else if (walls.length < 5 && b.top > 6 && !b.base) {
         const a = attempt(b); if (a) walls.push(a);
       }
     }
@@ -3161,6 +3164,8 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
       if (b.floor || b.top < 0.8 || b.top > 1.7) continue;
       const cx = b.cx ?? (b.minX + b.maxX) / 2, cz = b.cz ?? (b.minZ + b.maxZ) / 2;
       if (Math.abs(W.groundHeight(cx, cz, 0.42, 99) - b.top) > 0.05) continue;
+      // somewhere a body can stand, not a shop counter under the floors above
+      if (W.ceilingAbove(cx, cz, 0.42, b.top) < b.top + 1.9) continue;
       // one deck per place: the fountain's rim is sixteen staves, first in
       // the list, and eight of them were all this sampled
       if (out.some((o) => Math.hypot(o.at[0] - cx, o.at[1] - cz) < 4)) continue;
@@ -3774,6 +3779,102 @@ check('auto quality keeps watching, and gives back resolution before shaders', a
   return r;
 });
 
+check('a building opens onto the street: you walk in under its floors, and it hides you from above', async (page) => {
+  // A third of the towers have a ground floor you can walk into: a
+  // shopfront, a room, the floors of the building over it. Every box used to
+  // run from the street to its top, so the floors over a room are a box that
+  // starts above the head (`base`), and every reader of the box list had to
+  // learn it. This asks each of them, for every room on the seed:
+  //   - you walk in off the pavement through one of its doorways;
+  //   - the route field from the street reaches every open cell of its floor;
+  //   - a jump inside stops at the ceiling;
+  //   - a sight line from high above it is cut by the floors, and one from
+  //     the street through the doorway is not;
+  //   - a grenade thrown up inside comes back off the ceiling.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const w = g.world, p = g.player;
+    const V = p.position.constructor;
+    const rows = [];
+    // the route field from the street where a run starts: how much of each
+    // room's floor it reaches
+    const nav = g.nav;
+    nav.update(p.position.x, p.position.z, true);
+    for (const room of w.rooms) {
+      const row = { walked: false, open: 0, routed: 0, jump: null, hidden: false, seen: false, grenade: null };
+      const cx = (room.minX + room.maxX) / 2, cz = (room.minZ + room.maxZ) / 2;
+      for (let i = nav.col(room.minX) + 1; i < nav.col(room.maxX); i++) {
+        for (let j = nav.col(room.minZ) + 1; j < nav.col(room.maxZ); j++) {
+          if (nav.blocked[j * nav.size + i]) continue;
+          row.open++;
+          if (nav.dist[j * nav.size + i] >= 0) row.routed++;
+        }
+      }
+      for (const d of room.doors) {
+        // from the pavement in front of the doorway, straight in
+        const sx = d.x + d.nx * 2.5, sz = d.z + d.nz * 2.5;
+        if (w.blocked(sx, sz, p.radius + 0.05)) continue;
+        p.reset(sx, sz);
+        p.yaw = Math.atan2(d.nx, d.nz);
+        p.pitch = 0;
+        g.input.keys.add('KeyW');
+        for (let f = 0; f < 150; f++) { g.time += 1 / 60; g.step(1 / 60); }
+        g.input.keys.clear();
+        const inside = -((p.position.x - d.x) * d.nx + (p.position.z - d.z) * d.nz);
+        if (inside < 1.5) continue;
+        row.walked = true;
+
+
+        // a jump, standing where the walk stopped
+        let top = 0;
+        g.input.keys.add('Space');
+        g.time += 1 / 60; g.step(1 / 60);
+        g.input.keys.clear();
+        for (let f = 0; f < 70; f++) { g.time += 1 / 60; g.step(1 / 60); top = Math.max(top, p.feetY); }
+        row.jump = { rose: +(top - room.floor).toFixed(2), crown: +(top + 1.85).toFixed(2), ceiling: +room.ceiling.toFixed(2) };
+
+        // seen through the doorway from the street, not from far over the roof
+        const ex = d.x - d.nx * 2, ez = d.z - d.nz * 2, ey = room.floor + 1.5;
+        row.seen = w.lineOfSight(sx, room.floor + 1.6, sz, ex, ey, ez);
+        row.hidden = !w.lineOfSight(cx + 3, 80, cz + 3, ex, ey, ez);
+
+        // a grenade lobbed straight up off the floor
+        const pos = new V(ex, room.floor + 0.5, ez), vel = new V(0.4, 9, 0.2);
+        let high = 0, out = 0;
+        for (let f = 0; f < 90; f++) {
+          vel.y -= 22 / 60;
+          pos.addScaledVector(vel, 1 / 60);
+          w.bounceSphere(pos, vel, 0.09);
+          high = Math.max(high, pos.y);
+          out = Math.max(out, room.minX - pos.x, pos.x - room.maxX, room.minZ - pos.z, pos.z - room.maxZ);
+        }
+        row.grenade = { high: +high.toFixed(2), out: +out.toFixed(2) };
+        break;
+      }
+      rows.push(row);
+    }
+    return { rooms: rows.length, rows };
+  });
+  expect(r.rooms >= 8, `only ${r.rooms} buildings open on this seed`);
+  const bad = (pred) => r.rows.filter((row) => !pred(row)).length;
+  expect(bad((row) => row.walked) === 0, `${bad((row) => row.walked)} of ${r.rooms} open buildings could not be walked into`);
+  const walked = r.rows.filter((row) => row.walked);
+  const unrouted = r.rows.reduce((n, row) => n + row.open - row.routed, 0);
+  expect(r.rows.every((row) => row.open > 0) && unrouted === 0,
+    `the route field from the street misses ${unrouted} cells of open floor inside the buildings (${r.rows.map((row) => `${row.routed}/${row.open}`).join(' ')})`);
+  for (const row of walked) {
+    expect(row.jump.rose > 0.5, `a jump indoors rose only ${row.jump.rose} m`);
+    expect(row.jump.crown <= row.jump.ceiling + 0.01, `a jump indoors put the crown at ${row.jump.crown} through a ceiling at ${row.jump.ceiling}`);
+    expect(row.grenade.high <= row.jump.ceiling && row.grenade.out <= 0,
+      `a grenade thrown up indoors went to ${row.grenade.high} m under a ceiling at ${row.jump.ceiling}, and ${row.grenade.out} m out of the building`);
+  }
+  expect(bad((row) => !row.walked || row.seen) === 0, `${bad((row) => !row.walked || row.seen)} rooms cannot be seen into through their own doorway`);
+  expect(bad((row) => !row.walked || row.hidden) === 0, `${bad((row) => !row.walked || row.hidden)} rooms are seen into through the floors above them`);
+  return { rooms: r.rooms, sample: r.rows[0] };
+});
+
 check('a seed still lays out the city it did', async (page) => {
   // The most expensive lesson in this repo, finally made into a check.
   //
@@ -3835,10 +3936,21 @@ check('a seed still lays out the city it did', async (page) => {
   // while every collider further than 14 m from a perch that changed is
   // identical. Before it: 801/580/13 88473ce5 (429 5d9b6755), 834/543/11
   // dcd3d7d2 (376 d57389ac), 877/573/10 4f7b5ad (395 4f540362).
+  //
+  // And once more, for the open ground floors: a third of the towers lost
+  // the block that ran from the street to their roof and gained a ceiling
+  // over a room — shopfront piers, sills, shutters, columns, a counter,
+  // shelving and crates, about 25 colliders a building. Everything is
+  // placed by position and built inside a reserve, so the stream is
+  // untouched (the same mark after boot). Compared collider by collider on
+  // all three seeds: the only colliders gone are the 21, 16 and 25 blocks
+  // that opened, every new one lies inside one of their footprints, and the
+  // perches are identical. Before it: 771/561/12 43fc2161 (413 ff19bfd0),
+  // 834/543/11 f6d29176 (376 86e2c858), 877/573/10 79f7d600 (395 985f0133).
   const want = {
-    1: { boxes: 771, solids: 561, perches: 12, fp: '43fc2161', placed: 413, fpPlaced: 'ff19bfd0' },
-    7: { boxes: 834, solids: 543, perches: 11, fp: 'f6d29176', placed: 376, fpPlaced: '86e2c858' },
-    20260101: { boxes: 877, solids: 573, perches: 10, fp: '79f7d600', placed: 395, fpPlaced: '985f0133' },
+    1: { boxes: 1258, solids: 1069, perches: 12, fp: '6b6c3506', placed: 900, fpPlaced: 'f85850b3' },
+    7: { boxes: 1275, solids: 1000, perches: 11, fp: 'c712ab7e', placed: 817, fpPlaced: 'f6fca580' },
+    20260101: { boxes: 1382, solids: 1103, perches: 10, fp: '30c19881', placed: 900, fpPlaced: '634ea5d6' },
   };
 
   const got = {};
@@ -4207,6 +4319,108 @@ check('every archetype is kitted, textured, and keeps its hit zones', async (pag
   return r;
 });
 
+check('a hostile is a body in kit, not a stack of boxes, and costs a spawn what it did', async (page) => {
+  // Every hostile was chamfered boxes: a brick for a torso, a cube for a
+  // head, a box for a fist, boots that were blocks. Under one low sun a box
+  // is two lit faces and two dark ones, so half of every body faced
+  // straight down one axis or another, and a wave read as robots. The
+  // bodies are swept and turned now, and what is worn is cut from the body's
+  // own section (`wrap`), so this measures how much of a body's surface
+  // faces square along an axis: 0.53-0.56 for the boxes, against 0.15-0.19.
+  //
+  // Two things came with it. A coat's skirt hangs from the hips (`skirt`),
+  // because on the waist it turned with the shoulders as they bladed into a
+  // stance and swung a leg out through its front; this counts the thigh
+  // that comes through it. And a new Enemy is built mid-run out of the
+  // stream that picks the next spawn, so the skirt mesh that no hostile
+  // used to have is minted in a reserve: a spawn costs the draws it did
+  // (measured on the commit before, 100 a body, 112 for the marksman, whose
+  // laser is a mesh more).
+  const r = await page.evaluate(async () => {
+    const g = window.__game;
+    const { Enemy } = await import('/src/enemies.js');
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const real = Math.random;
+    const V = g.player.position.constructor;
+    const v = new V();
+    const out = {};
+    for (const key of Object.keys(g.enemyTypes)) {
+      // what one more hostile of this kind costs the seeded stream
+      const before = real.mark();
+      const e = new Enemy(key, g.scene, g);
+      const after = real.mark();
+      real.rewind(before);
+      let draws = 0;
+      while (real.mark() !== after && draws < 2000) { real(); draws++; }
+      real.rewind(after);
+
+      // how much of the body faces square along an axis of its own part
+      let area = 0, square = 0;
+      for (const m of e.group.userData.drawn) {
+        if (['gun', 'band', 'eye'].includes(m.userData.batch)) continue;
+        const p = m.geometry.attributes.position, idx = m.geometry.index;
+        const n = idx ? idx.count : p.count, at = (k) => (idx ? idx.getX(k) : k);
+        for (let k = 0; k < n; k += 3) {
+          const a = at(k), b = at(k + 1), c = at(k + 2);
+          const ux = p.getX(b) - p.getX(a), uy = p.getY(b) - p.getY(a), uz = p.getZ(b) - p.getZ(a);
+          const wx = p.getX(c) - p.getX(a), wy = p.getY(c) - p.getY(a), wz = p.getZ(c) - p.getZ(a);
+          const cx = uy * wz - uz * wy, cy = uz * wx - ux * wz, cz = ux * wy - uy * wx;
+          const l = Math.hypot(cx, cy, cz);
+          if (l < 1e-12) continue;
+          area += l / 2;
+          if (Math.max(Math.abs(cx), Math.abs(cy), Math.abs(cz)) / l > 0.99) square += l / 2;
+        }
+      }
+
+      // shouldered and bladed, standing: does a thigh come out through the coat?
+      let through = null;
+      const skirt = e.parts.skirt;
+      if (skirt) {
+        e.spawn(g.player.position.x + 6, g.player.position.z, 1, g.player.position.y);
+        e.alerted = true; e.vel.set(0, 0, 0);
+        for (let k = 0; k < 60; k++) e._animate(1 / 60, 7);
+        e.group.updateMatrixWorld(true);
+        const inv = skirt.matrixWorld.clone().invert();
+        // the coat's own outline, by height and bearing round it
+        const sp = skirt.geometry.attributes.position;
+        const ring = [];
+        for (let i = 0; i < sp.count; i++) ring.push([sp.getY(i), Math.atan2(sp.getZ(i), sp.getX(i)), Math.hypot(sp.getX(i), sp.getZ(i))]);
+        const top = Math.max(...ring.map((q) => q[0])), bottom = Math.min(...ring.map((q) => q[0]));
+        through = 0;
+        for (const thigh of [e.parts.legL, e.parts.legR]) {
+          const tp = thigh.geometry.attributes.position;
+          for (let i = 0; i < tp.count; i++) {
+            v.fromBufferAttribute(tp, i).applyMatrix4(thigh.matrixWorld).applyMatrix4(inv);
+            // below the hips, where the coat hangs clear of the body
+            if (v.y > top - 0.12 || v.y < bottom) continue;
+            const th = Math.atan2(v.z, v.x);
+            let best = null, gap = Infinity;
+            for (const q of ring) {
+              if (Math.abs(q[0] - v.y) > 0.06) continue;
+              let d = Math.abs(q[1] - th); if (d > Math.PI) d = Math.PI * 2 - d;
+              if (d < gap) { gap = d; best = q; }
+            }
+            if (best && Math.hypot(v.x, v.z) > best[2] + 0.005) through++;
+          }
+        }
+      }
+      out[key] = { draws, square: +(square / area).toFixed(3), through };
+      g.scene.remove(e.group);
+      g.hostiles?.untrack(e.group);
+    }
+    return out;
+  });
+  const cost = { scavenger: 100, raider: 100, shotgunner: 100, marksman: 112, brute: 100 };
+  for (const [key, row] of Object.entries(r)) {
+    expect(row.square < 0.3, `${Math.round(row.square * 100)}% of a ${key}'s body faces square down an axis: it is built of boxes`);
+    expect(row.draws === cost[key], `a ${key} costs the spawn stream ${row.draws} draws, not the ${cost[key]} it did`);
+    if (row.through !== null) expect(row.through === 0, `${row.through} points of a ${key}'s thighs come out through its coat`);
+  }
+  expect(Object.values(r).some((row) => row.through !== null), 'no archetype wears a coat to measure');
+  return r;
+});
+
 check('a wave is drawn a part at a time, and looks like the hostiles it is', async (page) => {
   // A hostile was fourteen drawn meshes, nine casting a shadow, so about
   // forty calls a frame across the main pass and both cascades, and a wave
@@ -4449,7 +4663,7 @@ async function screenshots(page) {
 
 console.log(`seed ${SEED}${SHARD.length === 2 ? ` · shard ${SHARD.join('/')}` : ''}\n`);
 const game = await openGame({ seed: SEED, port: PORT, headed: HEADED });
-const { page, errors: pageErrors } = game;
+const pageErrors = game.errors;
 // checks that need a mid-check reload go through the harness, so the seed,
 // the freeze and the injected helpers all survive it
 reloadGame = game.reload;
@@ -4470,12 +4684,27 @@ if (ONLY && !selected.length) {
   process.exit(1);
 }
 
+/**
+ * Boot a fresh game for the next check. True if the page came back; false
+ * if it had wedged and the browser was replaced to get one. A wedged page
+ * used to take the whole run down with it: the reload threw outside any
+ * check, the runner died on it, and every check still to come went unrun.
+ */
+async function fresh() {
+  try {
+    await game.reload();
+    return true;
+  } catch (err) {
+    console.log(`       the page did not come back (${err.message.split('\n')[0]}); relaunching the browser`);
+    await game.renew();
+    await game.reload();
+    return false;
+  }
+}
+
 const CHECK_LIMIT_S = 300;
-for (const { name, fn } of selected) {
-  // Every check gets a freshly booted game on the same seed. Sharing one
-  // instance made results depend on what the previous check left behind.
-  const began = Date.now();
-  await game.reload();
+/** One run of one check on whatever is loaded: `{ ok, detail }` or `{ ok: false, err }`. */
+async function attempt(fn) {
   const before = pageErrors.length;
   try {
     // A check that never settles would hold its shard until CI's job limit
@@ -4483,7 +4712,7 @@ for (const { name, fn } of selected) {
     // failed for a while (see \`__offline\` in the harness). Past the
     // deadline it fails by name, and the next check's reload takes the page
     // back. The slowest check here takes about 95 s.
-    const run = fn(page);
+    const run = fn(game.page);
     run.catch(() => {});
     let timer;
     const detail = await Promise.race([run, new Promise((_, no) => {
@@ -4491,19 +4720,43 @@ for (const { name, fn } of selected) {
     })]).finally(() => clearTimeout(timer));
     const errs = pageErrors.slice(before);
     if (errs.length) throw new Failure(`page errors: ${[...new Set(errs)].join(' | ')}`);
-    const took = `${((Date.now() - began) / 1000).toFixed(0)}s`.padStart(4);
-    console.log(`  ok   ${took} ${name}${detail ? '  ' + JSON.stringify(detail).slice(0, 120) : ''}`);
+    return { ok: true, detail };
   } catch (err) {
+    return { ok: false, err };
+  }
+}
+
+// Every check gets a freshly booted game on the same seed. Sharing one
+// instance made results depend on what the previous check left behind.
+let loaded = false;     // whether the page already holds a game nothing has touched
+for (const [i, { name, fn }] of selected.entries()) {
+  const began = Date.now();
+  if (!loaded) await fresh();
+  let out = await attempt(fn);
+  // A check that fails and leaves the browser wedged behind it failed because
+  // of the browser: it gets one more run, on a new one. A failure that leaves
+  // the page healthy is the game's, and stands. (After the last check there
+  // is nothing to load unless it failed.)
+  loaded = out.ok && i === selected.length - 1 ? true : await fresh();
+  if (!out.ok && !loaded) {
+    console.log(`       "${name}" wedged the browser; running it again on a new one`);
+    out = await attempt(fn);
+    loaded = await fresh();
+  }
+  const took = `${((Date.now() - began) / 1000).toFixed(0)}s`.padStart(4);
+  if (out.ok) {
+    console.log(`  ok   ${took} ${name}${out.detail ? '  ' + JSON.stringify(out.detail).slice(0, 120) : ''}`);
+  } else {
     failed++;
-    console.log(`  FAIL ${name}\n       ${err.message}`);
-    if (!(err instanceof Failure)) console.log(err.stack?.split('\n').slice(1, 4).join('\n'));
+    console.log(`  FAIL ${name}\n       ${out.err.message}`);
+    if (!(out.err instanceof Failure)) console.log(out.err.stack?.split('\n').slice(1, 4).join('\n'));
   }
 }
 
 if (SHOTS) {
   console.log('\nscreenshots:');
   await game.reload({ freeze: false });
-  await screenshots(page);
+  await screenshots(game.page);
 }
 
 await game.close();

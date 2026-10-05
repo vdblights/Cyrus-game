@@ -25,6 +25,19 @@
  */
 export const SUPPORT_RADIUS = 0.12;
 
+/** Room a body needs over its feet to stand: a mantle onto less is refused. */
+export const HEADROOM = 1.9;
+
+/**
+ * The boxes a query has to look at: from the index once the city is sealed
+ * (`World.seal`), or all of them — which is also what a check gets when it
+ * calls a reader on a box list of its own.
+ */
+function near(world, x0, z0, x1, z1) {
+  if (!world._cells || world._sealed !== world.boxes.length) return world.boxes;
+  return world._near(x0, z0, x1, z1);
+}
+
 export class World {
   constructor() {
     /** @type {{minX:number,maxX:number,minZ:number,maxZ:number,top:number,
@@ -32,16 +45,38 @@ export class World {
     this.boxes = [];
     /** Meshes used for bullet/line-of-sight raycasts. */
     this.solids = [];
+    /**
+     * The open ground floors, for anything that wants to find one: footprint,
+     * floor and ceiling heights, and each doorway's middle and outward normal.
+     * Nothing collides with this; the walls and the ceiling are in `boxes`.
+     */
+    this.rooms = [];
     this.bounds = 100;
   }
 
-  addBox(minX, minZ, maxX, maxZ, top) {
+  addBox(minX, minZ, maxX, maxZ, top, base = 0) {
     this.boxes.push({
-      minX, maxX, minZ, maxZ, top,
+      minX, maxX, minZ, maxZ, top, base,
       cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2,
       hx: (maxX - minX) / 2, hz: (maxZ - minZ) / 2,
       cos: 1, sin: 0,
     });
+  }
+
+  /**
+   * Register a box that stands off the ground: the floors of a building over
+   * a ground floor you can walk into. Its underside is `base`, and to every
+   * reader it is a ceiling and nothing else. It stops a body whose head
+   * reaches it (`resolve`, `ceilingAbove`), a sight line or a grenade that
+   * meets it, and it is never somewhere to stand: `groundHeight` skips it, so
+   * nothing can be lifted onto a roof it was walking under, and a mantle is
+   * not refused for a wall that is really the floor above. Every box used to
+   * run from the street to its top, and most readers still assume it — so a
+   * base is only ever above head height, and `blocked` and the nav bake let a
+   * body through under one.
+   */
+  addCeiling(minX, minZ, maxX, maxZ, top, base) {
+    this.addBox(minX, minZ, maxX, maxZ, top, base);
   }
 
   /**
@@ -73,9 +108,68 @@ export class World {
     const ex = Math.abs(halfW * cos) + Math.abs(halfD * sin);
     const ez = Math.abs(halfW * sin) + Math.abs(halfD * cos);
     this.boxes.push({
-      minX: cx - ex, maxX: cx + ex, minZ: cz - ez, maxZ: cz + ez, top,
+      minX: cx - ex, maxX: cx + ex, minZ: cz - ez, maxZ: cz + ez, top, base: 0,
       cx, cz, hx: halfW, hz: halfD, cos, sin,
     });
+  }
+
+  /**
+   * Index the boxes on a coarse grid, once the city is built.
+   *
+   * Every query used to walk the whole box list, which was fine at 770
+   * boxes and stopped being fine when the open ground floors brought 500
+   * more: the game step doubled in a fight. Past this point a query looks
+   * only at the boxes in the cells its rectangle touches, and gets them back
+   * in list order, so collision resolves in exactly the order it did — and
+   * the answers are the same, because the cells hold every box that could
+   * overlap. Generation never sees it: the city mutates the list as it
+   * builds (a prop that finds no room is taken back out), so the index is
+   * only trusted while the list is the length it was sealed at, and
+   * anything else falls back to walking all of it.
+   */
+  seal(cell = 6) {
+    const lim = this.bounds + 40;
+    const n = Math.ceil((lim * 2) / cell);
+    this._cell = cell;
+    this._origin = -lim;
+    this._n = n;
+    this._cells = Array.from({ length: n * n }, () => []);
+    this.boxes.forEach((b, i) => {
+      const [i0, i1, j0, j1] = this._span(b.minX, b.minZ, b.maxX, b.maxZ);
+      for (let j = j0; j <= j1; j++) for (let k = i0; k <= i1; k++) this._cells[j * n + k].push(i);
+    });
+    this._stamp = new Uint32Array(this.boxes.length);
+    this._query = 0;
+    this._idx = [];
+    this._hits = [];
+    this._sealed = this.boxes.length;
+  }
+
+  _span(x0, z0, x1, z1) {
+    const c = this._cell, o = this._origin, top = this._n - 1;
+    const at = (v) => Math.max(0, Math.min(top, Math.floor((v - o) / c)));
+    return [at(x0), at(x1), at(z0), at(z1)];
+  }
+
+  /** Every box that could touch a rectangle, in list order. */
+  _near(x0, z0, x1, z1) {
+    const [i0, i1, j0, j1] = this._span(x0, z0, x1, z1);
+    const stamp = this._stamp, idx = this._idx, q = ++this._query;
+    idx.length = 0;
+    for (let j = j0; j <= j1; j++) {
+      for (let k = i0; k <= i1; k++) {
+        for (const i of this._cells[j * this._n + k]) {
+          if (stamp[i] === q) continue;
+          stamp[i] = q;
+          idx.push(i);
+        }
+      }
+    }
+    idx.sort((a, b) => a - b);
+    const hits = this._hits;
+    hits.length = idx.length;
+    for (let i = 0; i < idx.length; i++) hits[i] = this.boxes[idx[i]];
+    return hits;
   }
 
   /** Register a box-shaped mesh as both a collider and a raycast target. */
@@ -88,11 +182,12 @@ export class World {
   /**
    * Push a cylinder (centre `pos`, `radius`) out of every box it overlaps.
    * `feet` is the entity's floor height; boxes shorter than `step` are
-   * ignored so debris does not become an invisible wall.
+   * ignored so debris does not become an invisible wall, and a ceiling above
+   * the head (`height` over the feet) is walked under.
    */
-  resolve(pos, radius, feet = 0, step = 0.35) {
-    for (const b of this.boxes) {
-      if (b.top <= feet + step) continue;
+  resolve(pos, radius, feet = 0, step = 0.35, height = 1.9) {
+    for (const b of near(this, pos.x - radius, pos.z - radius, pos.x + radius, pos.z + radius)) {
+      if (b.top <= feet + step || b.base >= feet + height) continue;
       if (pos.x <= b.minX - radius || pos.x >= b.maxX + radius
           || pos.z <= b.minZ - radius || pos.z >= b.maxZ + radius) continue;
 
@@ -140,8 +235,8 @@ export class World {
   groundHeight(x, z, radius, ceiling) {
     let best = 0;
     const rSq = radius * radius;
-    for (const b of this.boxes) {
-      if (b.top <= best || (b.top > ceiling && !b.surface)) continue;
+    for (const b of near(this, x - radius, z - radius, x + radius, z + radius)) {
+      if (b.top <= best || (b.top > ceiling && !b.surface) || b.base) continue;
       if (x <= b.minX - radius || x >= b.maxX + radius
           || z <= b.minZ - radius || z >= b.maxZ + radius) continue;
       const rx = x - b.cx, rz = z - b.cz;
@@ -190,9 +285,11 @@ export class World {
       // anything taller here means we are staring at a wall, not gripping a lip
       if (this.groundHeight(gx, gz, grip, Infinity) > top + 0.05) continue;
 
-      // room for a body past the edge, at the same height
+      // room for a body past the edge, at the same height, and under whatever
+      // ceiling there is over it
       const lx = x + nx * (d + radius + 0.15), lz = z + nz * (d + radius + 0.15);
       if (this.groundHeight(lx, lz, radius, Infinity) > top + 0.05) continue;
+      if (this.ceilingAbove(lx, lz, radius, top) < top + HEADROOM) continue;
       // What you will actually be standing on, asked the way footing asks it.
       // Measuring the deck with the body radius promised ground that the
       // footing check would not then find, so a climb onto a narrow ledge
@@ -206,6 +303,25 @@ export class World {
   }
 
   /**
+   * The underside of the lowest ceiling over (x, z) above `feet`, within
+   * `radius` of it — Infinity under open sky. A jump stops against it.
+   */
+  ceilingAbove(x, z, radius, feet) {
+    let low = Infinity;
+    const rSq = radius * radius;
+    for (const b of near(this, x - radius, z - radius, x + radius, z + radius)) {
+      if (!b.base || b.base <= feet || b.base >= low) continue;
+      if (x <= b.minX - radius || x >= b.maxX + radius
+          || z <= b.minZ - radius || z >= b.maxZ + radius) continue;
+      const rx = x - b.cx, rz = z - b.cz;
+      const lx = b.cos * rx - b.sin * rz, lz = b.sin * rx + b.cos * rz;
+      const dx = Math.max(0, Math.abs(lx) - b.hx), dz = Math.max(0, Math.abs(lz) - b.hz);
+      if (dx * dx + dz * dz < rSq) low = b.base;
+    }
+    return low;
+  }
+
+  /**
    * True when a point is inside (or within `pad` of) any solid box.
    *
    * Reads the enclosing AABB rather than the footprint, so a turned box
@@ -214,7 +330,7 @@ export class World {
    * be clear of the prop, not flush against it.
    */
   occupied(x, z, pad = 0, minTop = 1.2) {
-    for (const b of this.boxes) {
+    for (const b of near(this, x - pad, z - pad, x + pad, z + pad)) {
       if (b.top < minTop) continue;
       if (x > b.minX - pad && x < b.maxX + pad && z > b.minZ - pad && z < b.maxZ + pad) return true;
     }
@@ -233,8 +349,8 @@ export class World {
    * metre from anything.
    */
   blocked(x, z, pad = 0, minTop = 1.2) {
-    for (const b of this.boxes) {
-      if (b.top < minTop) continue;
+    for (const b of near(this, x - pad, z - pad, x + pad, z + pad)) {
+      if (b.top < minTop || b.base > minTop + HEADROOM - 0.7) continue;     // under a ceiling is open
       if (x <= b.minX - pad || x >= b.maxX + pad || z <= b.minZ - pad || z >= b.maxZ + pad) continue;
       const rx = x - b.cx, rz = z - b.cz;
       const lx = b.cos * rx - b.sin * rz, lz = b.sin * rx + b.cos * rz;
@@ -246,8 +362,9 @@ export class World {
 
   /**
    * Segment-vs-box test over the whole box list (three-slab method). Boxes
-   * run from the ground to `top`, so a sight line clears low cover by
-   * passing over it.
+   * run from their `base` (the ground, for all but a ceiling) to `top`, so a
+   * sight line clears low cover by passing over it and an open ground floor
+   * by passing under the building over it.
    *
    * This is deliberately symmetric: swapping the endpoints gives the same
    * answer, so a hostile can never see a target that cannot see it back.
@@ -259,7 +376,7 @@ export class World {
     const invY = dy !== 0 ? 1 / dy : Infinity;
     const invZ = dz !== 0 ? 1 / dz : Infinity;
 
-    for (const box of this.boxes) {
+    for (const box of near(this, Math.min(ax, bx), Math.min(az, bz), Math.max(ax, bx), Math.max(az, bz))) {
       let t0 = 0, t1 = 1;
 
       let tA = (box.minX - ax) * invX, tB = (box.maxX - ax) * invX;
@@ -268,7 +385,7 @@ export class World {
       if (tB < t1) t1 = tB;
       if (t0 > t1) continue;
 
-      tA = (0 - ay) * invY; tB = (box.top - ay) * invY;
+      tA = ((box.base || 0) - ay) * invY; tB = (box.top - ay) * invY;
       if (tA > tB) { const t = tA; tA = tB; tB = t; }
       if (tA > t0) t0 = tA;
       if (tB < t1) t1 = tB;
@@ -309,7 +426,7 @@ export class World {
     if (tB < t1) t1 = tB;
     if (t0 > t1) return false;
 
-    tA = (0 - ay) * invY; tB = (b.top - ay) * invY;
+    tA = ((b.base || 0) - ay) * invY; tB = (b.top - ay) * invY;
     if (tA > tB) { const t = tA; tA = tB; tB = t; }
     if (tA > t0) t0 = tA;
     if (tB < t1) t1 = tB;
@@ -349,8 +466,8 @@ export class World {
       }
     }
 
-    for (const b of this.boxes) {
-      if (pos.y - radius > b.top) continue;
+    for (const b of near(this, pos.x - radius, pos.z - radius, pos.x + radius, pos.z + radius)) {
+      if (pos.y - radius > b.top || pos.y + radius < b.base) continue;
       if (pos.x <= b.minX - radius || pos.x >= b.maxX + radius
           || pos.z <= b.minZ - radius || pos.z >= b.maxZ + radius) continue;
 
@@ -366,13 +483,23 @@ export class World {
       const top = b.surface ? b.surface(nearX, nearZ, 0) : b.top;
       if (pos.y - radius > top) continue;
 
-      // three candidate escapes: out the sides, or up onto the top face
+      // candidate escapes: out the sides, up onto the top face, or — for a
+      // ceiling — back down off its underside
       const outX = dx >= 0 ? b.hx + radius - lx : -b.hx - radius - lx;
       const outZ = dz >= 0 ? b.hz + radius - lz : -b.hz - radius - lz;
       const outY = top + radius - pos.y;
-      const aX = Math.abs(outX), aZ = Math.abs(outZ), aY = Math.abs(outY);
+      const outDown = b.base ? b.base - radius - pos.y : -Infinity;
+      const aX = Math.abs(outX), aZ = Math.abs(outZ), aY = Math.abs(outY), aD = Math.abs(outDown);
 
-      if (aY <= aX && aY <= aZ) {
+      if (aD < aX && aD < aZ && aD < aY) {
+        pos.y += outDown;
+        if (vel.y > 0) {
+          vel.y = -vel.y * restitution;
+          vel.x *= friction;
+          vel.z *= friction;
+        }
+        contact = 1;
+      } else if (aY <= aX && aY <= aZ) {
         pos.y += outY;
         if (vel.y < 0) {
           if (vel.y < -1.4) {

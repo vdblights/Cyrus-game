@@ -213,6 +213,21 @@ const BAY = TILE.facade / FACADE_BAYS;
 const STOREY = TILE.facade / FACADE_FLOORS;
 
 /**
+ * An open ground floor is one storey tall, so the window grid of the floors
+ * above carries on from it; its ceiling is a slab this thick under them.
+ */
+const GROUND = STOREY;
+const SLAB = 0.3;
+
+/**
+ * Which buildings you can walk into: about one in three, by where it stands,
+ * so the choice costs the seeded stream nothing.
+ */
+function opensAt(x, z) {
+  return hash2(Math.round(x), Math.round(z), 90) < 0.36;
+}
+
+/**
  * Box geometry with planar UVs at a declared world scale.
  *
  * Every face is unwrapped from its own position and normal rather than from
@@ -385,6 +400,30 @@ function occlusionField(world, extent, cell = 1.6) {
   }
 
   return (x, z) => occ[idx(z) * n + idx(x)];
+}
+
+/**
+ * How much of the sky a point under a building's floors still sees.
+ *
+ * An open ground floor is lit by the same hemisphere and environment as the
+ * street outside it, and with nothing else said it comes out as bright as
+ * the pavement — a room with no inside. So the bake darkens whatever is
+ * under a ceiling by how far it is from the nearest face of the building:
+ * near the shopfront it keeps most of the street's light, at the back of
+ * the room it keeps under half. The faces themselves, which are the
+ * building's outside, are left alone. The sun is already the shadow map's.
+ */
+function indoorField(world) {
+  const ceilings = world.boxes.filter((b) => b.base > 0);
+  return (x, y, z) => {
+    for (const c of ceilings) {
+      if (y > c.base + 0.01) continue;
+      const d = Math.min(x - c.minX, c.maxX - x, z - c.minZ, c.maxZ - z);
+      if (d <= 0.02) continue;
+      return 0.38 + 0.5 * Math.exp(-d / 1.6);
+    }
+    return 1;
+  };
 }
 
 /**
@@ -657,7 +696,7 @@ function smoothNoise(x, z, scale) {
  * forty times reads as wallpaper until something varies at a scale the tile
  * does not have.
  */
-function shadeGeometry(geo, tint, occlusion, mottle = 0) {
+function shadeGeometry(geo, tint, occlusion, mottle = 0, indoors = null) {
   const pos = geo.attributes.position, nor = geo.attributes.normal;
   const col = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
@@ -673,6 +712,7 @@ function shadeGeometry(geo, tint, occlusion, mottle = 0) {
       // spends half the day in shadow, and doubling that is just black.
       ao = 0.66 + 0.34 * Math.min(1, Math.max(0, y) / 2.2);
     }
+    if (indoors) ao *= indoors(x, y, z);
     let r = tint[0], g = tint[1], b = tint[2];
     if (mottle) {
       const drift = 1 + ((smoothNoise(x, z, 11) - 0.5) * 1.2
@@ -919,6 +959,7 @@ function bakeStatic(group, world) {
   // the merge is also the one moment every surface is in world space at once,
   // which is what the tint and the ambient darkening need
   const occlusion = occlusionField(world, (GRID * BLOCK) / 2 + 62);
+  const indoors = indoorField(world);
 
   // Keyed on the material itself, never its UUID. Under `reserve` a UUID is
   // not unique: every reserve that starts from the same place in the seeded
@@ -936,7 +977,7 @@ function bakeStatic(group, world) {
   const perMaterial = new Map();
   for (const m of meshes) {
     const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
-    shadeGeometry(geo, m.userData.tint || [1, 1, 1], occlusion, m.userData.mottle || 0);
+    shadeGeometry(geo, m.userData.tint || [1, 1, 1], occlusion, m.userData.mottle || 0, indoors);
     const key = `${materialIndex(perMaterial, m.material)}:${patchOf(geo)}`;
     let b = buckets.get(key);
     if (!b) buckets.set(key, b = { material: m.material, geos: [], cast: false, receive: false });
@@ -2086,6 +2127,8 @@ export function buildCity(scene, painted = null) {
 
   registerFloors(world, floors);
   registerHeaps(world, heaps);
+  // every collider is in now: index them (see `World.seal`)
+  world.seal();
 
   // Last, so it sees every collider and every floor it might grow against —
   // and inside `decor`, so where it grows costs the layout nothing.
@@ -2133,12 +2176,29 @@ export function buildCity(scene, painted = null) {
       const mat = pick(facadeMats);
       const x = cx + ox, z = cz + oz;
       const tint = tintAt(x, z, 1);
+      const open = opensAt(x, z);
       const body = new THREE.Mesh(boxGeo(bw, h, bd, TILE.facade, wallUV(x, z, h)), mat);
-      body.position.set(x, h / 2, z);
       body.castShadow = body.receiveShadow = true;
       body.userData.tint = tint;
       g.add(body);
-      w.addSolid(body, bw / 2, bd / 2, h);
+      if (open) {
+        // Only the floors over an open ground floor: the same wall from its
+        // second storey up, its window grid carried on from the ground, and
+        // to the box list a ceiling rather than a block. Its shape is swapped
+        // inside a reserve, so the block still costs the stream what it did.
+        reserve(() => {
+          const uv = wallUV(x, z, h);
+          body.geometry.dispose();
+          body.geometry = boxGeo(bw, h - GROUND, bd, TILE.facade,
+            { ...uv, offsetV: uv.offsetV + 1 / FACADE_FLOORS, bands: Math.max(1, uv.bands - 1) });
+        });
+        body.position.set(x, GROUND + (h - GROUND) / 2, z);
+        w.solids.push(body);
+        w.addCeiling(x - bw / 2, z - bd / 2, x + bw / 2, z + bd / 2, h, GROUND - SLAB);
+      } else {
+        body.position.set(x, h / 2, z);
+        w.addSolid(body, bw / 2, bd / 2, h);
+      }
 
       // parapet
       const cap = new THREE.Mesh(boxGeo(bw + 0.6, 0.8, bd + 0.6, TILE.concrete), conc);
@@ -2190,18 +2250,20 @@ export function buildCity(scene, painted = null) {
         }
       }
 
-      // ground-floor storefront: dark glass band + a shutter
+      // ground-floor storefront: dark glass band + a shutter. An open ground
+      // floor still mints both, and rolls where the shutter would have gone,
+      // so the stream after it is the one every closed block leaves.
       const band = new THREE.Mesh(boxGeo(bw + 0.1, 2.6, bd + 0.1, TILE.glass), glass);
       band.position.set(x, 1.6, z);
-      g.add(band);
       const shut = new THREE.Mesh(boxGeo(bw * 0.4, 2.4, 0.2, TILE.rust), rustFor(x, z));
       shut.position.set(x + randRange(-bw / 4, bw / 4), 1.4, z + bd / 2 + 0.12);
       shut.userData.tint = tintAt(x, z, 2, 0.1);
-      g.add(shut);
+      if (open) reserve(() => groundFloor(g, w, x, z, bw, bd, cx, cz, conc, metal, tint));
+      else { g.add(band); g.add(shut); }
 
       // relief, roofline and street level — none of it costs the layout a
       // draw, so the same seed lays out the same city with or without it
-      basePlinth(g, x, z, bw, bd, conc, tint);
+      if (!open) basePlinth(g, x, z, bw, bd, conc, tint);
       facadeRelief(g, x, z, bw, bd, h, conc, tint);
       roofFurniture(g, x, z, bw, bd, h, conc, metal);
       streetFurniture(g, x, z, bw, bd, h, metal, cx, cz);
@@ -2531,6 +2593,168 @@ export function buildCity(scene, painted = null) {
       band.userData.tint = tint;
       gr.add(band);
     });
+  }
+
+  /**
+   * A ground floor you can walk into, under the floors of a building that
+   * stay solid (`opensAt` says which). Built inside the tower's `reserve`
+   * and placed by `hash2`, so it costs the seeded stream nothing; what it
+   * registers is the city, like any other collider.
+   *
+   * Every street face is a shopfront: piers at the corners and every five
+   * metres or so, and between each pair a doorway, a window over a
+   * waist-high sill, or a shutter rolled down to the pavement — and at least
+   * one doorway on every street face, each 4 m and more across, because the
+   * route field keeps a shoulder clear of every wall and a narrower door
+   * would be one no hostile could be routed through. The faces onto the
+   * building next door are blank. Inside: a slab ceiling under the floors
+   * above, columns and aisles of shelving on a wide floor, a counter,
+   * shelving against the blank walls and a few crates — all
+   * of them colliders and raycast targets, because anything at body height
+   * is something you can bump into. The floor is the lot's own pavement,
+   * with a finish laid flush over it, which is decoration by the flush rule.
+   */
+  function groundFloor(g, w, x, z, bw, bd, cx, cz, conc, metal, tint) {
+    const r = (s) => hash2(Math.round(x * 3), Math.round(z * 3), 200 + s);
+    const T = 0.35, PIER = 0.6, under = GROUND - SLAB;
+    const part = (gw, gh, gd, px, py, pz, mat, collide, tile = TILE.concrete, opts = null) => {
+      const m = new THREE.Mesh(boxGeo(gw, gh, gd, tile, opts || (gh > 1.5 ? { bands: 3 } : {})), mat);
+      m.position.set(px, py + gh / 2, pz);
+      m.castShadow = m.receiveShadow = true;
+      m.userData.tint = tint;
+      g.add(m);
+      if (collide) {
+        w.solids.push(m);
+        w.addBox(px - gw / 2, pz - gd / 2, px + gw / 2, pz + gd / 2, py + gh);
+      }
+      return m;
+    };
+    // the slab under the floors above: something a bullet stops at, and the
+    // ceiling box above it is what a body or a sight line meets
+    w.solids.push(part(bw, SLAB, bd, x, under, z, conc, false, TILE.concrete, { cells: 6 }));
+    // a floor finish over the pavement, flush with it, with vertices across
+    // it for the bake to darken
+    part(bw - T * 2, 0.015, bd - T * 2, x, KERB, z, darkConcrete, false, TILE.concrete, { cells: 8 });
+
+    // the four faces: which look onto a street, and where each runs
+    const faces = [
+      { along: 'x', s: -1, len: bw, at: z - bd / 2 + T / 2 },
+      { along: 'x', s: 1, len: bw, at: z + bd / 2 - T / 2 },
+      { along: 'z', s: -1, len: bd - T * 2, at: x - bw / 2 + T / 2 },
+      { along: 'z', s: 1, len: bd - T * 2, at: x + bw / 2 - T / 2 },
+    ];
+    for (const f of faces) {
+      f.street = f.along === 'x'
+        ? Math.abs(z + f.s * bd / 2 - cz) > LOT / 2 - 0.6
+        : Math.abs(x + f.s * bw / 2 - cx) > LOT / 2 - 0.6;
+    }
+    // a piece of wall along a face, from `a` to `b` along it, `lo` to `hi` up it
+    const wall = (f, a, b, lo, hi, mat = conc, collide = true, tile = TILE.concrete) => {
+      const mid = (a + b) / 2, len = b - a;
+      if (len < 0.05) return;
+      if (f.along === 'x') part(len, hi - lo, T, x + mid, lo, f.at, mat, collide, tile);
+      else part(T, hi - lo, len, f.at, lo, z + mid, mat, collide, tile);
+    };
+    // the shopfront is the first street face across x; any other street face
+    // is mostly windows and shutters, with a side door at most, or a wide
+    // floor open on every side reads as a car park
+    const front = faces.find((f) => f.street && f.along === 'x') || faces.find((f) => f.street);
+    const frontDoors = [];             // where along the shopfront its doorways are
+    const room = { minX: x - bw / 2, maxX: x + bw / 2, minZ: z - bd / 2, maxZ: z + bd / 2, floor: KERB, ceiling: under, doors: [] };
+    w.rooms.push(room);
+    let k = 0;
+    for (const f of faces) {
+      const half = f.len / 2;
+      if (!f.street) { wall(f, -half, half, 0, under); continue; }
+      const bays = Math.max(1, Math.round(f.len / 5));
+      const span = f.len / bays;
+      const kinds = [];
+      const main = f === front;
+      for (let i = 0; i < bays; i++) {
+        const q = r(k + i);
+        kinds.push(main ? (q < 0.5 ? 'door' : q < 0.82 ? 'window' : 'shut') : (q < 0.6 ? 'window' : 'shut'));
+      }
+      if (main && !kinds.includes('door')) kinds[Math.floor(r(k + 9) * bays)] = 'door';
+      if (!main && r(k + 8) < 0.4) kinds[Math.floor(r(k + 9) * bays)] = 'door';
+      for (let i = 0; i <= bays; i++) {
+        // piers, the corner ones kept inside the corner
+        const c = -half + span * i;
+        const lo = Math.max(-half, c - PIER / 2), hi = Math.min(half, c + PIER / 2);
+        wall(f, lo, hi, 0, under);
+      }
+      for (let i = 0; i < bays; i++) {
+        const a = -half + span * i + PIER / 2, b = a + span - PIER;
+        if (kinds[i] === 'window') wall(f, a, b, 0, KERB + 0.95);
+        else if (kinds[i] === 'shut') wall(f, a, b, 0, under, rustFor(x + a, z + b), true, TILE.rust);
+        // a doorway: open to the ceiling, its shutter rolled up into a box at
+        // the top, which is above any head
+        else {
+          wall(f, a, b, under - 0.24, under, rustFor(x + a, z + b), false, TILE.rust);
+          const m = (a + b) / 2;
+          if (main) frontDoors.push(m);
+          room.doors.push(f.along === 'x'
+            ? { x: x + m, z: f.at, nx: 0, nz: f.s, width: b - a }
+            : { x: f.at, z: z + m, nx: f.s, nz: 0, width: b - a });
+        }
+      }
+      k += 10;
+    }
+
+    // inside
+    const iw = bw - T * 2, id = bd - T * 2;           // the room, wall to wall
+    if (Math.min(iw, id) > 15) {
+      // a wide floor: columns on a grid, and aisles of shelving down the back
+      // half of it, each with room at both ends to walk round
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) part(0.55, under, 0.55, x + sx * iw / 4, 0, z + sz * id / 4, conc, true);
+      if (front) {
+        const deep = front.along === 'x' ? id : iw, across = front.along === 'x' ? iw : id;
+        // one down the middle and one toward the back, clear of the column
+        // lines, which would otherwise close the aisle between them
+        for (const depth of [0, 0.38]) {
+          const len = across * 0.42, off = (r(30 + depth * 10) - 0.5) * (across - len - 9);
+          const at = -front.s * depth * deep;          // from the middle toward the back
+          if (front.along === 'x') part(len, 1.8, 0.9, x + off, KERB, z + at, metal, true, TILE.metal);
+          else part(0.9, 1.8, len, x + at, KERB, z + off, metal, true, TILE.metal);
+        }
+      }
+    } else if (Math.max(iw, id) > 15) {
+      // a long one: columns down its middle
+      for (const s of [-1, 1]) {
+        if (iw > id) part(0.55, under, 0.55, x + s * iw / 4, 0, z, conc, true);
+        else part(0.55, under, 0.55, x, 0, z + s * id / 4, conc, true);
+      }
+    }
+    // a counter parallel to the shopfront, at the end of it away from its
+    // doorways — behind one, its shoulder of the route field closes the door
+    const ends = new Set(frontDoors.map((m) => Math.sign(m) || 1));
+    if (front && ends.size < 2) {
+      const across = front.along === 'x' ? iw : id;
+      const len = Math.min(3.6, across * 0.4), side = ends.size ? -[...ends][0] : (r(41) < 0.5 ? -1 : 1);
+      const off = side * (across / 2 - len / 2 - 0.9);
+      const inset = (front.along === 'x' ? bd : bw) / 2 - T - 2.6;
+      if (front.along === 'x') part(len, 1.0, 0.7, x + off, KERB, z + front.s * inset, metal, true, TILE.metal);
+      else part(0.7, 1.0, len, x + front.s * inset, KERB, z + off, metal, true, TILE.metal);
+    }
+    // shelving against the blank walls, and crates in the corners
+    for (const f of faces) {
+      if (f.street || r(50 + k++) < 0.3) continue;
+      const len = Math.min(4, f.len - 2.4), off = (r(60 + k) - 0.5) * (f.len - len - 1.4);
+      const inward = f.at - f.s * (T / 2 + 0.25);
+      if (f.along === 'x') part(len, 2.0, 0.45, x + off, KERB, inward, metal, true, TILE.metal);
+      else part(0.45, 2.0, len, inward, KERB, z + off, metal, true, TILE.metal);
+    }
+    // crates against the blank walls, at either end of them
+    let i = 0;
+    for (const f of faces) {
+      if (f.street) continue;
+      for (const end of [-1, 1]) {
+        if (r(70 + i++) < 0.45) continue;
+        const c = 0.6 + r(80 + i) * 0.3;
+        const along = end * (f.len / 2 - c / 2 - 0.2), inward = f.at - f.s * (T / 2 + c / 2 + 0.1);
+        const px = f.along === 'x' ? x + along : inward, pz = f.along === 'x' ? inward : z + along;
+        part(c, c, c, px, KERB, pz, rustFor(px, pz), true, TILE.rust);
+      }
+    }
   }
 
   /** A base course, so a tower meets the pavement on something. */
