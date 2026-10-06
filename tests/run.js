@@ -3898,7 +3898,46 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
     g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
     const w = g.world, p = g.player;
     const step = (n, each) => { for (let f = 0; f < n; f++) { g.time += 1 / 30; p.health = 100; each?.(f); g.step(1 / 30); } };
-    const out = { stairs: w.stairs.length, walked: 0, stuck: [], held: 0, edges: 0, party: 0, partyHeld: 0, shots: [], climbs: 0, rooms: 0, follow: [] };
+    const out = { stairs: w.stairs.length, walked: 0, stuck: [], held: 0, edges: 0, party: 0, partyHeld: 0, shots: [], climbs: 0, rooms: 0, follow: [], loose: {} };
+
+    // Nothing drawn across a shaft that holds nothing up. A ledge round the
+    // building and a band near its top were slabs right through it, with no
+    // collider: a floor you saw in the stairwell and walked through. Sampled
+    // on a grid across each shaft, because a slab's triangles have their
+    // corners — and their middles — out at the building's.
+    const tris = [];
+    g.city.traverse((m) => {
+      if (!m.isMesh || !m.geometry) return;
+      m.updateMatrixWorld();
+      const pos = m.geometry.attributes.position, idx = m.geometry.index, n = idx ? idx.count / 3 : pos.count / 3;
+      const P = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+      for (let t = 0; t < n; t++) {
+        for (let k = 0; k < 3; k++) P[k].fromBufferAttribute(pos, idx ? idx.getX(t * 3 + k) : t * 3 + k).applyMatrix4(m.matrixWorld);
+        if (Math.abs(P[0].y - P[1].y) > 0.01 || Math.abs(P[0].y - P[2].y) > 0.01) continue;
+        tris.push([P[0].x, P[0].z, P[1].x, P[1].z, P[2].x, P[2].z, P[0].y]);
+      }
+    });
+    const inTri = (px, pz, [ax, az, bx, bz, cx, cz]) => {
+      const d1 = (px - bx) * (az - bz) - (ax - bx) * (pz - bz);
+      const d2 = (px - cx) * (bz - cz) - (bx - cx) * (pz - cz);
+      const d3 = (px - ax) * (cz - az) - (cx - ax) * (pz - az);
+      return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+    };
+    for (const s of w.stairs) {
+      const q = s.inner;
+      const near = tris.filter((t) => t[6] > s.floor + 0.05 && t[6] < s.hut + 0.3
+        && Math.max(t[0], t[2], t[4]) > q.minX && Math.min(t[0], t[2], t[4]) < q.maxX
+        && Math.max(t[1], t[3], t[5]) > q.minZ && Math.min(t[1], t[3], t[5]) < q.maxZ);
+      for (let x = q.minX + 0.15; x < q.maxX - 0.1; x += 0.4) for (let z = q.minZ + 0.15; z < q.maxZ - 0.1; z += 0.4) {
+        for (const t of near) {
+          if (!inTri(x, z, t)) continue;
+          const y = t[6];
+          const held = w.boxes.some((b) => x >= b.minX - 0.01 && x <= b.maxX + 0.01 && z >= b.minZ - 0.01 && z <= b.maxZ + 0.01
+            && (Math.abs(y - b.top) < 0.03 || Math.abs(y - (b.base || 0)) < 0.03 || (y > (b.base || 0) && y < b.top)));
+          if (!held) out.loose[y.toFixed(2)] = (out.loose[y.toFixed(2)] || 0) + 1;
+        }
+      }
+    }
 
     for (const s of w.stairs) {
       // walk the stair's own points, looking at the next one
@@ -4018,6 +4057,7 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
   // onto its roof; every edge held, party walls included; every shot stopped
   // on the deck; a scavenger up in 10-12 s and back down in 8 s.
   expect(r.stairs >= 6, `only ${r.stairs} stairwells on this seed`);
+  expect(Object.keys(r.loose).length === 0, `something drawn across a stairwell holds nothing up, at heights ${JSON.stringify(r.loose)}`);
   expect(r.walked === r.stairs, `${r.stairs - r.walked} of ${r.stairs} stairwells could not be walked up: ${JSON.stringify(r.stuck.slice(0, 3))}`);
   expect(r.edges >= r.stairs * 2 && r.held === r.edges, `walked off ${r.edges - r.held} of ${r.edges} roof edges`);
   expect(r.party > 0 && r.partyHeld === r.party, `jumped ${r.party - r.partyHeld} of ${r.party} party walls`);
@@ -4027,6 +4067,34 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
   expect(r.follow.every((f) => f.upAt !== null), `a scavenger never followed the player up: ${JSON.stringify(r.follow)}`);
   expect(r.follow.every((f) => f.downAt !== null), `a scavenger never came back down after the player: ${JSON.stringify(r.follow)}`);
   return { stairs: r.stairs, edges: r.edges, party: r.party, shots: r.shots.length, climbs: `${r.climbs}/${r.rooms}`, follow: r.follow };
+});
+
+check('sprinting until you are winded does not shake the gun', async (page) => {
+  // Sprint stopped at an empty bar and started again a frame later, with the
+  // key still held, and the gun swapped between its sprint and its run pose
+  // on every frame — reported from play as the gun shaking in your hands
+  // after a jump or a kerb, which is only how long it took to run dry.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const p = g.player, keys = g.input.keys;
+    p.reset(0, 0); p.yaw = 0;
+    keys.add('KeyW'); keys.add('ShiftLeft');
+    let flips = 0, last = p.sprinting, winded = 0;
+    for (let f = 0; f < 600; f++) {
+      g.time += 1 / 60; p.health = 100; g.step(1 / 60);
+      if (p.sprinting !== last) flips++;
+      last = p.sprinting;
+      if (p.winded) winded++;
+    }
+    keys.clear();
+    return { flips, winded };
+  });
+  // Measured: 285 flips in ten seconds with the old rule, 5 now.
+  expect(r.winded > 0, 'ten seconds of sprinting never ran the bar dry');
+  expect(r.flips <= 8, `sprint switched on and off ${r.flips} times in ten seconds of holding it`);
+  return r;
 });
 
 check('hostiles use the buildings: a frag through the door, posts on the exits, a push on your reload', async (page) => {

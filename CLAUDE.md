@@ -374,6 +374,29 @@ These each cost real debugging time. Changing them needs a reason.
   objective, the intermission before the next wave — ran out while nobody
   was playing. It stops while paused or in the armoury now. Measured by the
   armoury check: 0.12 s over five frames, against 0.
+- **A band round a building is a ring, not a slab.** The ledge at the
+  foot of every tower (`skirt`, 2.8-3.2 m) and the string course under its
+  cap were boxes the size of the footprint: inside a closed block nobody
+  saw them, but across an open ground floor the skirt was the ceiling you
+  saw, 25 cm under the slab you hit, and up a stairwell both were floors
+  with nothing under them, which you walked through — reported from play
+  as the building's floor cutting into the stairwell. `ringGeo` in
+  `city.js` draws the four sides only; the skirt is swapped to one inside a
+  reserve where the ground floor is open, so it costs the stream what it
+  did, and the band is decoration either way. The stairwell check samples a
+  grid across every shaft for flat faces that are neither on a collider nor
+  inside one — sampled, not read off triangle centres, because a slab's
+  triangles have their corners and their middles out at the building's
+  corners, and the first audit, reading centres, found nothing. With either
+  band put back as a slab, every stairwell on seed 1 reports it.
+- **Sprint stops when you run dry and stays stopped until a third is
+  back** (`WIND_BACK`, `player.winded`). It used to cut out at an empty
+  bar and come back a frame later with the key held, every frame: the gun
+  swapped between its sprint and run poses sixty times a second, reported
+  from play as the gun shaking in your hands after a jump or a kerb — which
+  was only how long it took to run the bar down. `sprinting until you are
+  winded does not shake the gun`: 285 flips in ten seconds with the old
+  rule, 6 now.
 - **A fall lands on whatever it crossed in the frame.** Airborne footing
   asked `groundHeight` with a ceiling 2 cm over where the fall *ended*, so a
   landing that crossed a surface by more than that in one step went

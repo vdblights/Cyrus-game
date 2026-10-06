@@ -288,6 +288,22 @@ function boxGeo(w, h, d, tile = TILE.concrete, opts = {}) {
 }
 
 /**
+ * A band round a building rather than a slab through it: the four sides of a
+ * `w` x `d` box, each `wall` deep, at the given height. A ledge or a string
+ * course drawn as one box is a floor across the whole building, which inside
+ * a block nobody sees — and across an open ground floor and up a stairwell
+ * is a surface with no collider under it, that you walk through.
+ */
+function ringGeo(w, h, d, wall, tile = TILE.concrete) {
+  return mergeIntoOne([
+    boxGeo(w, h, wall, tile).translate(0, 0, -(d - wall) / 2),
+    boxGeo(w, h, wall, tile).translate(0, 0, (d - wall) / 2),
+    boxGeo(wall, h, d - wall * 2, tile).translate(-(w - wall) / 2, 0, 0),
+    boxGeo(wall, h, d - wall * 2, tile).translate((w - wall) / 2, 0, 0),
+  ]);
+}
+
+/**
  * Cylinder with UVs at a declared world scale, the way `boxGeo` does it.
  *
  * Three's own unwrap runs 0..1 around the barrel and 0..1 up it, so a 0.4 m
@@ -2264,6 +2280,17 @@ export function buildCity(scene, painted = null) {
 
       // a ledge at the base grounds the block against the pavement
       const skirt = new THREE.Mesh(boxGeo(bw + 0.5, 0.45, bd + 0.5, TILE.concrete), conc);
+      // Over an open ground floor it is a band, not a slab: as a slab it was
+      // the ceiling you saw in every shop, 25 cm under the real one, and a
+      // floor across every stairwell that nothing held up. Swapped inside a
+      // reserve, so the ledge still costs the stream what it did; 0.55 deep
+      // is the 0.25 it stands proud and most of the wall under it.
+      if (open) {
+        reserve(() => {
+          skirt.geometry.dispose();
+          skirt.geometry = ringGeo(bw + 0.5, 0.45, bd + 0.5, 0.55, TILE.concrete);
+        });
+      }
       skirt.position.set(x, 3.0, z);
       skirt.castShadow = true;
       skirt.userData.tint = tint;
@@ -2626,7 +2653,8 @@ export function buildCity(scene, painted = null) {
         rib(x + bw / 2 + proud / 2 - 0.04, z + oz, proud, ribW);
       });
 
-      const band = new THREE.Mesh(boxGeo(bw + proud * 2, 0.42, bd + proud * 2, TILE.concrete), conc);
+      // a band, not a slab: a stairwell climbs through this height
+      const band = new THREE.Mesh(ringGeo(bw + proud * 2, 0.42, bd + proud * 2, proud + 0.3, TILE.concrete), conc);
       band.position.set(x, h - head + 0.2, z);
       band.castShadow = true;
       band.userData.tint = tint;
