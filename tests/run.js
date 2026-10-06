@@ -3827,13 +3827,17 @@ check('a building opens onto the street: you walk in under its floors, and it hi
         row.walked = true;
 
 
-        // a jump, standing where the walk stopped
+        // a jump, standing where the walk stopped — which, where a stairwell
+        // opens off the shop, can be a few steps up it, under the flight
+        // over it rather than the shop's ceiling
         let top = 0;
+        const from = p.feetY, over = w.ceilingAbove(p.position.x, p.position.z, p.radius * 0.5, from + 0.5);
         g.input.keys.add('Space');
         g.time += 1 / 60; g.step(1 / 60);
         g.input.keys.clear();
         for (let f = 0; f < 70; f++) { g.time += 1 / 60; g.step(1 / 60); top = Math.max(top, p.feetY); }
-        row.jump = { rose: +(top - room.floor).toFixed(2), crown: +(top + 1.85).toFixed(2), ceiling: +room.ceiling.toFixed(2) };
+        row.jump = { rose: +(top - from).toFixed(2), crown: +(top + 1.85).toFixed(2), ceiling: +Math.min(room.ceiling, over).toFixed(2) };
+        if (from > room.floor + 0.3) row.jump.ceiling = +over.toFixed(2);
 
         // seen through the doorway from the street, not from far over the roof
         const ex = d.x - d.nx * 2, ez = d.z - d.nz * 2, ey = room.floor + 1.5;
@@ -3850,7 +3854,7 @@ check('a building opens onto the street: you walk in under its floors, and it hi
           high = Math.max(high, pos.y);
           out = Math.max(out, room.minX - pos.x, pos.x - room.maxX, room.minZ - pos.z, pos.z - room.maxZ);
         }
-        row.grenade = { high: +high.toFixed(2), out: +out.toFixed(2) };
+        row.grenade = { high: +high.toFixed(2), out: +out.toFixed(2), ceiling: +room.ceiling.toFixed(2) };
         break;
       }
       rows.push(row);
@@ -3867,8 +3871,8 @@ check('a building opens onto the street: you walk in under its floors, and it hi
   for (const row of walked) {
     expect(row.jump.rose > 0.5, `a jump indoors rose only ${row.jump.rose} m`);
     expect(row.jump.crown <= row.jump.ceiling + 0.01, `a jump indoors put the crown at ${row.jump.crown} through a ceiling at ${row.jump.ceiling}`);
-    expect(row.grenade.high <= row.jump.ceiling && row.grenade.out <= 0,
-      `a grenade thrown up indoors went to ${row.grenade.high} m under a ceiling at ${row.jump.ceiling}, and ${row.grenade.out} m out of the building`);
+    expect(row.grenade.high <= row.grenade.ceiling && row.grenade.out <= 0,
+      `a grenade thrown up indoors went to ${row.grenade.high} m under a ceiling at ${row.grenade.ceiling}, and ${row.grenade.out} m out of the building`);
   }
   expect(bad((row) => !row.walked || row.seen) === 0, `${bad((row) => !row.walked || row.seen)} rooms cannot be seen into through their own doorway`);
   expect(bad((row) => !row.walked || row.hidden) === 0, `${bad((row) => !row.walked || row.hidden)} rooms are seen into through the floors above them`);
