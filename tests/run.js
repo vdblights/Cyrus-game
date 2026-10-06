@@ -3827,13 +3827,17 @@ check('a building opens onto the street: you walk in under its floors, and it hi
         row.walked = true;
 
 
-        // a jump, standing where the walk stopped
+        // a jump, standing where the walk stopped — which, where a stairwell
+        // opens off the shop, can be a few steps up it, under the flight
+        // over it rather than the shop's ceiling
         let top = 0;
+        const from = p.feetY, over = w.ceilingAbove(p.position.x, p.position.z, p.radius * 0.5, from + 0.5);
         g.input.keys.add('Space');
         g.time += 1 / 60; g.step(1 / 60);
         g.input.keys.clear();
         for (let f = 0; f < 70; f++) { g.time += 1 / 60; g.step(1 / 60); top = Math.max(top, p.feetY); }
-        row.jump = { rose: +(top - room.floor).toFixed(2), crown: +(top + 1.85).toFixed(2), ceiling: +room.ceiling.toFixed(2) };
+        row.jump = { rose: +(top - from).toFixed(2), crown: +(top + 1.85).toFixed(2), ceiling: +Math.min(room.ceiling, over).toFixed(2) };
+        if (from > room.floor + 0.3) row.jump.ceiling = +over.toFixed(2);
 
         // seen through the doorway from the street, not from far over the roof
         const ex = d.x - d.nx * 2, ez = d.z - d.nz * 2, ey = room.floor + 1.5;
@@ -3850,7 +3854,7 @@ check('a building opens onto the street: you walk in under its floors, and it hi
           high = Math.max(high, pos.y);
           out = Math.max(out, room.minX - pos.x, pos.x - room.maxX, room.minZ - pos.z, pos.z - room.maxZ);
         }
-        row.grenade = { high: +high.toFixed(2), out: +out.toFixed(2) };
+        row.grenade = { high: +high.toFixed(2), out: +out.toFixed(2), ceiling: +room.ceiling.toFixed(2) };
         break;
       }
       rows.push(row);
@@ -3867,12 +3871,162 @@ check('a building opens onto the street: you walk in under its floors, and it hi
   for (const row of walked) {
     expect(row.jump.rose > 0.5, `a jump indoors rose only ${row.jump.rose} m`);
     expect(row.jump.crown <= row.jump.ceiling + 0.01, `a jump indoors put the crown at ${row.jump.crown} through a ceiling at ${row.jump.ceiling}`);
-    expect(row.grenade.high <= row.jump.ceiling && row.grenade.out <= 0,
-      `a grenade thrown up indoors went to ${row.grenade.high} m under a ceiling at ${row.jump.ceiling}, and ${row.grenade.out} m out of the building`);
+    expect(row.grenade.high <= row.grenade.ceiling && row.grenade.out <= 0,
+      `a grenade thrown up indoors went to ${row.grenade.high} m under a ceiling at ${row.grenade.ceiling}, and ${row.grenade.out} m out of the building`);
   }
   expect(bad((row) => !row.walked || row.seen) === 0, `${bad((row) => !row.walked || row.seen)} rooms cannot be seen into through their own doorway`);
   expect(bad((row) => !row.walked || row.hidden) === 0, `${bad((row) => !row.walked || row.hidden)} rooms are seen into through the floors above them`);
   return { rooms: r.rooms, sample: r.rows[0] };
+});
+
+check('a stairwell climbs to a roof you can stand on, and a hostile follows you up it', async (page) => {
+  // Some of the open ground floors have a stairwell in a corner: switchback
+  // flights from the shop floor to a bulkhead on the roof, and the roof made
+  // somewhere to stand, with a parapet round it. A flight over a flight is a
+  // box off the ground that is also a floor (`addDeck`), and a roof is the
+  // same, so this asks every reader that had to learn it:
+  //   - you walk up every stairwell on the seed, from the shop to the roof;
+  //   - on the roof the parapet holds you, and a party wall holds a jump;
+  //   - a shot at the roof stops on it;
+  //   - a counter in the shop under a roof can still be climbed, because the
+  //     roof over it is not a wall in front of it;
+  //   - a scavenger in the street follows you up, and back down after you.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const w = g.world, p = g.player;
+    const step = (n, each) => { for (let f = 0; f < n; f++) { g.time += 1 / 30; p.health = 100; each?.(f); g.step(1 / 30); } };
+    const out = { stairs: w.stairs.length, walked: 0, stuck: [], held: 0, edges: 0, party: 0, partyHeld: 0, shots: [], climbs: 0, rooms: 0, follow: [] };
+
+    for (const s of w.stairs) {
+      // walk the stair's own points, looking at the next one
+      const path = s.path;
+      p.reset(path[0].x, path[0].z);
+      let k = 1, high = 0;
+      g.input.keys.clear();
+      g.input.keys.add('KeyW');
+      for (let f = 0; f < 60 * 30 && k < path.length; f++) {
+        const to = path[k];
+        p.yaw = Math.atan2(-(to.x - p.position.x), -(to.z - p.position.z));
+        p.pitch = 0;
+        g.time += 1 / 30; p.health = 100; g.step(1 / 30);
+        high = Math.max(high, p.feetY);
+        if (Math.hypot(to.x - p.position.x, to.z - p.position.z) < 0.45 && Math.abs(to.y - p.feetY) < 0.7) k++;
+      }
+      g.input.keys.clear();
+      const up = Math.abs(p.feetY - s.deck) < 0.05 && k === path.length;
+      if (up) out.walked++;
+      else out.stuck.push({ at: k, of: path.length, feet: +p.feetY.toFixed(2), high: +high.toFixed(2), deck: +s.deck.toFixed(2) });
+      if (!up) continue;
+
+      // straight at each edge of the roof, walking into it for three seconds,
+      // and at a party wall with a jump
+      const r0 = s.roof, cx = (r0.minX + r0.maxX) / 2, cz = (r0.minZ + r0.maxZ) / 2;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const sx = cx - dx * 1.5, sz = cz - dz * 1.5;
+        if (w.blocked(sx, sz, p.radius + 0.05, s.deck + 0.9)) continue;
+        p.reset(sx, sz);
+        p.feetY = s.deck; p.position.y = s.deck + p.eyeHeight;
+        p.yaw = Math.atan2(-dx, -dz);
+        const wall = w.boxes.find((b) => b.base > s.deck - 0.01 && b.base < s.deck + 0.01 && !b.deck
+          && (dx ? (dx > 0 ? b.minX >= r0.maxX - 0.01 : b.maxX <= r0.minX + 0.01) && b.minZ <= cz && b.maxZ >= cz
+                 : (dz > 0 ? b.minZ >= r0.maxZ - 0.01 : b.maxZ <= r0.minZ + 0.01) && b.minX <= cx && b.maxX >= cx));
+        const party = wall && wall.top - s.deck > 2;
+        g.input.keys.add('KeyW');
+        step(90, (f) => {
+          // over a party wall, take a run and jump at it
+          if (party) { g.input.keys.add('ShiftLeft'); if (f % 20 === 10) g.input.keys.add('Space'); else g.input.keys.delete('Space'); }
+        });
+        g.input.keys.clear();
+        step(30);
+        const onRoof = Math.abs(p.feetY - s.deck) < 0.05 && p.position.x > r0.minX && p.position.x < r0.maxX
+          && p.position.z > r0.minZ && p.position.z < r0.maxZ;
+        out.edges++;
+        if (onRoof) out.held++;
+        if (party) { out.party++; if (onRoof) out.partyHeld++; }
+      }
+
+      // a round fired straight down at the roof, clear of the bulkhead
+      const ray = new THREE.Raycaster(new THREE.Vector3(cx + 0.3, s.deck + 6, cz + 0.3), new THREE.Vector3(0, -1, 0), 0, 50);
+      const q = s.shaft;
+      if (!(cx + 0.3 > q.minX - 0.5 && cx + 0.3 < q.maxX + 0.5 && cz + 0.3 > q.minZ - 0.5 && cz + 0.3 < q.maxZ + 0.5)) {
+        const hit = ray.intersectObjects(w.solids, false)[0];
+        out.shots.push(hit ? +(hit.point.y - s.deck).toFixed(3) : null);
+      }
+
+      // a crate in the shop under it, climbed from in front of it — one with
+      // a body's headroom over it under the ceiling, and not a stair tread
+      const room = w.rooms.find((rm) => rm.stair === s);
+      let climbed = false, any = false;
+      for (const b of w.boxes) {
+        if (climbed) break;
+        if (b.base || b.floor || b.top < room.floor + 0.5 || b.top > room.floor + 1.5) continue;
+        if (b.cx < room.minX + 0.5 || b.cx > room.maxX - 0.5 || b.cz < room.minZ + 0.5 || b.cz > room.maxZ - 0.5) continue;
+        if (b.cx > q.minX && b.cx < q.maxX && b.cz > q.minZ && b.cz < q.maxZ) continue;
+        if (w.ceilingAbove(b.cx, b.cz, 0.42, b.top) < b.top + 1.9) continue;
+        any = true;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const sx = b.cx - dx * (b.hx + 0.6), sz = b.cz - dz * (b.hz + 0.6);
+          if (w.blocked(sx, sz, 0.45, room.floor + 0.9)) continue;
+          if (w.mantleTarget(sx, sz, 0.42, room.floor, dx, dz, 0.5, 1.8)) { climbed = true; break; }
+        }
+      }
+      if (any) out.rooms++;
+      if (climbed) out.climbs++;
+    }
+
+    // a scavenger in the street outside the door, the player out on the roof
+    for (const s of w.stairs.slice(0, 3)) {
+      const room = w.rooms.find((rm) => rm.stair === s);
+      const d = room.doors[0];
+      for (const e of g.enemies) { e.group.visible = false; g._recycle(e); }
+      g.enemies.length = 0;
+      const exit = s.path[s.path.length - 1];
+      const hold = (x, y, z) => () => {
+        p.feetY = y; p.onGround = true; p.velocity.set(0, 0, 0);
+        p.position.set(x, y + p.eyeHeight, z); p.health = 100;
+      };
+      p.reset(exit.x, exit.z);
+      let pin = hold(exit.x, s.deck, exit.z);
+      pin();
+      const e = g.spawnEnemy('scavenger');
+      const sx = d.x + d.nx * 5, sz = d.z + d.nz * 5;
+      e.pos.set(sx, w.groundHeight(sx, sz, 0.12, 0.6), sz);
+      e.group.position.copy(e.pos);
+      e.markWatchdog(p);
+      e.alert(g.time, 0);
+      let upAt = null, downAt = null;
+      for (let t = 0; t < 30 && upAt === null; t += 1 / 30) {
+        g.time += 1 / 30; pin(); g.step(1 / 30);
+        if (e.pos.y > s.deck - 0.2) upAt = +t.toFixed(1);
+      }
+      // and the player back down in the street
+      const qx = d.x + d.nx * 6, qz = d.z + d.nz * 6;
+      p.reset(qx, qz);
+      pin = hold(qx, p.feetY, qz);
+      for (let t = 0; upAt !== null && t < 30 && downAt === null; t += 1 / 30) {
+        g.time += 1 / 30; pin(); g.step(1 / 30);
+        if (e.pos.y < 0.6 && !e.stair) downAt = +t.toFixed(1);
+      }
+      out.follow.push({ upAt, downAt });
+    }
+    return out;
+  });
+  // Measured on seed 1: 13 stairwells, every one walked from the shop floor
+  // onto its roof; every edge held, party walls included; every shot stopped
+  // on the deck; a scavenger up in 10-12 s and back down in 8 s.
+  expect(r.stairs >= 6, `only ${r.stairs} stairwells on this seed`);
+  expect(r.walked === r.stairs, `${r.stairs - r.walked} of ${r.stairs} stairwells could not be walked up: ${JSON.stringify(r.stuck.slice(0, 3))}`);
+  expect(r.edges >= r.stairs * 2 && r.held === r.edges, `walked off ${r.edges - r.held} of ${r.edges} roof edges`);
+  expect(r.party > 0 && r.partyHeld === r.party, `jumped ${r.party - r.partyHeld} of ${r.party} party walls`);
+  expect(r.shots.length > 0 && r.shots.every((y) => y !== null && Math.abs(y) < 0.02),
+    `a shot at a roof stopped at ${JSON.stringify(r.shots)} m from its deck`);
+  expect(r.climbs >= r.rooms * 0.6, `a counter or crate was climbable in only ${r.climbs} of ${r.rooms} shops under a roof`);
+  expect(r.follow.every((f) => f.upAt !== null), `a scavenger never followed the player up: ${JSON.stringify(r.follow)}`);
+  expect(r.follow.every((f) => f.downAt !== null), `a scavenger never came back down after the player: ${JSON.stringify(r.follow)}`);
+  return { stairs: r.stairs, edges: r.edges, party: r.party, shots: r.shots.length, climbs: `${r.climbs}/${r.rooms}`, follow: r.follow };
 });
 
 check('a seed still lays out the city it did', async (page) => {
@@ -3947,10 +4101,24 @@ check('a seed still lays out the city it did', async (page) => {
   // that opened, every new one lies inside one of their footprints, and the
   // perches are identical. Before it: 771/561/12 43fc2161 (413 ff19bfd0),
   // 834/543/11 f6d29176 (376 86e2c858), 877/573/10 79f7d600 (395 985f0133).
+  //
+  // And once more, for the stairwells: the open ground floors under a roof
+  // no higher than 14 m got a stairwell to it, and the roof a deck, a
+  // parapet and plant boxes — 13, 7 and 12 buildings, about 90 colliders
+  // each. Placed by position and built inside the tower's reserve, so the
+  // stream is untouched. Compared collider by collider on all three seeds:
+  // every collider gone (37, 13, 24 — the ceilings that were split round a
+  // shaft, and the furniture kept off it) and every new one lies inside one
+  // of those buildings' roofs, and the perches are identical. It first moved
+  // seed 20260101's perches, because `areaClear` read the parapet's 30 cm
+  // overhang as an obstacle in the street; it ignores anything standing off
+  // the ground at roof height now. Before it: 1258/1069/12 6b6c3506 (900
+  // f85850b3), 1275/1000/11 c712ab7e (817 f6fca580), 1382/1103/10 30c19881
+  // (900 634ea5d6).
   const want = {
-    1: { boxes: 1258, solids: 1069, perches: 12, fp: '6b6c3506', placed: 900, fpPlaced: 'f85850b3' },
-    7: { boxes: 1275, solids: 1000, perches: 11, fp: 'c712ab7e', placed: 817, fpPlaced: 'f6fca580' },
-    20260101: { boxes: 1382, solids: 1103, perches: 10, fp: '30c19881', placed: 900, fpPlaced: '634ea5d6' },
+    1: { boxes: 2466, solids: 1462, perches: 12, fp: 'a58d0856', placed: 2108, fpPlaced: '63d74243' },
+    7: { boxes: 1915, solids: 1215, perches: 11, fp: 'cf6519ea', placed: 1457, fpPlaced: 'b4700b44' },
+    20260101: { boxes: 2474, solids: 1469, perches: 10, fp: '7f188ef1', placed: 1992, fpPlaced: '99ee3366' },
   };
 
   const got = {};

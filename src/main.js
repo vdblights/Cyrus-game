@@ -1089,6 +1089,7 @@ class Game {
     enemy.pos.set(x, spot.y || 0, z);
     enemy.vel.set(0, 0, 0);
     enemy.mantle = null;
+    enemy.stair = null;
     enemy.group.position.copy(enemy.pos);
     // the watchdog now has to judge the next window from where it landed, not
     // from where it was pulled out of
@@ -1526,8 +1527,13 @@ class Game {
       }
     }
     // Route field first, so every hostile reads one built from where the
-    // player is standing now. It only rebuilds when they cross a cell.
-    this.nav.update(this.player.position.x, this.player.position.z);
+    // player is standing now. It only rebuilds when they cross a cell. Up a
+    // stairwell, that is the foot of it: the field is a map of the street,
+    // and the street ends at the stair's door (`Enemy._stairWalk`).
+    const at = this.player.position;
+    this.playerStair = this.world.stairAt(at.x, this.player.feetY, at.z);
+    const from = this.playerStair ? this.playerStair.stair.path[0] : at;
+    this.nav.update(from.x, from.z);
 
     // enemies
     for (let i = this.enemies.length - 1; i >= 0; i--) {

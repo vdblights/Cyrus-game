@@ -51,6 +51,13 @@ export class World {
      * Nothing collides with this; the walls and the ceiling are in `boxes`.
      */
     this.rooms = [];
+    /**
+     * The stairwells that climb from a ground floor to a roof: the shaft and
+     * roof footprints, the deck height, how much headroom a flight leaves
+     * under the one above it, and the walk through it as a list of points,
+     * from the floor outside its door to the roof outside the bulkhead's.
+     */
+    this.stairs = [];
     this.bounds = 100;
   }
 
@@ -77,6 +84,19 @@ export class World {
    */
   addCeiling(minX, minZ, maxX, maxZ, top, base) {
     this.addBox(minX, minZ, maxX, maxZ, top, base);
+  }
+
+  /**
+   * Register a box off the ground that is also somewhere to stand: a stair
+   * tread over the flight below it, a landing, a roof reached by a stair.
+   * To everything but footing it is a ceiling like any other; `groundHeight`
+   * stands a body on it only when the body is at or above its underside, so
+   * the flight over your head never lifts you onto it and the roof over a
+   * shop never holds up a casing dropped inside the shop.
+   */
+  addDeck(minX, minZ, maxX, maxZ, top, base) {
+    this.addBox(minX, minZ, maxX, maxZ, top, base);
+    this.boxes[this.boxes.length - 1].deck = true;
   }
 
   /**
@@ -172,6 +192,33 @@ export class World {
     return hits;
   }
 
+  /**
+   * Which stairwell a body is up, and how far along its walk: on its roof
+   * (the last point of the walk), in its shaft above the floor (the nearest
+   * point, with height counted three times over, because the flights are
+   * stacked a lap apart and the nearest point across is the wrong lap), or
+   * neither — null, which is everywhere else, the shop under it included.
+   *
+   * @returns {{stair: object, idx: number}|null}
+   */
+  stairAt(x, y, z) {
+    for (const s of this.stairs) {
+      const r = s.roof;
+      if (x < r.minX - 0.4 || x > r.maxX + 0.4 || z < r.minZ - 0.4 || z > r.maxZ + 0.4) continue;
+      if (y > s.deck - 0.6) return { stair: s, idx: s.path.length - 1 };
+      const q = s.shaft;
+      if (y < s.floor + 0.3 || x < q.minX || x > q.maxX || z < q.minZ || z > q.maxZ) continue;
+      let idx = 1, best = Infinity;
+      for (let i = 1; i < s.path.length - 1; i++) {
+        const p = s.path[i];
+        const d = Math.hypot(p.x - x, p.z - z) + Math.abs(p.y - y) * 3;
+        if (d < best) { best = d; idx = i; }
+      }
+      return { stair: s, idx };
+    }
+    return null;
+  }
+
   /** Register a box-shaped mesh as both a collider and a raycast target. */
   addSolid(mesh, halfW, halfD, top) {
     this.solids.push(mesh);
@@ -232,11 +279,16 @@ export class World {
    * because that is how much floor holds a body up, while a clearance test
    * ("is anything in the way of a whole body here?") passes the body radius.
    */
-  groundHeight(x, z, radius, ceiling) {
+  groundHeight(x, z, radius, ceiling, under = ceiling) {
     let best = 0;
     const rSq = radius * radius;
     for (const b of near(this, x - radius, z - radius, x + radius, z + radius)) {
-      if (b.top <= best || (b.top > ceiling && !b.surface) || b.base) continue;
+      if (b.top <= best || (b.top > ceiling && !b.surface)) continue;
+      // A box off the ground is a ceiling, never a floor — unless it is a
+      // deck (a stair tread, a landing, a roof you reach by them), and then
+      // only from at or above its underside: `under` is how high the asker
+      // is, so a body under a flight is not stood on the one over its head.
+      if (b.base && (!b.deck || b.base > under)) continue;
       if (x <= b.minX - radius || x >= b.maxX + radius
           || z <= b.minZ - radius || z >= b.maxZ + radius) continue;
       const rx = x - b.cx, rz = z - b.cz;
@@ -282,13 +334,15 @@ export class World {
       const gx = x + nx * d, gz = z + nz * d;
       const top = this.groundHeight(gx, gz, grip, feet + maxRise);
       if (top < feet + minRise) continue;
-      // anything taller here means we are staring at a wall, not gripping a lip
-      if (this.groundHeight(gx, gz, grip, Infinity) > top + 0.05) continue;
+      // anything taller here means we are staring at a wall, not gripping a
+      // lip — but a deck overhead, the roof over a shop counter, is not one
+      const reachable = feet + maxRise + 0.5;
+      if (this.groundHeight(gx, gz, grip, Infinity, reachable) > top + 0.05) continue;
 
       // room for a body past the edge, at the same height, and under whatever
       // ceiling there is over it
       const lx = x + nx * (d + radius + 0.15), lz = z + nz * (d + radius + 0.15);
-      if (this.groundHeight(lx, lz, radius, Infinity) > top + 0.05) continue;
+      if (this.groundHeight(lx, lz, radius, Infinity, reachable) > top + 0.05) continue;
       if (this.ceilingAbove(lx, lz, radius, top) < top + HEADROOM) continue;
       // What you will actually be standing on, asked the way footing asks it.
       // Measuring the deck with the body radius promised ground that the

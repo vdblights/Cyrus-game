@@ -303,6 +303,7 @@ export class Player {
       this.onGround = false;
     }
     this.velocity.y -= GRAVITY * dt;
+    const before = this.feetY;
     this.feetY += this.velocity.y * dt;
     // a jump indoors stops against the ceiling instead of passing into it
     const over = this.world.ceilingAbove(this.position.x, this.position.z, this.radius * 0.5, this.feetY + 0.5);
@@ -324,7 +325,11 @@ export class Player {
     // surface left them standing 0.42 m out past every roof edge, bridged
     // every gap narrower than two radii, and stepped them up onto a kerb
     // before they had reached it.
-    const ceiling = this.feetY + (this.onGround ? STEP_HEIGHT : 0.02);
+    // In the air, anything the feet passed through this frame: a landing
+    // asked only at where the fall ended goes straight through whatever it
+    // crossed on the way. On the street that was a frame's dip under the kerb
+    // before the step-up caught it; on a roof it was the street.
+    const ceiling = this.onGround ? this.feetY + STEP_HEIGHT : Math.max(this.feetY, before) + 0.02;
     const support = this.world.groundHeight(this.position.x, this.position.z, SUPPORT_RADIUS, ceiling);
     if (this.feetY <= support + 1e-4) {
       if (this.velocity.y < -FALL_SAFE && this.onFallDamage) {

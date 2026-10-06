@@ -196,6 +196,19 @@ roof, whose sight line the floors cut, and a fight at close range through
 doorways and windows; a jump indoors stops at the ceiling, and so does a
 grenade. Hostiles follow you in.
 
+Most of the lower ones go further: a stairwell in a back corner of the shop,
+switchback flights of concrete steps climbing lap over lap to a bulkhead on
+the roof, and the roof itself somewhere to stand. A waist-high parapet runs
+round it on the street sides — cover from the street, and a shot down into
+it — and a party wall too tall to jump stands where the building next door
+is a metre away. A couple of plant boxes give cover from the other roofs.
+Hostiles follow you up: while you are on a roof or in its stairwell, the
+route field is built from the stair's door, every hostile that can fit under
+the flights walks there and climbs after you, and they come back down the
+same way when you leave. A ranged hostile with a clear shot at the roof from
+the street takes it instead, and one on the roof with a shot down holds it.
+Juggernauts are too tall for the stairs and wait below.
+
 Hostiles route around buildings rather than walking into them: a coarse
 walkable grid over the city carries a cost field rebuilt from wherever you are
 standing, so one that loses sight of you takes the way round the block, or in
