@@ -2283,12 +2283,15 @@ export function buildCity(scene, painted = null) {
       // Over an open ground floor it is a band, not a slab: as a slab it was
       // the ceiling you saw in every shop, 25 cm under the real one, and a
       // floor across every stairwell that nothing held up. Swapped inside a
-      // reserve, so the ledge still costs the stream what it did; 0.55 deep
-      // is the 0.25 it stands proud and most of the wall under it.
+      // reserve, so the ledge still costs the stream what it did. It is the
+      // 25 cm it stands proud and 2 cm into the wall, no deeper: the rest
+      // would be a strip of top face buried in the 35 cm shopfront and the
+      // block over it, and a strip that deep reads to anything sampling
+      // faces as a 55 cm shelf rather than the ledge it is.
       if (open) {
         reserve(() => {
           skirt.geometry.dispose();
-          skirt.geometry = ringGeo(bw + 0.5, 0.45, bd + 0.5, 0.55, TILE.concrete);
+          skirt.geometry = ringGeo(bw + 0.5, 0.45, bd + 0.5, 0.27, TILE.concrete);
         });
       }
       skirt.position.set(x, 3.0, z);
@@ -2654,7 +2657,7 @@ export function buildCity(scene, painted = null) {
       });
 
       // a band, not a slab: a stairwell climbs through this height
-      const band = new THREE.Mesh(ringGeo(bw + proud * 2, 0.42, bd + proud * 2, proud + 0.3, TILE.concrete), conc);
+      const band = new THREE.Mesh(ringGeo(bw + proud * 2, 0.42, bd + proud * 2, proud + 0.03, TILE.concrete), conc);
       band.position.set(x, h - head + 0.2, z);
       band.castShadow = true;
       band.userData.tint = tint;

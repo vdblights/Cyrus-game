@@ -388,7 +388,15 @@ These each cost real debugging time. Changing them needs a reason.
   inside one — sampled, not read off triangle centres, because a slab's
   triangles have their corners and their middles out at the building's
   corners, and the first audit, reading centres, found nothing. With either
-  band put back as a slab, every stairwell on seed 1 reports it.
+  band put back as a slab, every stairwell on seed 1 reports it. A ring is
+  as deep as what shows of it and 2-3 cm into the wall, no deeper. The
+  first cut was 55 cm, the rim and most of the wall under it, and `what
+  stands on a perch holds you up` read four of those strips beside seed 1's
+  terraces as 55 cm shelves with nothing under their outer edge. The rim had
+  always been there and always been unsupported, but as one slab its
+  triangles' centres were inside the block, so the check never sampled it.
+  At 27 cm the strip is narrower than a foot, which the check already
+  skips, and the rim you see is the same.
 - **Sprint stops when you run dry and stays stopped until a third is
   back** (`WIND_BACK`, `player.winded`). It used to cut out at an empty
   bar and come back a frame later with the key held, every frame: the gun
