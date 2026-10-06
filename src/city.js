@@ -2835,6 +2835,8 @@ export function buildCity(scene, painted = null) {
     if (!shaft) return null;
     const stair = stairwell(g, w, shaft, x, z, bw, bd, h, conc, metal, tint, body, cap, party, under, footprint);
     room.stair = stair;
+    // and back, out of sight of anything that walks the object to copy it
+    Object.defineProperty(stair, 'room', { value: room, enumerable: false });
     return stair;
   }
 

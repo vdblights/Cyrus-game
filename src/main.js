@@ -15,6 +15,7 @@ import { TILE } from './textures.js';
 import { buildDropPrototypes, DROP_COST } from './drops.js';
 import { randRange, SUPPORT_RADIUS } from './world.js';
 import { NavGrid } from './nav.js';
+import { ArmouryScreen, EFFECT, freshKit } from './armoury.js';
 import { PerfMeter } from './perf.js';
 import { installAtmosphere, skyMaterial, environmentFrom, SUN_DIR, SUN_COLOR } from './atmosphere.js';
 import { installShadowCascade, placeShadow, sizeShadow, SUN_DISTANCE } from './shadows.js';
@@ -248,6 +249,9 @@ class Game {
   settle() {
     this.nades = 3;
     this.maxNades = 5;
+    this.kit = freshKit();
+    this.scrip = 0;
+    this.scoreSeen = 0;
     this.fuseLength = FUSE;
     this.cookStart = -1;
 
@@ -815,6 +819,7 @@ class Game {
         : 'MOUSE CAPTURE UNAVAILABLE — STEER WITH THE CURSOR');
     };
 
+    this.armoury = new ArmouryScreen(this);
     this.input.onKey = (code) => {
       if (this.state !== 'playing') return;
       if (code === 'KeyR') this.weapons.startReload(this.time);
@@ -823,6 +828,7 @@ class Game {
       if (code === 'Digit3') this.weapons.select(2, this.time);
       if (code === 'Digit4') this.weapons.select(3, this.time);
       if (code === 'KeyQ') this.weapons.cycle(1, this.time);
+      if (code === 'KeyB') this.openArmoury();
       if (code === 'KeyF' || code === 'KeyV') this.weapons.startMelee(this.time);
       if (code === 'KeyG' && this.cookStart < 0 && this.nades > 0 && !this.player.dead) {
         this.cookStart = this.time;          // pin is out; the fuse is running
@@ -866,6 +872,10 @@ class Game {
     this.effects.reset();
     this.grenades.reset();
     this.objectives.reset();
+    this.kit = freshKit();          // what the armoury has fitted this run
+    this.scrip = 0;                 // what there is to spend there
+    this.scoreSeen = 0;
+    this.maxNades = 5;
     this.nades = 3;
     this.cookStart = -1;
     this.nextAmbience = 10;
@@ -895,6 +905,10 @@ class Game {
     this.objectivesSecured = 0;
     this.objectivesLost = 0;
     this.objectiveCue = null;
+    this.nextHostileThrow = 0;
+    this.playerRoom = null;
+    this.playerExposed = false;
+    this.pushCalled = -1;
     this.runStart = this.time;
 
     document.getElementById('menu').classList.add('hidden');
@@ -906,6 +920,37 @@ class Game {
     this.input.requestLock();
     this.nextWaveAt = this.time + 3;
     this.hud.banner('SECTOR 7', 'HOSTILES INBOUND');
+  }
+
+  /** Whether the armoury can be opened now: between waves, the sector clear. */
+  get armouryOpen() {
+    return this.state === 'playing' && !this.player.dead && this.wave > 0
+      && !!this.waveClearedAt && this.aliveCount === 0;
+  }
+
+  /**
+   * Open the armoury. It stops the clock — the intermission waits — and lets
+   * go of the mouse, which would otherwise pause the game behind it.
+   */
+  openArmoury() {
+    if (!this.armouryOpen) return false;
+    this.state = 'armoury';
+    this.armoury.show(true);
+    this.input.keys.clear();
+    this.input.fire = false;
+    this.input.exitLock();
+    return true;
+  }
+
+  closeArmoury() {
+    if (this.state !== 'armoury') return;
+    this.armoury.show(false);
+    this.state = 'playing';
+    this.input.requestLock();
+  }
+
+  onPurchase() {
+    audio.pickup();
   }
 
   pause() {
@@ -1027,7 +1072,7 @@ class Game {
           this.waveClearedAt = this.time;
           const bonus = 250 * this.wave;
           this.score += bonus;
-          this.hud.banner('SECTOR CLEAR', `+${bonus} &middot; REARMING`);
+          this.hud.banner('SECTOR CLEAR', `+${bonus} &middot; B FOR THE ARMOURY`);
           this.weapons.addAmmo(0.3, true);
           this.hud.toast('AMMO RESUPPLY');
         } else if (this.time - this.waveClearedAt > 7) {
@@ -1081,6 +1126,82 @@ class Game {
     return fallback || { x: p.x + randRange(-20, 20), z: p.z + randRange(-20, 20) };
   }
 
+  /**
+   * The room the player is in — on its floor, up its stairwell or on its
+   * roof — or null.
+   */
+  roomAt(x, feet, z) {
+    if (this.playerStair && this.playerStair.stair.room) return this.playerStair.stair.room;
+    for (const r of this.world.rooms) {
+      if (x > r.minX && x < r.maxX && z > r.minZ && z < r.maxZ && feet < r.ceiling - 1) return r;
+    }
+    return null;
+  }
+
+  /**
+   * A place outside the building the player is in, covering one of its
+   * doorways: 8 or 11 m out along the door's normal and up to 3 m to the
+   * side, on open ground at street level, with a sight line from a
+   * standing head into the doorway. At most two hostiles hold posts on a
+   * building at once — the rest come in after the player, which is what
+   * flushes them out toward the posts. A hostile keeps its post until the
+   * player leaves the building or reloads (`Enemy.update`).
+   */
+  coverPost(e) {
+    const room = this.playerRoom;
+    if (!room) return null;
+    if (e.post && e.post.room === room) return e.post;
+    // one already in with them, or nearly, keeps on coming
+    const x = e.pos.x, z = e.pos.z, at = this.player.position;
+    if ((x > room.minX && x < room.maxX && z > room.minZ && z < room.maxZ) || Math.hypot(x - at.x, z - at.z) < 10) return null;
+    if (!room.posts) room.posts = this._postsFor(room);
+    const taken = new Set();
+    for (const o of this.enemies) if (o !== e && o.alive && o.post && o.post.room === room) taken.add(o.post);
+    if (taken.size >= 2) return null;
+    // only one it can walk straight to: a post across the block is reached
+    // by the route field, which leads to the player and so in at the door
+    let best = null, bd = 30;
+    for (const p of room.posts) {
+      if (taken.has(p)) continue;
+      const d = Math.hypot(p.x - e.pos.x, p.z - e.pos.z);
+      if (d < bd && this.nav.clearLine(e.pos.x, e.pos.z, p.x, p.z)) { bd = d; best = p; }
+    }
+    return best;
+  }
+
+  _postsFor(room) {
+    const w = this.world, out = [];
+    for (const d of room.doors) {
+      const ix = d.x - d.nx * 1.0, iz = d.z - d.nz * 1.0;
+      for (const along of [8, 11]) {
+        for (const side of [0, -3, 3]) {
+          const x = d.x + d.nx * along - d.nz * side, z = d.z + d.nz * along + d.nx * side;
+          if (Math.abs(x) > w.bounds - 2 || Math.abs(z) > w.bounds - 2) continue;
+          const floor = w.groundHeight(x, z, SUPPORT_RADIUS, 0.6);
+          if (floor > 0.5 || w.blocked(x, z, 0.7, floor + 0.9) || w.occupied(x, z, 0.6, floor + 0.6)) continue;
+          if (this.nav.solidAt(x, z)) continue;
+          if (!w.lineOfSight(x, floor + 1.5, z, ix, room.floor + 1.2, iz)) continue;
+          const post = { door: d, x, z };
+          Object.defineProperty(post, 'room', { value: room, enumerable: false });
+          out.push(post);
+        }
+      }
+    }
+    return out;
+  }
+
+  /** The first hostile to push on a reload calls it, once per reload. */
+  onPush(e) {
+    if (this.pushCalled === this.exposures) return;
+    this.pushCalled = this.exposures;
+    audio.enemyAlert({ x: e.pos.x, y: e.pos.y + 1.5, z: e.pos.z });
+  }
+
+  /** A hostile's frag is out: it is heard from where it was thrown. */
+  onHostileThrow(e) {
+    audio.enemyAlert({ x: e.pos.x, y: e.pos.y + 1.5, z: e.pos.z });
+  }
+
   /** Pull a hostile that has wedged itself in geometry and drop it back in. */
   relocateEnemy(enemy) {
     // perch-users go back to high ground rather than the street
@@ -1090,6 +1211,7 @@ class Game {
     enemy.vel.set(0, 0, 0);
     enemy.mantle = null;
     enemy.stair = null;
+    enemy.post = null;
     enemy.group.position.copy(enemy.pos);
     // the watchdog now has to judge the next window from where it landed, not
     // from where it was pulled out of
@@ -1224,7 +1346,7 @@ class Game {
       const zone = hitE.object.userData.zone;
       end = hitE.point.clone();
 
-      let dmg = def.damage;
+      let dmg = def.damage * EFFECT.rifling[this.kit.rifling];
       if (zone === 'head') dmg *= def.headMult;
       if (def.falloff) {
         dmg *= THREE.MathUtils.clamp(1 - (hitE.distance - 8) / def.falloff, 0.3, 1);
@@ -1311,8 +1433,13 @@ class Game {
     }
   }
 
-  /** Frag detonation: damage falls off with distance and needs line of sight. */
-  explode(pos) {
+  /**
+   * Frag detonation: damage falls off with distance and needs line of sight.
+   * A hostile's frag hurts the player and nobody it was thrown alongside —
+   * and credits the player with nothing, which a frag that killed hostiles
+   * through `registerHit` would.
+   */
+  explode(pos, owner = 'player') {
     this.effects.explosion(pos);
     audio.explosion(1, pos);
 
@@ -1321,7 +1448,7 @@ class Game {
     // target is fully hidden cuts the damage rather than cancelling it.
     const originY = pos.y + 0.75;
 
-    for (const e of [...this.enemies]) {
+    for (const e of owner === 'hostile' ? [] : [...this.enemies]) {
       if (!e.alive) continue;
       const dist = Math.hypot(e.pos.x - pos.x, e.pos.z - pos.z, (e.pos.y + 1) - pos.y);   // aim at the chest
       if (dist > BLAST_RADIUS) continue;
@@ -1445,6 +1572,7 @@ class Game {
 
   damagePlayer(amount, fromPos) {
     if (this.state !== 'playing' || this.player.dead) return;
+    amount *= EFFECT.armour[this.kit.armour];
     const died = this.player.damage(amount, this.time);
     audio.hurt();
 
@@ -1477,8 +1605,12 @@ class Game {
     const steps = Math.max(1, Math.ceil(elapsed / MAX_STEP - 1e-6));
     const dt = elapsed / steps;
 
+    // Paused, or in the armoury, the clock stops: it used to run on behind
+    // the pause screen, so an objective's deadline or the intermission
+    // before the next wave ran out while nobody was playing.
+    const frozen = this.state === 'paused' || this.state === 'armoury';
     for (let i = 0; i < steps; i++) {
-      this.time += dt;
+      if (!frozen) this.time += dt;
       if (this.state === 'playing') this.step(dt);
       else if (this.state === 'dead') {
         this.player.update(dt, this.time, this.input);
@@ -1534,6 +1666,22 @@ class Game {
     this.playerStair = this.world.stairAt(at.x, this.player.feetY, at.z);
     const from = this.playerStair ? this.playerStair.stair.path[0] : at;
     this.nav.update(from.x, from.z);
+    // Which building the player has gone into, for the hostiles that cover
+    // its doors and throw through them; and whether their gun is out of the
+    // fight, which is what the rest push on.
+    this.playerRoom = this.roomAt(at.x, this.player.feetY, at.z);
+    const ws = this.weapons;
+    // every point scored is a point of scrip to spend at the armoury
+    if (this.score > this.scoreSeen) { this.scrip += this.score - this.scoreSeen; this.scoreSeen = this.score; }
+    const was = this.playerExposed;
+    this.playerExposed = !this.player.dead && (ws.reloading || ws.switching > 0);
+    if (this.playerExposed && !was) this.exposures = (this.exposures || 0) + 1;
+    // a hostile frag landing near enough to matter is called out once
+    const frag = this.grenades.hostileLive();
+    if (frag && !frag.warned && frag.vel.lengthSq() < 4 && frag.pos.distanceTo(at) < 9) {
+      frag.warned = true;
+      this.hud.toast('GRENADE');
+    }
 
     // enemies
     for (let i = this.enemies.length - 1; i >= 0; i--) {
@@ -1559,7 +1707,7 @@ class Game {
     // FOV blends when aiming and when sprinting
     const ads = this.weapons.adsT;
     const sprintBoost = this.player.sprinting ? 4 : 0;
-    const wantFov = this.baseFov * THREE.MathUtils.lerp(1, this.weapons.def.adsFovMul, ads) + sprintBoost;
+    const wantFov = this.baseFov * THREE.MathUtils.lerp(1, this.weapons.def.adsFovMul * EFFECT.opticsZoom[this.kit.optics], ads) + sprintBoost;
     if (Math.abs(this.camera.fov - wantFov) > 0.05) {
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, wantFov, 12, dt);
       this.camera.updateProjectionMatrix();

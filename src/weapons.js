@@ -3,6 +3,7 @@ import * as TEX from './textures.js';
 import { TILE } from './textures.js';
 import { chamferGeo, sweepGeo, mergeIntoOne, sideGeo, latheGeo } from './shapes.js';
 import { audio } from './audio.js';
+import { EFFECT } from './armoury.js';
 
 /**
  * Materials for the gun in your hands.
@@ -921,9 +922,15 @@ export class WeaponSystem {
     return gained;
   }
 
+  /** What a magazine holds, with the armoury's extended magazines fitted. */
+  magSize(w) {
+    const kit = this.game.kit;
+    return Math.round(w.def.mag * (kit ? EFFECT.mags[kit.mags] : 1));
+  }
+
   startReload(time) {
     const w = this.current;
-    if (this.reloading || w.mag >= w.def.mag || w.reserve <= 0) return;
+    if (this.reloading || w.mag >= this.magSize(w) || w.reserve <= 0) return;
     this.reloading = true;
     this.reloadStart = time;
     this.reloadEnd = time + w.def.reload;
@@ -934,7 +941,7 @@ export class WeaponSystem {
 
   finishReload() {
     const w = this.current;
-    const need = w.def.mag - w.mag;
+    const need = this.magSize(w) - w.mag;
     const take = Math.min(need, w.reserve);
     w.mag += take;
     w.reserve -= take;
@@ -974,7 +981,8 @@ export class WeaponSystem {
     w.mag--;
     this.nextShot = time + 60 / d.rpm;
 
-    const spreadBase = this.adsT > 0.6 ? d.adsSpread : d.spread;
+    const kit = this.game.kit;
+    const spreadBase = this.adsT > 0.6 ? d.adsSpread * (kit ? EFFECT.opticsSpread[kit.optics] : 1) : d.spread;
     const spread = spreadBase * (moving ? 1.5 : 1) * (this.game.player.crouching ? 0.7 : 1);
 
     camera.getWorldDirection(V1);

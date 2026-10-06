@@ -134,12 +134,15 @@ scale had no initial value.
 | `1`–`4`, `Q`, mouse wheel | Switch weapons |
 | `G` | Frag grenade — **hold to cook**, release to throw |
 | `F` / `V` | Melee bash |
+| `B` | Armoury — between waves, with the sector clear |
 | `M` | Mute |
 | `` ` `` | Frame-rate readout |
 | `Esc` | Pause |
 
 Click the canvas to capture the mouse — with pointer lock held, the cursor
-physically cannot leave the window, and losing it pauses the game.
+physically cannot leave the window, and losing it pauses the game. The
+clock stops while paused, so nothing — an objective, the gap before the
+next wave — runs out behind the pause screen.
 
 Some contexts refuse pointer lock, most commonly a cross-origin `<iframe>`
 without `allow="pointer-lock"`. The game detects that and switches to cursor
@@ -209,6 +212,19 @@ same way when you leave. A ranged hostile with a clear shot at the roof from
 the street takes it instead, and one on the roof with a shot down holds it.
 Juggernauts are too tall for the stairs and wait below.
 
+They use the buildings against you, too. Go into a shop and up to two of the
+riflemen take posts outside, each with a sight line into a doorway, and hold
+them while the rest come in after you — so the door you leave by is covered.
+A hostile that has lost sight of you, or knows you are inside, throws a frag:
+from the second wave on, a raider, a breaker or a juggernaut carries one, and
+it only lets go of a throw it has flown first through the same bounce the
+grenade will take, so what you hear land is in the room with you. One frag in
+the air at a time, a call when it is thrown and a `GRENADE` warning when it
+lands near you — move. And your reload is their window, the way theirs is
+yours: change magazines or weapons with hostiles within 25 m and they stop
+holding, give up their posts and come for you, faster, until a second after
+you are ready again. The first one shouts.
+
 Hostiles route around buildings rather than walking into them: a coarse
 walkable grid over the city carries a cost field rebuilt from wherever you are
 standing, so one that loses sight of you takes the way round the block, or in
@@ -236,6 +252,25 @@ drop an olive ammunition can with its lot stencilled on the side, a moulded
 medical case with the first-aid sign on it, or a frag, each over a soft halo
 in its own colour — amber, green, red — so you can find one across a street
 at dusk. Health regenerates five seconds after you stop taking fire. Your best wave and score are kept between sessions.
+
+## The armoury
+
+When a wave is cleared, `B` opens the armoury for the intermission, which
+waits while you shop. It sells:
+
+| Item | Tiers | What it does |
+| --- | --- | --- |
+| Plate carrier | 3 | 15%, 28%, 40% off every hit you take |
+| Extended magazines | 2 | A quarter more in every magazine, then half as much again |
+| Optics | 2 | Tighter aimed fire and a closer sight picture |
+| Match ammunition | 2 | 12%, then 25% more damage from every weapon |
+| Frag pouch | 2 | One more grenade carried each, and the pouch filled |
+| Resupply | — | Every weapon to full ammunition, and two frags |
+| Field dressing | — | Back to full health |
+
+It is paid for in scrip, which every point you score earns and which shows
+under your score. Spending it costs no score, so buying armour is never a
+choice between surviving and your best score. What you fit lasts the run.
 
 ## Objectives
 
