@@ -1049,6 +1049,9 @@ export class Enemy {
     this.stuckTimer = 0;
     this.noProgress = 0;
     this.mantle = null;
+    this.stair = null;        // the stairwell it is up, if any (`_stairWalk`)
+    this.stairFrom = 0;       // the point of its walk it last reached
+    this.stairTo = 0;         // and the one it is walking to
     this.lastDistCheck = Infinity;
     this.watchX = this.pos.x;
     this.watchZ = this.pos.z;
@@ -1193,12 +1196,88 @@ export class Enemy {
    * is wrong far less often than it is right.
    */
   _approach(out, toPlayer, sees, nav) {
-    if (!sees && nav && nav.heading(this.pos.x, this.pos.z, out)) {
+    // the route field is a map of the street: up on a roof it would route
+    // from the shop underneath
+    if (!sees && nav && !this.stair && nav.heading(this.pos.x, this.pos.z, out)) {
       this.routed = true;
       return out;
     }
     this.routed = false;
     return out.copy(toPlayer);
+  }
+
+  /**
+   * Up or down a stairwell, toward wherever the player is on it.
+   *
+   * The route field is one grid at street level and knows nothing of a
+   * roof, so this is the part that does: while the player is up a stair, the
+   * field is built from the foot of it (`Game.update`), a hostile in the
+   * street follows it there, and from the foot it walks the stair's own list
+   * of points — through the door, up each flight, across each landing and
+   * out of the bulkhead — one at a time. It turns round mid-flight when the
+   * player does, comes back down the same way when the player leaves, and
+   * forgets the stair at its foot. A body too tall for the headroom under a
+   * flight is never sent up one.
+   *
+   * @returns {false|'out'|'in'|'with'} false when there is no stair in it;
+   *   'out' when walking open ground or a roof toward one, where avoidance
+   *   still applies; 'in' inside the shaft or at a door, where it does not,
+   *   and nor does climbing or the edge guard; 'with' when on the player's
+   *   own flight, and `out` points at them
+   */
+  _stairWalk(out, player, toPlayer, world) {
+    const here = this.game.playerStair;
+    if (this.stair) {
+      const r = this.stair.roof;
+      if (this.pos.x < r.minX - 2 || this.pos.x > r.maxX + 2 || this.pos.z < r.minZ - 2 || this.pos.z > r.maxZ + 2) this.stair = null;
+    }
+    if (!this.stair) {
+      if (!here || 1.9 * this.group.scale.x > here.stair.clear) return false;
+      const foot = here.stair.path[0];
+      const d = Math.hypot(foot.x - this.pos.x, foot.z - this.pos.z);
+      if (d > 0.7 || Math.abs(this.pos.y - foot.y) > 0.6) {
+        // to the foot of it, by the route field, which is built from there
+        const nav = this.game.nav;
+        if (d < 4 || !nav || !nav.heading(this.pos.x, this.pos.z, out)) out.set(foot.x - this.pos.x, 0, foot.z - this.pos.z).normalize();
+        this.routed = true;
+        return d < 2.5 ? 'in' : 'out';
+      }
+      this.stair = here.stair;
+      this.stairFrom = 0;
+      this.stairTo = 0;
+    }
+    const s = this.stair, path = s.path, last = path.length - 1;
+    const want = here && here.stair === s ? here.idx : 0;
+    // turned round mid-flight: walk back to the point just left
+    if ((want > this.stairFrom && this.stairTo < this.stairFrom) || (want < this.stairFrom && this.stairTo > this.stairFrom)) {
+      const t = this.stairFrom; this.stairFrom = this.stairTo; this.stairTo = t;
+    }
+    const at = path[this.stairTo];
+    if (Math.hypot(at.x - this.pos.x, at.z - this.pos.z) < (this.stairTo === 0 || this.stairTo === last ? 0.7 : 0.45)
+        && Math.abs(at.y - this.pos.y) < 0.7) {
+      if (this.stairTo !== this.stairFrom) {
+        // a point reached is progress the watchdog cannot see: the walk up
+        // is laps of a shaft a few metres across
+        this.markWatchdog(player);
+        this.noProgress = 0;
+      }
+      this.stairFrom = this.stairTo;
+    }
+    if (this.stairFrom === this.stairTo) {
+      if (this.stairFrom === want) {
+        if (want === 0) { this.stair = null; return false; }   // back in the street
+        if (want === last) return false;                        // on the roof with them
+        out.copy(toPlayer);
+        return 'with';
+      }
+      this.stairTo = this.stairFrom + Math.sign(want - this.stairFrom);
+    }
+    const to = path[this.stairTo];
+    out.set(to.x - this.pos.x, 0, to.z - this.pos.z);
+    if (out.lengthSq() > 1e-6) out.normalize();
+    // out on the roof, heading for the bulkhead with the hut perhaps between
+    if (this.stairFrom === last && Math.hypot(to.x - this.pos.x, to.z - this.pos.z) > 2.5) return 'out';
+    return 'in';
   }
 
   update(dt, time, player, world) {
@@ -1275,16 +1354,27 @@ export class Enemy {
 
     const nav = this.game.nav;
     let moveDir = V2.set(0, 0, 0);
+    // A stairwell between it and the player, or under its feet: which way
+    // along it, if that is where it is going. Never for a perch-holder.
+    const stairDir = V5;
+    const stairs = onPerch ? false : this._stairWalk(stairDir, player, toPlayer, world);
+    const inShaft = stairs === 'in' || stairs === 'with';
     if (!this.alerted) {
       // still hunting: drift toward the player at a walk
-      if (!onPerch) this._approach(moveDir, toPlayer, sees, nav);
+      if (stairs) moveDir.copy(stairDir);
+      else if (!onPerch) this._approach(moveDir, toPlayer, sees, nav);
     } else {
       const t = this.type;
       const holdPerch = onPerch;
       const wantCloser = !holdPerch && dist > t.preferred * (t.melee ? 1 : 1.15);
       const wantBack = !t.melee && !holdPerch && dist < t.preferred * 0.6;
 
-      if (!sees && !onPerch) {
+      if (stairs && (inShaft || !sees || t.melee || wantCloser)) {
+        // Up after them, or down after them: a hostile in the street with a
+        // clear shot at a roof still takes it, and one on a roof with a shot
+        // down into the street holds the roof — both are using the building.
+        moveDir.copy(stairDir);
+      } else if (!sees && !onPerch) {
         // Nothing to hold a range against and nothing to strafe around: go
         // and find them, by whatever way there is to get there. Holding high
         // ground is the one reason not to.
@@ -1315,7 +1405,7 @@ export class Enemy {
     // Only one already coming for you: a raider strafing at its range, or
     // backing off to hold it, has no business charging a car.
     let climbing = false;
-    if (this.alerted && !onPerch && moveDir.dot(toPlayer) > 0.7 * moveDir.length()
+    if (this.alerted && !onPerch && !inShaft && moveDir.dot(toPlayer) > 0.7 * moveDir.length()
         && player.feetY > this.pos.y + CLIMB.above && dist < CLIMB.near) {
       const ahead = world.mantleTarget(this.pos.x, this.pos.z, this.radius, this.pos.y,
         toPlayer.x, toPlayer.z, CLIMB.min, CLIMB.max, 1.8 + this.radius);
@@ -1335,7 +1425,7 @@ export class Enemy {
     // wreck in the street, another hostile's corner, the kerb of the very
     // building being rounded. Probe the heading; if it is blocked, fan
     // outwards and take the first clear direction.
-    if (moveDir.lengthSq() > 1e-4 && !climbing) {
+    if (moveDir.lengthSq() > 1e-4 && !climbing && !inShaft) {
       moveDir.normalize();
       const probe = 1.8 + this.radius;
       const clear = (x, z) => !world.blocked(this.pos.x + x * probe, this.pos.z + z * probe, this.radius, this.pos.y + 0.9);
@@ -1388,7 +1478,7 @@ export class Enemy {
     // street within the next few seconds and had the whole climb to do again.
     // Following you down is still allowed — the guard is only for a drop you
     // are not at the bottom of.
-    if (this.pos.y > CLIMB.min && player.feetY > this.pos.y - CLIMB.above && moveDir.lengthSq() > 1e-4) {
+    if (this.pos.y > CLIMB.min && player.feetY > this.pos.y - CLIMB.above && moveDir.lengthSq() > 1e-4 && !inShaft) {
       const k = (this.radius + 0.35) / moveDir.length();
       const below = world.groundHeight(this.pos.x + moveDir.x * k, this.pos.z + moveDir.z * k,
         SUPPORT_RADIUS, this.pos.y + 0.05);
@@ -1489,7 +1579,9 @@ export class Enemy {
     this.group.position.copy(this.pos);
 
     // face the player once alerted, otherwise face travel direction
-    const faceTarget = this.alerted ? toPlayer : (this.vel.lengthSq() > 0.05 ? V3.copy(this.vel).normalize() : null);
+    // — or, in a stairwell with the player out of sight, the way it is going
+    const travel = this.vel.lengthSq() > 0.05 ? V3.copy(this.vel).normalize() : null;
+    const faceTarget = this.alerted && !(inShaft && !sees) ? toPlayer : travel;
     if (faceTarget) {
       // the body is built facing -z, so its yaw points -z along the target
       const want = Math.atan2(-faceTarget.x, -faceTarget.z);
