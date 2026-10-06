@@ -1644,6 +1644,16 @@ What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
 
+The tactics-and-armoury pass came straight after the stairs, as the two
+smaller things asked for alongside them: hostiles that use the buildings,
+and upgrades between waves. Both are invariants above, with the clock fix
+that the armoury check found under them. What the hostiles cost the CPU,
+measured with the player held in a shop at wave 3 and eleven hostiles
+alive, against `main` twice: the game step 0.3 → 0.3-0.4 ms median, 0.7-0.8
+→ 0.9-1.0 at the 95th, the worst frame unmoved (6-11 ms either way) — the
+throw planner flies a frag through the bounce at most once every 1.5 s a
+hostile. Nothing is drawn that was not before, so no frame time.
+
 The stairs pass came after the open buildings, asked for as the next big
 jump: stairs and rooftops. Ground floors only had been the open-buildings
 pass's answer, and the cost of going up was always the route field, which
