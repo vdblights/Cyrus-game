@@ -56,6 +56,7 @@ builds, never to play.
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
 | `src/enemies.js` | Archetypes, AI, procedural bodies, laser telegraph |
 | `src/objectives.js` | Site placement, channel state machine, marker, waypoint |
+| `src/armoury.js` | What a run can buy between waves, what each tier does, and the screen it is bought on |
 | `src/drops.js` | What a hostile drops: the ammunition can, medical case and grenade, and their halos |
 | `src/grenades.js` | Fuse, flight, bounce, detonation |
 | `src/effects.js` | Pooled tracers, impacts, blood, casings, explosions |
@@ -318,6 +319,61 @@ These each cost real debugging time. Changing them needs a reason.
   walk off (no scavenger up), and with the landing fix below reverted. A
   party wall cut to parapet height fails it only by there being no party
   walls to find, which is weak: the check knows one by its height.
+- **A hostile uses a building by reading it, not by being scripted into
+  it.** Three behaviours, all keyed off where the player is: `Game.roomAt`
+  (the room under the player, or the room of the stair they are up — the
+  stair carries a non-enumerable back-link, `stair.room`, because a cycle
+  breaks anything that copies the world out to a check). **Posts**:
+  `Game.coverPost` hands a ranged hostile a place 8 or 11 m out from a
+  doorway with a standing sight line into it (`_postsFor`, cached on the
+  room), at most two a building, never to one already inside or within
+  10 m of the player, and only one it can walk to in a straight line —
+  the first version handed a post across the block to a raider that routed
+  to it by the field, which leads to the player, and walked in at the
+  door. **Frags**: `Enemy._planThrow` flies the grenade from the hand
+  through the real `bounceSphere` and drag for its whole fuse, at six
+  angles toward the player and toward the inside of each doorway, and
+  keeps the throw that comes to rest nearest them with a line from the
+  blast — so a frag is only thrown when it will land in the room. The flat
+  angles and 21 m/s are what get one under a lintel: a lob meets the wall
+  over the doorway, and at the first 16 m/s cap a frag carried 13.5 m at
+  best and two shops in four got none. One hostile frag in the air at a
+  time (`GrenadeSystem.hostileLive`) and seven seconds between them; it
+  carries `owner`, and `explode` hurts no hostile with a hostile's frag and
+  credits no kill, which a frag through `registerHit` would. **The push**:
+  `Game.playerExposed` is a reload or a weapon change; every hostile in 25 m
+  drops its post for eight seconds and comes, 30% faster, until 1.2 s after
+  it ends. None of it draws on `Math.random` — the grenade's spin is fixed —
+  but it moves when hostiles fire and so every later runtime draw, which is
+  the ninth testing trap's noise. `hostiles use the buildings` stages each
+  of four shops from its door with the most posts (a shop on the sector's
+  edge has doors onto the perimeter strip), from start points on a ring of
+  open street round it — straight out from a door is the building across
+  the road — and fails with the planner off (0 of 4 frags), with the
+  doorways not aimed at (1 of 4), with posts off, with three posts allowed,
+  with the push off, and with hostile frags hurting hostiles.
+- **The armoury reads in one place, and is paid in scrip.** `EFFECT` in
+  `armoury.js` is what each tier does, and the systems read it where they
+  do the thing — `Weapons.magSize` and the aimed spread in `fire`, damage in
+  `Game.hitscan`, damage taken in `Game.damagePlayer`, the sight picture in
+  `frame` — so a tier is one number in one place and a check measures the
+  thing, not the kit. Scrip is topped up from the score in `step` and
+  spending it never touches the score: spending score would have made every
+  purchase a cut to the best-score line. It opens only between waves with
+  the sector clear (`armouryOpen`), and the state it opens into is its own
+  (`'armoury'`), which stops the clock and lets the mouse go without the
+  pause that losing it otherwise triggers. Nothing in it draws on
+  `Math.random` or mints a three object. `the armoury opens between waves`
+  buys the first tier of four items and measures each where the game does
+  it: a hit 40 → 34, a sidearm reloading to 19 rather than 15, aimed spread
+  at 0.70x and damage at 1.12x; it fails with each of those readers left as
+  it was, with a purchase that also costs score, with the screen opening
+  mid-wave, and with the clock left running.
+- **Paused is paused.** `frame` advanced game time in every state, so the
+  clock ran on behind the pause screen and anything on a deadline — an
+  objective, the intermission before the next wave — ran out while nobody
+  was playing. It stops while paused or in the armoury now. Measured by the
+  armoury check: 0.12 s over five frames, against 0.
 - **A fall lands on whatever it crossed in the frame.** Airborne footing
   asked `groundHeight` with a ceiling 2 cm over where the fall *ended*, so a
   landing that crossed a surface by more than that in one step went
@@ -2680,13 +2736,15 @@ Suggested next work, in the order I would do it:
    open-buildings check reads exactly that, and the counter's first
    placement sealed seven rooms. Flush litter and chips on the floor finish
    are free by the decoration rules.
-4. **Hostiles that use the buildings**, asked for after the stairs:
-   a grenade through a doorway at a player in a shop, a hostile covering a
-   stairwell's door or a shop's exits rather than walking into them, one
-   waiting out your reload before it comes round a corner. The stair points
-   and `world.rooms` doorways are what a plan like that reads.
-5. **Upgrades between waves**, asked for in the same breath: spend score
-   on a weapon, a scope, a magazine, armour or grenades.
+4. **Tune the armoury's prices against play.** The costs (500-4,000
+   scrip) are first guesses against about 1,500 points a wave early on.
+   Whether a run can afford the plate carrier before wave 4, and whether
+   anyone buys optics, is a play question.
+5. **Frags at a roof.** The planner already aims at the player wherever
+   they stand, but a throw from the street onto a stair roof has to clear a
+   parapet 8-15 m up, and whether it ever finds one has not been measured.
+   A hostile at the foot of the stairs could cover the door instead of
+   climbing, the way posts cover a shop.
 6. **Upper floors you walk through**, if play asks for them. A stairwell
    climbs past every floor of its building and opens on none of them. A
    floor off a landing is a room with a `base` and a deck under it, which
