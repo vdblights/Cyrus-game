@@ -6,6 +6,7 @@ const V2 = new THREE.Vector3();
 
 export const FUSE = 2.7;              // seconds from pin pull to detonation
 export const BLAST_RADIUS = 7.0;
+export const GRAVITY = 19;            // m/s², what a thrown grenade falls by — and what a hostile plans a throw with
 export const BLAST_DAMAGE = 165;      // at the centre, falling off to ~15%
 
 /**
@@ -63,9 +64,38 @@ export class GrenadeSystem {
     g.fuse = fuse;
     g.active = true;
     g.trail = 0;
+    g.owner = 'player';
+    g.warned = false;
     g.group.visible = true;
     g.group.position.copy(g.pos);
     return g;
+  }
+
+  /**
+   * A hostile's throw: from its hand, at the velocity its solver found
+   * (`Enemy._planThrow`), on a fuse already burning. The spin is fixed rather
+   * than rolled, because a throw happens mid-fight and the seeded stream is
+   * picking the next spawn.
+   */
+  lob(origin, vel, fuse) {
+    const g = this.pool.find((x) => !x.active);
+    if (!g) return null;
+    g.pos.copy(origin);
+    g.vel.copy(vel);
+    g.spin.set(5, -3, 4);
+    g.fuse = fuse;
+    g.active = true;
+    g.trail = 0;
+    g.owner = 'hostile';
+    g.warned = false;
+    g.group.visible = true;
+    g.group.position.copy(g.pos);
+    return g;
+  }
+
+  /** A hostile grenade in flight or on the ground, if there is one. */
+  hostileLive() {
+    return this.pool.find((x) => x.active && x.owner === 'hostile') || null;
   }
 
   /** Drop one at the player's feet — what a cook-off in the hand looks like. */
@@ -75,6 +105,7 @@ export class GrenadeSystem {
     g.pos.copy(pos);
     g.vel.set(0, 0, 0);
     g.fuse = 0.001;
+    g.owner = 'player';
     g.active = true;
     g.group.visible = true;
     g.group.position.copy(g.pos);
@@ -85,7 +116,7 @@ export class GrenadeSystem {
     for (const g of this.pool) {
       if (!g.active) continue;
 
-      g.vel.y -= 19 * dt;
+      g.vel.y -= GRAVITY * dt;
       g.pos.addScaledVector(g.vel, dt);
       const contact = world.bounceSphere(g.pos, g.vel, 0.09);
       if (contact === 1) {
@@ -124,7 +155,7 @@ export class GrenadeSystem {
   detonate(g) {
     g.active = false;
     g.group.visible = false;
-    this.game.explode(g.pos);
+    this.game.explode(g.pos, g.owner);
   }
 
   reset() {

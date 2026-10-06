@@ -895,6 +895,10 @@ class Game {
     this.objectivesSecured = 0;
     this.objectivesLost = 0;
     this.objectiveCue = null;
+    this.nextHostileThrow = 0;
+    this.playerRoom = null;
+    this.playerExposed = false;
+    this.pushCalled = -1;
     this.runStart = this.time;
 
     document.getElementById('menu').classList.add('hidden');
@@ -1081,6 +1085,82 @@ class Game {
     return fallback || { x: p.x + randRange(-20, 20), z: p.z + randRange(-20, 20) };
   }
 
+  /**
+   * The room the player is in — on its floor, up its stairwell or on its
+   * roof — or null.
+   */
+  roomAt(x, feet, z) {
+    if (this.playerStair && this.playerStair.stair.room) return this.playerStair.stair.room;
+    for (const r of this.world.rooms) {
+      if (x > r.minX && x < r.maxX && z > r.minZ && z < r.maxZ && feet < r.ceiling - 1) return r;
+    }
+    return null;
+  }
+
+  /**
+   * A place outside the building the player is in, covering one of its
+   * doorways: 8 or 11 m out along the door's normal and up to 3 m to the
+   * side, on open ground at street level, with a sight line from a
+   * standing head into the doorway. At most two hostiles hold posts on a
+   * building at once — the rest come in after the player, which is what
+   * flushes them out toward the posts. A hostile keeps its post until the
+   * player leaves the building or reloads (`Enemy.update`).
+   */
+  coverPost(e) {
+    const room = this.playerRoom;
+    if (!room) return null;
+    if (e.post && e.post.room === room) return e.post;
+    // one already in with them, or nearly, keeps on coming
+    const x = e.pos.x, z = e.pos.z, at = this.player.position;
+    if ((x > room.minX && x < room.maxX && z > room.minZ && z < room.maxZ) || Math.hypot(x - at.x, z - at.z) < 10) return null;
+    if (!room.posts) room.posts = this._postsFor(room);
+    const taken = new Set();
+    for (const o of this.enemies) if (o !== e && o.alive && o.post && o.post.room === room) taken.add(o.post);
+    if (taken.size >= 2) return null;
+    // only one it can walk straight to: a post across the block is reached
+    // by the route field, which leads to the player and so in at the door
+    let best = null, bd = 30;
+    for (const p of room.posts) {
+      if (taken.has(p)) continue;
+      const d = Math.hypot(p.x - e.pos.x, p.z - e.pos.z);
+      if (d < bd && this.nav.clearLine(e.pos.x, e.pos.z, p.x, p.z)) { bd = d; best = p; }
+    }
+    return best;
+  }
+
+  _postsFor(room) {
+    const w = this.world, out = [];
+    for (const d of room.doors) {
+      const ix = d.x - d.nx * 1.0, iz = d.z - d.nz * 1.0;
+      for (const along of [8, 11]) {
+        for (const side of [0, -3, 3]) {
+          const x = d.x + d.nx * along - d.nz * side, z = d.z + d.nz * along + d.nx * side;
+          if (Math.abs(x) > w.bounds - 2 || Math.abs(z) > w.bounds - 2) continue;
+          const floor = w.groundHeight(x, z, SUPPORT_RADIUS, 0.6);
+          if (floor > 0.5 || w.blocked(x, z, 0.7, floor + 0.9) || w.occupied(x, z, 0.6, floor + 0.6)) continue;
+          if (this.nav.solidAt(x, z)) continue;
+          if (!w.lineOfSight(x, floor + 1.5, z, ix, room.floor + 1.2, iz)) continue;
+          const post = { door: d, x, z };
+          Object.defineProperty(post, 'room', { value: room, enumerable: false });
+          out.push(post);
+        }
+      }
+    }
+    return out;
+  }
+
+  /** The first hostile to push on a reload calls it, once per reload. */
+  onPush(e) {
+    if (this.pushCalled === this.exposures) return;
+    this.pushCalled = this.exposures;
+    audio.enemyAlert({ x: e.pos.x, y: e.pos.y + 1.5, z: e.pos.z });
+  }
+
+  /** A hostile's frag is out: it is heard from where it was thrown. */
+  onHostileThrow(e) {
+    audio.enemyAlert({ x: e.pos.x, y: e.pos.y + 1.5, z: e.pos.z });
+  }
+
   /** Pull a hostile that has wedged itself in geometry and drop it back in. */
   relocateEnemy(enemy) {
     // perch-users go back to high ground rather than the street
@@ -1090,6 +1170,7 @@ class Game {
     enemy.vel.set(0, 0, 0);
     enemy.mantle = null;
     enemy.stair = null;
+    enemy.post = null;
     enemy.group.position.copy(enemy.pos);
     // the watchdog now has to judge the next window from where it landed, not
     // from where it was pulled out of
@@ -1311,8 +1392,13 @@ class Game {
     }
   }
 
-  /** Frag detonation: damage falls off with distance and needs line of sight. */
-  explode(pos) {
+  /**
+   * Frag detonation: damage falls off with distance and needs line of sight.
+   * A hostile's frag hurts the player and nobody it was thrown alongside —
+   * and credits the player with nothing, which a frag that killed hostiles
+   * through `registerHit` would.
+   */
+  explode(pos, owner = 'player') {
     this.effects.explosion(pos);
     audio.explosion(1, pos);
 
@@ -1321,7 +1407,7 @@ class Game {
     // target is fully hidden cuts the damage rather than cancelling it.
     const originY = pos.y + 0.75;
 
-    for (const e of [...this.enemies]) {
+    for (const e of owner === 'hostile' ? [] : [...this.enemies]) {
       if (!e.alive) continue;
       const dist = Math.hypot(e.pos.x - pos.x, e.pos.z - pos.z, (e.pos.y + 1) - pos.y);   // aim at the chest
       if (dist > BLAST_RADIUS) continue;
@@ -1534,6 +1620,20 @@ class Game {
     this.playerStair = this.world.stairAt(at.x, this.player.feetY, at.z);
     const from = this.playerStair ? this.playerStair.stair.path[0] : at;
     this.nav.update(from.x, from.z);
+    // Which building the player has gone into, for the hostiles that cover
+    // its doors and throw through them; and whether their gun is out of the
+    // fight, which is what the rest push on.
+    this.playerRoom = this.roomAt(at.x, this.player.feetY, at.z);
+    const ws = this.weapons;
+    const was = this.playerExposed;
+    this.playerExposed = !this.player.dead && (ws.reloading || ws.switching > 0);
+    if (this.playerExposed && !was) this.exposures = (this.exposures || 0) + 1;
+    // a hostile frag landing near enough to matter is called out once
+    const frag = this.grenades.hostileLive();
+    if (frag && !frag.warned && frag.vel.lengthSq() < 4 && frag.pos.distanceTo(at) < 9) {
+      frag.warned = true;
+      this.hud.toast('GRENADE');
+    }
 
     // enemies
     for (let i = this.enemies.length - 1; i >= 0; i--) {

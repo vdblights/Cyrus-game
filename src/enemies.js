@@ -5,6 +5,7 @@ import * as TEX from './textures.js';
 import { TILE, blobShadow } from './textures.js';
 import { chamferGeo, mergeIntoOne, sideGeo, latheGeo, sweepGeo, bend, creaseNormals } from './shapes.js';
 import { reserve } from './rng.js';
+import { FUSE, GRAVITY as GRAVITY_FRAG } from './grenades.js';
 
 const V1 = new THREE.Vector3();
 const V2 = new THREE.Vector3();
@@ -84,6 +85,30 @@ const COMMIT = 6;
 const PERCH_PATIENCE = 15;
 
 /**
+ * A frag, thrown. A hostile carries `frags` of them (per archetype), cooks
+ * one for `cook` seconds before it lets go, and plans the throw by flying it
+ * (`_planThrow`) through the same bounce the grenade will take: a throw is
+ * kept only if it comes to rest within `reach` of the player with a line
+ * from the blast to them. The flat angles are for a doorway, which a lob
+ * meets as the wall over its lintel; 21 m/s is a hard throw, and carries
+ * one about 22 m on the full at 45 degrees. `every` is how long one hostile waits between
+ * throws, and `gap` how long the whole wave does — one grenade at a time is
+ * a warning you can act on, two is a trap.
+ */
+const THROW = { cook: 0.6, reach: 3.2, minRange: 6, maxRange: 26, blind: 2.5, every: 14, gap: 7, retry: 1.5,
+  angles: [0.12, 0.22, 0.35, 0.55, 0.8, 1.05], fastest: 21, step: 1 / 30 };
+const TH_P = new THREE.Vector3(), TH_V = new THREE.Vector3(), TH_D = new THREE.Vector3();
+const FUSE_LEFT = FUSE - THROW.cook;
+
+/**
+ * While the player is reloading or changing weapon, every hostile this close
+ * stops holding and comes for them, for at least `hold` seconds after the
+ * reload ends — the window a hostile's own reload gives the player, turned
+ * round. Faster, too, by `haste`.
+ */
+const PUSH = { range: 25, hold: 1.2, haste: 1.3 };
+
+/**
  * A hostile follows you up.
  *
  * The player could haul themselves onto a car roof, a crate or a low wall,
@@ -127,13 +152,13 @@ export const ENEMY_TYPES = {
   },
   raider: {
     name: 'RAIDER', hp: 110, speed: 3.0, scale: 1.0, melee: false,
-    damage: 6, rate: 0.16, burst: 3, burstPause: 2.4, preferred: 13, accuracy: 0.085, mag: 30, reload: 2.2,
+    damage: 6, rate: 0.16, burst: 3, burstPause: 2.4, preferred: 13, accuracy: 0.085, mag: 30, reload: 2.2, frags: 1,
     color: 0x66788a, accent: 0x3f4750, score: 150, detect: 65, sound: 'rifle', marker: 0xe8a33a,
     kit: { head: 'helm', armour: 'carrier', coat: 0, weapon: 'rifle' },
   },
   shotgunner: {
     name: 'BREAKER', hp: 170, speed: 3.6, scale: 1.08, melee: false,
-    damage: 5, pellets: 6, rate: 1.15, preferred: 6, accuracy: 0.14, falloff: 16, mag: 6, reload: 2.6, shells: 4,
+    damage: 5, pellets: 6, rate: 1.15, preferred: 6, accuracy: 0.14, falloff: 16, mag: 6, reload: 2.6, shells: 4, frags: 1,
     color: 0x9a7550, accent: 0x53412f, score: 200, detect: 50, sound: 'shotgun', marker: 0x3fa9d8,
     kit: { head: 'visor', armour: 'heavy', coat: 0, weapon: 'shotgun' },
   },
@@ -146,7 +171,7 @@ export const ENEMY_TYPES = {
   },
   brute: {
     name: 'JUGGERNAUT', hp: 420, speed: 2.4, scale: 1.35, melee: false,
-    damage: 7, rate: 0.13, burst: 6, burstPause: 2.8, preferred: 9, accuracy: 0.105, mag: 60, reload: 3.2,
+    damage: 7, rate: 0.13, burst: 6, burstPause: 2.8, preferred: 9, accuracy: 0.105, mag: 60, reload: 3.2, frags: 1,
     color: 0x7d5a5a, accent: 0x3a3533, score: 400, detect: 70, sound: 'smg', marker: 0xb03be0,
     kit: { head: 'helm', armour: 'plated', coat: 0, weapon: 'drum' },
   },
@@ -1013,6 +1038,11 @@ export class Enemy {
     this.maxHp = this.type.hp;
     this.alive = true;
     this.state = 'idle';
+    this.frags = this.type.frags || 0;  // grenades it carries
+    this.nextThrow = 0;               // game time it may next try to throw
+    this.post = null;                 // a doorway it is covering (`Game.coverPost`)
+    this.postAfter = 0;               // not before this time, after it left one
+    this.pushUntil = 0;               // pushing while the player reloads
     this.alerted = false;
     this.nextFire = 0;
     this.burstLeft = 0;
@@ -1126,6 +1156,7 @@ export class Enemy {
     if (this.alerted || !this.alive) return;
     this.alerted = true;
     this.nextFire = Math.max(this.nextFire, time + readyIn);
+    this.nextThrow = Math.max(this.nextThrow, time + 3);
     if (Math.random() < 0.3) audio.enemyAlert({ x: this.pos.x, y: this.pos.y + 1.5, z: this.pos.z });
   }
 
@@ -1280,6 +1311,57 @@ export class Enemy {
     return 'in';
   }
 
+  /**
+   * A throw that lands: fly a frag from the hand at each of a few angles
+   * toward the player, and toward the inside of each doorway of the building
+   * they are in, through the same bounce and roll the grenade will take, and
+   * keep the one that comes to rest nearest them with a line from the blast
+   * to them. Through a doorway is how one gets into a shop; over a parapet is
+   * how one gets onto a roof. Null when nothing lands close enough.
+   *
+   * @returns {THREE.Vector3|null} launch velocity (shared; copy it)
+   */
+  _planThrow(player, world) {
+    const ox = this.pos.x, oy = this.pos.y + 1.6 * this.type.scale, oz = this.pos.z;
+    const P = player.position;
+    const targets = [[P.x, player.feetY + 0.2, P.z]];
+    const room = this.game.playerRoom;
+    if (room) for (const d of room.doors) targets.push([d.x - d.nx * 1.5, room.floor + 0.2, d.z - d.nz * 1.5]);
+    let best = Infinity;
+    const out = TH_D;
+    for (const [tx, ty, tz] of targets) {
+      const dx = tx - ox, dz = tz - oz, d = Math.hypot(dx, dz);
+      if (d < 2) continue;
+      const ux = dx / d, uz = dz / d, h = ty - oy;
+      for (const a of THROW.angles) {
+        const c = Math.cos(a), denom = 2 * c * c * (d * Math.tan(a) - h);
+        if (denom <= 0) continue;
+        const v = Math.sqrt(GRAVITY_FRAG * d * d / denom);
+        if (v > THROW.fastest) continue;
+        TH_V.set(ux * v * c, v * Math.sin(a), uz * v * c);
+        const vx = TH_V.x, vy = TH_V.y, vz = TH_V.z;
+        // fly it
+        TH_P.set(ox, oy, oz);
+        for (let t = 0; t < FUSE_LEFT; t += THROW.step) {
+          TH_V.y -= GRAVITY_FRAG * THROW.step;
+          TH_P.addScaledVector(TH_V, THROW.step);
+          if (world.bounceSphere(TH_P, TH_V, 0.09) === 2) {
+            const drag = Math.max(0, 1 - 2.6 * THROW.step);
+            TH_V.x *= drag; TH_V.z *= drag;
+          }
+          world.clampToBounds(TH_P, 0.1);
+        }
+        const miss = Math.hypot(TH_P.x - P.x, TH_P.y - (P.y - 0.9), TH_P.z - P.z);
+        if (miss > THROW.reach || miss >= best) continue;
+        if (Math.hypot(TH_P.x - ox, TH_P.z - oz) < 5) continue;           // not at its own feet
+        if (!world.lineOfSight(TH_P.x, TH_P.y + 0.75, TH_P.z, P.x, P.y, P.z)) continue;
+        best = miss;
+        out.set(vx, vy, vz);
+      }
+    }
+    return best < Infinity ? out : null;
+  }
+
   update(dt, time, player, world) {
     if (!this.alive) {
       this.deathT += dt;
@@ -1356,8 +1438,23 @@ export class Enemy {
     let moveDir = V2.set(0, 0, 0);
     // A stairwell between it and the player, or under its feet: which way
     // along it, if that is where it is going. Never for a perch-holder.
+    const game = this.game;
+    // The player is reloading or changing weapon: everything near comes for
+    // them now, and anything holding a post gives it up for a while.
+    if (this.alerted && !onPerch && game.playerExposed && dist < PUSH.range) {
+      if (time >= this.pushUntil) game.onPush?.(this);
+      this.pushUntil = time + PUSH.hold;
+      if (this.post) { this.post = null; this.postAfter = time + 8; }
+    }
+    const pushing = time < this.pushUntil;
+    // The player has gone into a building: a ranged hostile covers a doorway
+    // from outside rather than walking in after them (`Game.coverPost`
+    // hands out at most two posts a building, so the rest still come in).
+    this.post = this.alerted && !onPerch && !this.type.melee && !pushing && !this.stair && time >= this.postAfter
+      ? (game.coverPost?.(this) || null) : null;
+    const post = this.post;
     const stairDir = V5;
-    const stairs = onPerch ? false : this._stairWalk(stairDir, player, toPlayer, world);
+    const stairs = onPerch || post ? false : this._stairWalk(stairDir, player, toPlayer, world);
     const inShaft = stairs === 'in' || stairs === 'with';
     if (!this.alerted) {
       // still hunting: drift toward the player at a walk
@@ -1369,11 +1466,19 @@ export class Enemy {
       const wantCloser = !holdPerch && dist > t.preferred * (t.melee ? 1 : 1.15);
       const wantBack = !t.melee && !holdPerch && dist < t.preferred * 0.6;
 
-      if (stairs && (inShaft || !sees || t.melee || wantCloser)) {
+      if (post) {
+        // to the post and then still on it, watching the door
+        const px = post.x - this.pos.x, pz = post.z - this.pos.z, pd = Math.hypot(px, pz);
+        if (pd > 0.8) moveDir.set(px / pd, 0, pz / pd);
+      } else if (stairs && (inShaft || !sees || t.melee || wantCloser || pushing)) {
         // Up after them, or down after them: a hostile in the street with a
         // clear shot at a roof still takes it, and one on a roof with a shot
         // down into the street holds the roof — both are using the building.
         moveDir.copy(stairDir);
+      } else if (pushing) {
+        // their gun is empty: close, whatever range this one likes to hold
+        if (sees) moveDir.copy(toPlayer);
+        else this._approach(moveDir, toPlayer, sees, nav);
       } else if (!sees && !onPerch) {
         // Nothing to hold a range against and nothing to strafe around: go
         // and find them, by whatever way there is to get there. Holding high
@@ -1548,7 +1653,7 @@ export class Enemy {
       }
     }
 
-    const speed = this.type.speed * (this.alerted ? 1 : 0.45);
+    const speed = this.type.speed * (this.alerted ? 1 : 0.45) * (pushing ? PUSH.haste : 1);
     this.vel.lerp(V3.copy(moveDir).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
     world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
@@ -1609,6 +1714,29 @@ export class Enemy {
     // hit detection raycasts against these meshes before the renderer runs,
     // so their world matrices have to be current now, not next frame
     this.group.updateMatrixWorld(true);
+
+    // ---- a frag --------------------------------------------------------
+    // At a player who has gone to ground — out of sight for a few seconds,
+    // or inside a building — from the second wave on. One hostile grenade
+    // in the air at a time, and a gap after it, so each one is a warning.
+    if (this.frags > 0 && this.alerted && !onPerch && !inShaft && !this.mantle && this.reloadT <= 0
+        && time >= this.nextThrow && dist > THROW.minRange && dist < THROW.maxRange
+        && (game.wave || 0) >= 2 && !player.dead
+        && (this.blindFor > THROW.blind || game.playerRoom)
+        && time >= (game.nextHostileThrow || 0) && game.grenades && !game.grenades.hostileLive()) {
+      this.nextThrow = time + THROW.retry;
+      const vel = this._planThrow(player, world);
+      if (vel) {
+        TH_P.set(this.pos.x, this.pos.y + 1.6 * this.type.scale, this.pos.z);
+        if (game.grenades.lob(TH_P, vel, FUSE_LEFT)) {
+          this.frags--;
+          this.nextThrow = time + THROW.every;
+          game.nextHostileThrow = time + THROW.gap;
+          this.swingT = 0.25;                      // the arm comes over
+          game.onHostileThrow?.(this);
+        }
+      }
+    }
 
     // ---- shooting / melee ---------------------------------------------
     if (!this.alerted || !sees) return;

@@ -4029,6 +4029,137 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
   return { stairs: r.stairs, edges: r.edges, party: r.party, shots: r.shots.length, climbs: `${r.climbs}/${r.rooms}`, follow: r.follow };
 });
 
+check('hostiles use the buildings: a frag through the door, posts on the exits, a push on your reload', async (page) => {
+  // A building used to be somewhere a hostile walked into after you, or
+  // round, and nothing else. Now, with the player in a shop:
+  //   - a raider outside, with no shot, lobs a frag that comes to rest in
+  //     the shop beside them, and it hurts the player and no hostile;
+  //   - of three raiders, two take posts outside with a sight line into a
+  //     doorway and hold them, and the third comes in;
+  //   - when the player reloads, the posts are given up and they close.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const w = g.world, p = g.player;
+    const clear = () => { for (const e of g.enemies) { e.group.visible = false; g._recycle(e); } g.enemies.length = 0; };
+    const within = (room, x, z) => x > room.minX && x < room.maxX && z > room.minZ && z < room.maxZ;
+    const out = { rooms: 0, frags: 0, landed: 0, misses: [], posted: [], third: 0, released: 0, closed: [], blast: null };
+    for (const room of w.rooms) {
+      if (out.rooms >= 4) break;
+      // staged from the door with somewhere to cover it from: a shop at the
+      // edge of the sector has doors onto the strip by the perimeter wall
+      const posts = g._postsFor(room);
+      const [d, covered] = room.doors.map((dd) => [dd, posts.filter((q) => q.door === dd).length])
+        .sort((a, b) => b[1] - a[1])[0] || [];
+      if (!d || covered < 3) continue;
+      const depth = Math.abs(d.nx) ? room.maxX - room.minX : room.maxZ - room.minZ;
+      // the player at the back of the shop, and the street 15-24 m out
+      const px = d.x - d.nx * (depth - 2.5), pz = d.z - d.nz * (depth - 2.5);
+      if (w.blocked(px, pz, 0.5, room.floor + 0.9)) continue;
+      // starting points on open street round the door — straight out from it
+      // is usually the building across the road — that the route field can
+      // start from, not against a prop
+      const ring = (R) => {
+        const found = [];
+        for (let k = 0; k < 24; k++) {
+          const a = Math.atan2(d.nz, d.nx) + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 12);
+          const x = d.x + Math.cos(a) * R, z = d.z + Math.sin(a) * R;
+          if (Math.abs(x) > w.bounds - 3 || Math.abs(z) > w.bounds - 3) continue;
+          const y = w.groundHeight(x, z, 0.12, 0.6);
+          if (y > 0.5 || w.blocked(x, z, 0.6, y + 0.9) || g.nav.solidAt(x, z)) continue;
+          if (w.rooms.some((rm) => x > rm.minX && x < rm.maxX && z > rm.minZ && z < rm.maxZ)) continue;
+          if (found.some((f) => Math.hypot(f[0] - x, f[2] - z) < 4)) continue;
+          found.push([x, y, z]);
+        }
+        return found;
+      };
+      const near = ring(15), far = ring(24);
+      if (!near.length || far.length < 3) continue;
+      const spots = [near[0], far[0], far[1], far[2]];
+      out.rooms++;
+      let feet = 0, at = [px, pz];
+      const stand = (x, z) => { p.reset(x, z); feet = p.feetY; at = [x, z]; };
+      const hold = () => { p.feetY = feet; p.onGround = true; p.velocity.set(0, 0, 0); p.position.set(at[0], feet + p.eyeHeight, at[1]); p.health = 100; };
+      const step = (s, each) => { for (let i = 0; i < s * 30; i++) { g.time += 1 / 30; hold(); g.step(1 / 30); each?.(); } };
+      const put = (s, type = 'raider') => {
+        const e = g.spawnEnemy(type);
+        e.pos.set(s[0], s[1], s[2]); e.group.position.copy(e.pos); e.markWatchdog(p); e.alert(g.time, 0);
+        return e;
+      };
+
+      // one raider, 15 m out, wave 2, the player a few metres in: does a
+      // frag come to rest by them?
+      clear(); g.wave = 2; g.nextHostileThrow = 0; g.grenades.reset();
+      const inX = d.x - d.nx * Math.min(depth - 2.5, 7), inZ = d.z - d.nz * Math.min(depth - 2.5, 7);
+      stand(inX, inZ); hold();
+      const blasts = [];
+      const explode = g.explode;
+      g.explode = (pos, owner) => { blasts.push({ owner, x: pos.x, y: pos.y, z: pos.z }); };
+      put(spots[0]);
+      step(12);
+      g.explode = explode;
+      const mine = blasts.filter((b) => b.owner === 'hostile');
+      out.frags += mine.length ? 1 : 0;
+      if (mine.length) {
+        const b = mine[0], miss = Math.hypot(b.x - inX, b.z - inZ);
+        out.misses.push(+miss.toFixed(2));
+        if (miss < 3.5 && within(room, b.x, b.z)) out.landed++;
+      }
+
+      // three raiders at 24 m, nothing to throw, the player at the back:
+      // who holds a post?
+      clear(); g.grenades.reset();
+      stand(px, pz); hold();
+      const three = [put(spots[1]), put(spots[2]), put(spots[3])];
+      for (const e of three) e.frags = 0;
+      step(15);
+      const holding = three.filter((e) => e.alive && e.post && Math.hypot(e.post.x - e.pos.x, e.post.z - e.pos.z) < 1.2
+        && !within(room, e.pos.x, e.pos.z)
+        && w.lineOfSight(e.pos.x, e.pos.y + 1.5, e.pos.z, e.post.door.x - e.post.door.nx, room.floor + 1.2, e.post.door.z - e.post.door.nz));
+      out.posted.push(holding.length);
+      if (three.some((e) => !e.post)) out.third++;
+
+      // the player at the door, and a reload: do the posts come in?
+      const ix = d.x - d.nx * 1.5, iz = d.z - d.nz * 1.5;
+      if (!w.blocked(ix, iz, 0.5, room.floor + 0.9) && holding.length) {
+        stand(ix, iz); step(2);
+        const posted = three.filter((e) => e.post);
+        const before = posted.map((e) => Math.hypot(e.pos.x - ix, e.pos.z - iz));
+        const wpn = g.weapons.current;
+        wpn.mag = Math.max(0, wpn.mag - 5); wpn.reserve = Math.max(wpn.reserve, 30);
+        g.weapons.startReload(g.time);
+        step(wpn.def.reload + 0.5);
+        out.released += posted.filter((e) => !e.post).length;
+        posted.forEach((e, i) => out.closed.push(+(before[i] - Math.hypot(e.pos.x - ix, e.pos.z - iz)).toFixed(1)));
+      }
+    }
+
+    // a hostile's frag beside a hostile: it hurts the player, not it, and
+    // pays the player nothing
+    clear();
+    p.reset(w.rooms[0].doors[0].x, w.rooms[0].doors[0].z);
+    const e = g.spawnEnemy('raider');
+    e.pos.set(p.position.x + 2, p.feetY, p.position.z); e.group.position.copy(e.pos);
+    const hp = e.hp, score = g.score; p.health = 100;
+    g.explode({ x: p.position.x + 1, y: p.feetY + 0.1, z: p.position.z, clone() { return this; } }, 'hostile');
+    out.blast = { hostileHurt: hp - e.hp, scored: g.score - score, playerHurt: 100 - p.health };
+    return out;
+  });
+  // Measured on seed 1: frags from 4 of 4 rooms, all at rest inside within
+  // 0.9-2.3 m of the player; 2 posts held in every room with the third raider
+  // coming in; every post given up on the reload.
+  expect(r.rooms >= 3, `only ${r.rooms} shops with room to stage this`);
+  expect(r.frags >= r.rooms - 1 && r.landed >= r.rooms - 1,
+    `a frag came from ${r.frags} of ${r.rooms} raiders and landed by the player in ${r.landed} (${JSON.stringify(r.misses)} m off)`);
+  expect(r.posted.every((n) => n === 2), `raiders holding posts on a shop's doors: ${JSON.stringify(r.posted)}, not 2 each`);
+  expect(r.third === r.rooms, `in ${r.rooms - r.third} of ${r.rooms} shops every raider held a post and none came in`);
+  expect(r.released > 0 && r.closed.every((c) => c > 1), `on a reload ${r.released} posts were given up, closing ${JSON.stringify(r.closed)} m`);
+  expect(r.blast.hostileHurt === 0 && r.blast.scored === 0 && r.blast.playerHurt > 0,
+    `a hostile frag hurt a hostile by ${r.blast.hostileHurt}, paid ${r.blast.scored} and hurt the player by ${r.blast.playerHurt}`);
+  return r;
+});
+
 check('a seed still lays out the city it did', async (page) => {
   // The most expensive lesson in this repo, finally made into a check.
   //
