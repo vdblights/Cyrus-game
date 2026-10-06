@@ -2175,7 +2175,9 @@ export function buildCity(scene, painted = null) {
   /** True when no registered box taller than `maxTop` overlaps the rectangle. */
   function areaClear(w, minX, minZ, maxX, maxZ, maxTop = 0.4) {
     for (const b of w.boxes) {
-      if (b.top <= maxTop) continue;
+      // a roof's parapet stands on the cap's overhang, 30 cm out over the
+      // street from the building's face, and nowhere near the ground
+      if (b.top <= maxTop || b.base > 6) continue;
       if (b.maxX < minX || b.minX > maxX || b.maxZ < minZ || b.minZ > maxZ) continue;
       return false;
     }

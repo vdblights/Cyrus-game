@@ -4097,10 +4097,24 @@ check('a seed still lays out the city it did', async (page) => {
   // that opened, every new one lies inside one of their footprints, and the
   // perches are identical. Before it: 771/561/12 43fc2161 (413 ff19bfd0),
   // 834/543/11 f6d29176 (376 86e2c858), 877/573/10 79f7d600 (395 985f0133).
+  //
+  // And once more, for the stairwells: the open ground floors under a roof
+  // no higher than 14 m got a stairwell to it, and the roof a deck, a
+  // parapet and plant boxes — 13, 7 and 12 buildings, about 90 colliders
+  // each. Placed by position and built inside the tower's reserve, so the
+  // stream is untouched. Compared collider by collider on all three seeds:
+  // every collider gone (37, 13, 24 — the ceilings that were split round a
+  // shaft, and the furniture kept off it) and every new one lies inside one
+  // of those buildings' roofs, and the perches are identical. It first moved
+  // seed 20260101's perches, because `areaClear` read the parapet's 30 cm
+  // overhang as an obstacle in the street; it ignores anything standing off
+  // the ground at roof height now. Before it: 1258/1069/12 6b6c3506 (900
+  // f85850b3), 1275/1000/11 c712ab7e (817 f6fca580), 1382/1103/10 30c19881
+  // (900 634ea5d6).
   const want = {
-    1: { boxes: 1258, solids: 1069, perches: 12, fp: '6b6c3506', placed: 900, fpPlaced: 'f85850b3' },
-    7: { boxes: 1275, solids: 1000, perches: 11, fp: 'c712ab7e', placed: 817, fpPlaced: 'f6fca580' },
-    20260101: { boxes: 1382, solids: 1103, perches: 10, fp: '30c19881', placed: 900, fpPlaced: '634ea5d6' },
+    1: { boxes: 2466, solids: 1462, perches: 12, fp: 'a58d0856', placed: 2108, fpPlaced: '63d74243' },
+    7: { boxes: 1915, solids: 1215, perches: 11, fp: 'cf6519ea', placed: 1457, fpPlaced: 'b4700b44' },
+    20260101: { boxes: 2474, solids: 1469, perches: 10, fp: '7f188ef1', placed: 1992, fpPlaced: '99ee3366' },
   };
 
   const got = {};

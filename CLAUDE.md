@@ -50,7 +50,7 @@ builds, never to play.
 | File | Owns |
 | --- | --- |
 | `src/main.js` | `Game`: loop, scene, lighting, waves, hit resolution, blasts |
-| `src/world.js` | Box collision (square, turned, or a ceiling overhead), ground height, line of sight, sphere bounce, the grid that indexes them |
+| `src/world.js` | Box collision (square, turned, a ceiling overhead or a deck over a ceiling), ground height, line of sight, sphere bounce, the grid that indexes them, which stairwell a body is up |
 | `src/city.js` | Procedural generation; returns `{ world, fireBarrels, perches }` |
 | `src/player.js` | `Input` and `Player`: look, movement, footing, health |
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
@@ -270,6 +270,62 @@ These each cost real debugging time. Changing them needs a reason.
   put back the way it was (21 of 21 rooms not entered; every room's floor
   blocked to the route field; a crown through the ceiling; 21 doorways
   blind; a grenade shoved out of the building).
+- **A box off the ground may be a deck: a ceiling to everything but the
+  feet over it.** Thirteen of seed 1's 21 open ground floors — every one
+  under a roof no higher than 14 m (`STAIR.top`) with a corner whose walls
+  have no doorway behind it — have a stairwell (`stairwell` in `city.js`):
+  switchback flights of ten in two lanes either side of a spine, a landing
+  across both lanes at each end, an even number of flights so the last one
+  walks straight out of a bulkhead onto the roof, and the roof made a deck
+  with a parapet on the cap's overhang. A flight over a flight is a box
+  with a `base` that is also a floor, and so is the roof over a shop, so
+  `addDeck` flags it and `groundHeight` stands a body on a deck only when
+  the body is at or above its underside (`under`, which defaults to the
+  asking ceiling). Four things are load-bearing. **`under` is not
+  `ceiling`** for the one reader that asks with `Infinity`: `mantleTarget`'s
+  wall test passes `feet + maxRise + 0.5`, or the roof over a shop is a
+  wall in front of every crate in it (0 of 6 shops' crates climbable with
+  it left at `Infinity`). **The parapet is waist-high onto a street and
+  2.2 m — over a jump's reach — where another building of the lot stands a
+  metre off** (`party` in `buildTower`): the roof next door is one jump
+  away, its colliders are its block's top 0.8 m under the cap you see, and
+  its roof furniture is decoration you walk through. **Everything on a
+  stair roof that was decoration goes** — `roofFurniture` and `fireEscape`
+  are skipped on it, the plant boxes are decks — and the block loses its
+  top and bottom faces and the cap and slab are rebuilt round the hole,
+  because none of them had an inside. **Hostiles walk the stair's own
+  points** (`stair.path`, `Enemy._stairWalk`): the route field is one grid
+  at street level, so while the player is up a stair (`World.stairAt`) it
+  is built from the stair's foot, a hostile walks there, and from there
+  follows the points one at a time — no avoidance, no climbing and no edge
+  guard inside the shaft — turning round mid-flight when the player does
+  and forgetting the stair at its foot. Each point reached resets the
+  watchdog, because laps of a 3 x 6 m shaft look exactly like a hostile
+  going nowhere. A ranged hostile with a clear shot at the roof from the
+  street takes it rather than climbing, and one on the roof with a shot down
+  holds it. A body taller than the headroom under a flight (`stair.clear`,
+  the lap less the slab, at most the 2.5 m doors) is never sent up, which
+  is every juggernaut. The layout outside those buildings is untouched,
+  proved collider by collider (see the layout check), after one fix:
+  `areaClear` read the parapet's 30 cm overhang as an obstacle in the
+  street and moved seed 20260101's perches, so it ignores boxes standing
+  off the ground above 6 m. `a stairwell climbs to a roof you can stand on,
+  and a hostile follows you up it` walks every stairwell on the seed, walks
+  and jumps at every roof edge, shoots the roof and follows a scavenger up
+  and back down; it fails with the deck rule taken out (13 of 13 stuck at
+  the first slab), with `under` at `Infinity`, with the parapet gone (31 of
+  40 edges walked off), with the cap not a raycast target, with the stair
+  walk off (no scavenger up), and with the landing fix below reverted. A
+  party wall cut to parapet height fails it only by there being no party
+  walls to find, which is weak: the check knows one by its height.
+- **A fall lands on whatever it crossed in the frame.** Airborne footing
+  asked `groundHeight` with a ceiling 2 cm over where the fall *ended*, so a
+  landing that crossed a surface by more than that in one step went
+  through it. On the street that was a frame's dip under the kerb before
+  the step-up caught it, and nobody saw it; on a roof it was a fall through
+  the deck, out of the side of the building and into the street — 12 of 40
+  jumps at a roof edge. The ceiling is the higher of the feet before and
+  after the step now (`Player.update`).
 - **Anything you can see at body height is something you can bump into.**
   Every heap of rubble (`rubblePile`) and every fallen slab in a rubble lot
   was drawn and registered nowhere — the slabs were in the raycast list and
@@ -1408,6 +1464,14 @@ follow. Both now ask `ceilingAbove` for a body's height of headroom before
 calling a box a deck. Anything that samples decks, ledges or standing spots
 from the box list has to ask the same.
 
+A twelfth, from the stairs pass: a counter is not a ledge under a 3 m
+ceiling. The first version of the stairwell check asked for a counter or a
+crate to be climbable in most shops under a roof, found 6 of 13, and the
+reason was right there in the readers: a counter tops out at 1.28 m, and
+1.28 + 1.9 of headroom is through a ceiling at 3.03, in every shop, stairs
+or not. Sample what a body can stand on (`ceilingAbove` again) before
+counting a refusal against the reader under test.
+
 A check that samples "the first N" of a list is a check on the list's
 order. `a hostile follows you onto a car roof` took the first eight decks
 in `world.boxes`, which after the fountain became sixteen staves were all
@@ -1523,6 +1587,21 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The stairs pass came after the open buildings, asked for as the next big
+jump: stairs and rooftops. Ground floors only had been the open-buildings
+pass's answer, and the cost of going up was always the route field, which
+is one grid at street level; the answer here is a stairwell with its own
+list of points, which the hostiles walk, and a route field built from its
+foot while the player is up it. The invariant on decks has the rest, and
+the landing fix that came with it. On seed 1: 13 stairwells (7 and 12 on
+the other pinned seeds), boxes 1,258 → 2,466 and solids 1,069 → 1,462, a
+scavenger up eight flights in 10-15 s and back down in 8-11 s with no
+relocations. What it cost, twelve hostiles on seed 1 under software
+rendering, interleaved against `main` twice: the game step unmoved (0.2 ms
+median, 0.5 at the 95th, twice the boxes — the grid index is why); high
+2,872-3,003 → 2,935-3,124 ms a frame, about 3%, triangles 807k → 853k,
+calls unchanged at 434; low within noise.
 
 The open-buildings pass came straight after it, asked for in one line:
 can we make it so we can enter buildings? Asked back, the answer was
@@ -2601,13 +2680,21 @@ Suggested next work, in the order I would do it:
    open-buildings check reads exactly that, and the counter's first
    placement sealed seven rooms. Flush litter and chips on the floor finish
    are free by the decoration rules.
-4. **Upper floors, if play asks for them.** The user chose ground floors
-   only. Going up means a stairwell, a second `base`, and a route field that
-   knows about floors, which it does not: it is one grid at street level.
-   That is the real cost, not the geometry.
-5. **An elite under a ceiling.** Hostiles collide at their archetype's
+4. **Hostiles that use the buildings**, asked for after the stairs:
+   a grenade through a doorway at a player in a shop, a hostile covering a
+   stairwell's door or a shop's exits rather than walking into them, one
+   waiting out your reload before it comes round a corner. The stair points
+   and `world.rooms` doorways are what a plan like that reads.
+5. **Upgrades between waves**, asked for in the same breath: spend score
+   on a weapon, a scope, a magazine, armour or grenades.
+6. **Upper floors you walk through**, if play asks for them. A stairwell
+   climbs past every floor of its building and opens on none of them. A
+   floor off a landing is a room with a `base` and a deck under it, which
+   the readers now handle; the route field still is not, but the stair
+   points already are, so a floor would be a branch off the walk.
+7. **An elite under a ceiling.** Hostiles collide at their archetype's
    height so a warlord can follow you in; an elite juggernaut is 3.7 m and
-   its head shows through the slab. A crouched walk under a ceiling (the
+   its head shows through the slab. No juggernaut fits the stairs, either. A crouched walk under a ceiling (the
    rig already has `CROUCH`) would hide it.
 
 One piece of housekeeping that cannot be done from here: the merged branch
