@@ -4160,6 +4160,139 @@ check('hostiles use the buildings: a frag through the door, posts on the exits, 
   return r;
 });
 
+check('the armoury opens between waves, costs scrip not score, and what it fits is what the game does', async (page) => {
+  // Between waves the armoury sells armour, bigger magazines, optics, match
+  // ammunition, a frag pouch, a resupply and a dressing. Paid in scrip,
+  // which every point of score earns and spending never takes back. This
+  // asks that it opens only with the sector clear, that the clock stops
+  // while it is open, and that each tier changes the thing it says it does
+  // — measured where the game does it, not read back off the kit.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const p = g.player, ws = g.weapons;
+    const out = {};
+    const tick = (n = 1) => { for (let i = 0; i < n; i++) { g.time += 1 / 30; g.step(1 / 30); } };
+
+    // what it can open on
+    out.atStart = g.openArmoury();
+    g.wave = 1;
+    const e = g.spawnEnemy('scavenger');
+    e.pos.set(p.position.x + 40, 0.3, p.position.z); e.group.position.copy(e.pos);
+    g.waveClearedAt = g.time;
+    out.midWave = g.openArmoury();
+    e.alive = false; e.group.visible = false;
+    g.enemies.length = 0;
+    g.score += 6000; tick();
+    out.scrip = g.scrip;
+    out.opened = g.openArmoury();
+    out.state = g.state;
+    // the clock stops behind it
+    const t0 = g.time;
+    const render = g.render; g.render = () => {};
+    for (let i = 0; i < 5; i++) g.frame();
+    g.render = render;
+    out.clockMoved = +(g.time - t0).toFixed(3);
+    // and behind the pause screen, which used to run it on
+    g.closeArmoury();
+    g.pause();
+    const t1 = g.time;
+    g.render = () => {};
+    for (let i = 0; i < 5; i++) g.frame();
+    g.render = render;
+    out.pausedMoved = +(g.time - t1).toFixed(3);
+    g.resume();
+    g.openArmoury();
+
+    // a shot's spread and damage, and a hit's cost, before anything is fitted
+    const camera = g.camera;
+    const spreadOf = () => {
+      ws.select(0, g.time); ws.switching = 0; ws.reloading = false; ws.nextShot = 0;
+      ws.adsT = 1; ws.current.mag = 5;
+      let dir = null;
+      const hs = g.hitscan; g.hitscan = (d) => { dir = d.clone(); };
+      const rnd = Math.random; Math.random = () => 1;
+      const prev = g.state; g.state = 'playing';
+      ws.fire(g.time, camera, false);
+      g.state = prev;
+      Math.random = rnd; g.hitscan = hs;
+      const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+      return dir ? dir.angleTo(fwd) : null;
+    };
+    const dealt = () => {
+      // a raider stood in front of the camera, shot through the chest
+      const t = g.spawnEnemy('raider');
+      const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
+      t.pos.set(camera.position.x + fwd.x * 6, p.feetY, camera.position.z + fwd.z * 6);
+      t.group.position.copy(t.pos); t.group.updateMatrixWorld(true);
+      const aim = new THREE.Vector3(); t.parts.torso.getWorldPosition(aim);
+      let amount = null;
+      t.damage = (a) => { amount = a; return 'hit'; };
+      // the city out of the way: what is measured is the damage, not the line
+      const solids = g.world.solids; g.world.solids = [];
+      g.hitscan(aim.sub(camera.position).normalize(), ws.weapons[0].def);
+      g.world.solids = solids;
+      g._recycle(t); g.enemies.splice(g.enemies.indexOf(t), 1);
+      return amount;
+    };
+    const taken = () => {
+      const prev = g.state; g.state = 'playing';
+      p.health = 100; g.damagePlayer(40, null);
+      g.state = prev;
+      return +(100 - p.health).toFixed(2);
+    };
+    const reloadTo = () => {
+      ws.select(0, g.time); ws.switching = 0; ws.reloading = false;
+      ws.current.mag = 0; ws.current.reserve = 200;
+      ws.startReload(g.time); ws.finishReload();
+      return ws.current.mag;
+    };
+    const before = { spread: spreadOf(), dealt: dealt(), taken: taken(), mag: reloadTo(), fov: null };
+
+    // buy one of each that the scrip will run to
+    const score = g.score;
+    const bought = {};
+    for (const id of ['armour', 'mags', 'optics', 'rifling']) {
+      const s = g.scrip;
+      g.armoury.purchase(id);
+      bought[id] = s - g.scrip;
+    }
+    out.bought = bought;
+    out.scoreAfter = g.score - score;
+    out.broke = g.armoury.list.querySelectorAll('.shelf.cant').length;
+    const after = { spread: spreadOf(), dealt: dealt(), taken: taken(), mag: reloadTo() };
+    out.before = before; out.after = after;
+
+    // out of scrip: nothing more is sold
+    const left = g.scrip;
+    g.armoury.purchase('armour');
+    out.unaffordable = left === g.scrip ? 'refused' : 'sold';
+
+    g.closeArmoury();
+    out.closed = g.state;
+    // a new run starts with nothing fitted
+    g.startRun();
+    out.fresh = JSON.stringify(g.kit) + ' ' + g.scrip;
+    return out;
+  });
+  expect(r.atStart === false && r.midWave === false, `the armoury opened before the first wave (${r.atStart}) or mid-wave (${r.midWave})`);
+  expect(r.scrip === 6000 && r.opened && r.state === 'armoury', `6000 points of score bought ${r.scrip} scrip, and the armoury ${r.opened ? 'opened' : 'did not open'} between waves`);
+  expect(r.clockMoved === 0 && r.pausedMoved === 0, `the clock ran ${r.clockMoved} s with the armoury open and ${r.pausedMoved} s paused`);
+  expect(r.scoreAfter === 0, `spending at the armoury moved the score by ${r.scoreAfter}`);
+  expect(r.bought.armour === 1200 && r.bought.mags === 1000 && r.bought.optics === 900 && r.bought.rifling === 1500,
+    `the first tiers cost ${JSON.stringify(r.bought)}`);
+  const ratio = (a, b) => +(a / b).toFixed(3);
+  expect(ratio(r.after.taken, r.before.taken) === 0.85, `the plate carrier took a hit from ${r.before.taken} to ${r.after.taken}`);
+  expect(r.before.mag === 15 && r.after.mag === 19, `extended magazines reloaded the sidearm to ${r.after.mag} (from ${r.before.mag})`);
+  expect(Math.abs(ratio(r.after.spread, r.before.spread) - 0.7) < 0.01, `optics took aimed spread from ${r.before.spread} to ${r.after.spread}`);
+  expect(Math.abs(ratio(r.after.dealt, r.before.dealt) - 1.12) < 0.005, `match ammunition took a hit from ${r.before.dealt} to ${r.after.dealt}`);
+  expect(r.unaffordable === 'refused' && r.broke > 0, `with ${r.broke} items out of reach a purchase was ${r.unaffordable}`);
+  expect(r.closed === 'playing' && r.fresh === '{"armour":0,"mags":0,"optics":0,"rifling":0,"pouch":0} 0', `after deploying: ${r.closed}, and a new run starts with ${r.fresh}`);
+  return { bought: r.bought, before: r.before, after: r.after };
+});
+
 check('a seed still lays out the city it did', async (page) => {
   // The most expensive lesson in this repo, finally made into a check.
   //

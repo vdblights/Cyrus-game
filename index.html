@@ -37,6 +37,7 @@
       <div id="wave-line"><span class="label">WAVE</span> <span id="wave">1</span></div>
       <div id="enemies-line"><span class="label">HOSTILES</span> <span id="enemies-left">0</span></div>
       <div id="score-line"><span class="label">SCORE</span> <span id="score">0</span></div>
+      <div id="scrip-line"><span class="label">SCRIP</span> <span id="scrip">0</span></div>
       <div id="objective" class="hidden">
         <div id="objective-head">
           <span id="objective-label">SUPPLY CACHE</span>
@@ -141,6 +142,16 @@
         If capture is blocked, steer by moving the cursor off centre &mdash;
         <kbd>&larr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd> also aim
       </div>
+    </div>
+  </div>
+
+  <div id="armoury" class="overlay hidden">
+    <div class="menu-inner">
+      <h2 class="title small">ARMOURY</h2>
+      <p class="subtitle" id="armoury-scrip">SCRIP 0</p>
+      <div id="armoury-items"></div>
+      <button id="armoury-close" class="btn">DEPLOY</button>
+      <p class="armoury-hint">1&ndash;7 to buy &middot; B to deploy &middot; scrip is earned with score, and spending it costs no score</p>
     </div>
   </div>
 

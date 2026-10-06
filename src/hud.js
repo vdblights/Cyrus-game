@@ -7,7 +7,7 @@ const $ = (id) => document.getElementById(id);
 export class HUD {
   constructor() {
     this.el = {
-      hud: $('hud'), wave: $('wave'), enemies: $('enemies-left'), score: $('score'),
+      hud: $('hud'), wave: $('wave'), enemies: $('enemies-left'), score: $('score'), scrip: $('scrip'),
       healthFill: $('health-fill'), healthNum: $('health-num'), staminaFill: $('stamina-fill'),
       weaponName: $('weapon-name'), mag: $('mag'), reserve: $('reserve'), ammo: $('ammo'),
       reloadHint: $('reload-hint'), slots: $('weapon-slots'), crosshair: $('crosshair'),
@@ -73,6 +73,7 @@ export class HUD {
     this.el.wave.textContent = game.wave;
     this.el.enemies.textContent = game.aliveCount + (game.pendingSpawns > 0 ? '+' : '');
     this.el.score.textContent = game.score.toLocaleString();
+    if (this.el.scrip) this.el.scrip.textContent = (game.scrip || 0).toLocaleString();
 
     const hp = Math.max(0, Math.round(p.health));
     this.el.healthFill.style.width = (hp / p.maxHealth) * 100 + '%';
