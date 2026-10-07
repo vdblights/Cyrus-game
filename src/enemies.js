@@ -148,6 +148,20 @@ const CAST = { near: 2.6, far: 8, pace: 0.8, escort: 2.5, lure: 40 };
 const CROUCH = { drop: 0.36, thigh: 1.1, knee: -1.9, lean: 0.22 };
 
 /**
+ * A stoop under a low ceiling. A hostile collides at its archetype's height
+ * so a warlord can follow you into a shop, but it is drawn at its own, and
+ * an elite juggernaut is 3.6 m of body under 2.75 m of headroom. So under a
+ * ceiling lower than its crown (`top`, in the body's units, with `margin`
+ * of air) it bends both knees until its head clears: the thigh forward by
+ * `a` and the shin back by `2a` keep the foot under the hip, and the hip
+ * comes down by `leg * (1 - cos a)`. At most `max` of the body's height,
+ * and it leans into it. Headroom is asked across the whole body, which is
+ * what has it down before a lintel rather than under it: in a doorway the
+ * head leans in under the slab's edge before the feet are under it.
+ */
+const STOOP = { top: 1.9, margin: 0.06, leg: 0.86, max: 0.5, lean: 0.3 };
+
+/**
  * Hostile archetypes. `preferred` is the range the AI tries to hold; melee
  * types simply close to contact.
  *
@@ -1076,6 +1090,7 @@ export class Enemy {
     this.reloadT = 0;                // seconds of reload still to go
     this.reloadCue = 0;              // which of its sounds have played
     this.crouch = 0;                 // 0 standing, 1 down behind cover
+    this.stoop = 0;                  // how far the hips are down for a ceiling, in body units
     this.crouchWant = false;
     this.heard = null;               // where a far-off shot came from, while it listens
     this.heardUntil = 0;
@@ -1416,7 +1431,8 @@ export class Enemy {
         arm.rotation.set(-0.3 * kb, 0, side * 0.5 * kb);
         fore.rotation.set(-0.6 * kb, 0, 0);
       }
-      this.group.position.y = this.pos.y - 0.42 * kb;
+      // killed stooped under a ceiling, it goes down from there, not from full height
+      this.group.position.y = this.pos.y - 0.42 * kb - this.stoop * this.group.scale.x * (1 - kb);
       if (this.parts.shadow) this.parts.shadow.material.opacity = 0.75 * Math.max(0, 1 - this.deathT);
       if (this.deathT > 6) {
         const k = Math.max(0, 1 - (this.deathT - 6) / 1.5);
@@ -1436,7 +1452,7 @@ export class Enemy {
     const heightGap = player.position.y - (this.pos.y + 1.5);
 
     // a hostile down behind cover is looking from where its eyes are
-    const eyeY = this.pos.y + (1.5 - CROUCH.drop * this.crouch) * this.type.scale;
+    const eyeY = this.pos.y + (1.5 - CROUCH.drop * this.crouch - this.stoop) * this.type.scale;
     const sees = dist < this.type.detect &&
       world.lineOfSight(this.pos.x, eyeY, this.pos.z, player.position.x, player.position.y, player.position.z);
 
@@ -1721,6 +1737,7 @@ export class Enemy {
     const support = world.groundHeight(this.pos.x, this.pos.z, SUPPORT_RADIUS, this.pos.y + 0.55);
     if (support > this.pos.y) this.pos.y = Math.min(support, this.pos.y + dt * 6);
     else if (support < this.pos.y) this.pos.y = Math.max(support, this.pos.y - dt * 14);
+    this._headroom(dt, world);
 
     // separation so crowds do not stack into one body
     for (const other of this.game.enemies) {
@@ -2002,6 +2019,15 @@ export class Enemy {
     return true;
   }
 
+  /** Down under a ceiling lower than its crown, by as much as it takes (`STOOP`). */
+  _headroom(dt, world) {
+    const s = this.group.scale.x;
+    const room = world.ceilingAbove(this.pos.x, this.pos.z, this.radius, this.pos.y) - this.pos.y;
+    const want = THREE.MathUtils.clamp((STOOP.top + STOOP.margin) - room / s, 0, STOOP.max);
+    // quick to go down, slower to come back up
+    this.stoop += (want - this.stoop) * Math.min(1, dt * (want > this.stoop ? 10 : 3));
+  }
+
   _tryClimb(world, dir) {
     const ledge = world.mantleTarget(this.pos.x, this.pos.z, this.radius, this.pos.y,
       dir.x, dir.z, CLIMB.min, CLIMB.max);
@@ -2077,6 +2103,13 @@ export class Enemy {
       P.legL.rotation.x = L(P.legL.rotation.x, CROUCH.thigh, c); P.shinL.rotation.x = L(P.shinL.rotation.x, CROUCH.knee, c);
       P.legR.rotation.x = L(P.legR.rotation.x, 0.35, c); P.shinR.rotation.x = L(P.shinR.rotation.x, -1.95, c);
     }
+    // under a low ceiling: both knees bent so the feet stay under the hips
+    const st = this.stoop;
+    const bend = st > 0.001 ? Math.acos(Math.max(-1, 1 - st / STOOP.leg)) : 0;
+    if (bend) {
+      P.legL.rotation.x += bend; P.shinL.rotation.x -= 2 * bend;
+      P.legR.rotation.x += bend; P.shinR.rotation.x -= 2 * bend;
+    }
     // lowest with the feet furthest apart, highest as they pass
     const bob = 0.035 * amp * (0.5 + 0.5 * Math.cos(2 * ph));
 
@@ -2093,7 +2126,8 @@ export class Enemy {
     const up = P.upper;
     const breathe = Math.sin(this.idleT * 1.6) * 0.012 * (1 - amp);
     up.rotation.set(
-      -0.10 * amp * (1 - 0.5 * A) + breathe + 0.05 * this.kick + f.x - 0.55 * haul - CROUCH.lean * c,
+      -0.10 * amp * (1 - 0.5 * A) + breathe + 0.05 * this.kick + f.x - 0.55 * haul - CROUCH.lean * c
+        - STOOP.lean * (st / STOOP.max),
       -0.48 * A + Math.sin(ph) * 0.07 * amp * (1 - A) - 0.30 * (1 - A),
       Math.sin(ph) * 0.035 * amp + f.z,
     );
@@ -2148,10 +2182,10 @@ export class Enemy {
     const support = reloading ? this._reloadHand(r, M4) : V4.copy(this.hold.fore).applyMatrix4(M4);
     reach(P.armL, P.foreL, support, ARM.upper, ARM.fore, this.poleL);
 
-    this.group.position.y = this.pos.y + bob - CROUCH.drop * c * this.type.scale;
+    this.group.position.y = this.pos.y + bob - (CROUCH.drop * c + st) * this.group.scale.x;
     if (P.shadow) {
       // stays on the floor while the body bobs or crouches, and fades as it rises
-      P.shadow.position.y = -bob / this.type.scale + CROUCH.drop * c + 0.03;
+      P.shadow.position.y = -bob / this.group.scale.x + CROUCH.drop * c + st + 0.03;
       P.shadow.material.opacity = 0.75 * Math.max(0, 1 - bob * 4);
     }
 

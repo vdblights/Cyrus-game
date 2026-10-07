@@ -106,6 +106,8 @@ export const RADIO = {
     },
     hold: {
       start: ['Signal beacon, {d} metres. Hold it while it transmits. Every Cinder in earshot will hear it.'],
+      // in place of an objective this part of the city has nowhere for
+      instead: ['Nothing out there we can use for that, WREN. There is a beacon {d} metres off instead. Hold it while it transmits.'],
       done: ['Beacon is up. We can hear the district now.'],
       lost: ['Beacon is down. We will try another.'],
     },

@@ -1330,7 +1330,8 @@ class Game {
   /** An objective has gone live: the handler calls it, with how far. */
   onObjectiveStart(obj) {
     const lines = RADIO.objective[obj.kind];
-    if (lines) this.say(lines.start, this.objectivesSecured + this.wave, obj.dist);
+    // a beacon put up in place of something the city had nowhere for says so
+    if (lines) this.say(obj.instead && lines.instead ? lines.instead : lines.start, this.objectivesSecured + this.wave, obj.dist);
   }
 
   /** It has moved on a stage: a charge armed, a holdout cut loose. */

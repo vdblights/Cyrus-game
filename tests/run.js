@@ -1603,8 +1603,10 @@ check('a relay is restored on a roof, up a stairwell', async (page) => {
   // A relay mast stands on the roof of a building with a stairwell, and is
   // only worked from the roof: the shop under it, a storey and more below,
   // does not count. Standing on it brings the sector up the stairs after you.
+  // Where no stairwell is in reach, a beacon stands in for it, and HALCYON
+  // says that is what it is.
   const r = await page.evaluate(() => {
-    const g = window.__game;
+    const g = window.__game, W = g.world;
     g.startRun();
     g.input.locked = true;
     g.startWave = () => {};
@@ -1623,9 +1625,19 @@ check('a relay is restored on a roof, up a stairwell', async (page) => {
     g.player.feetY = o.y;
     g.player.position.y = o.y + g.player.eyeHeight;
     window.__step(o.def.channel + 1);
+    const done = !g.objectives.active;
+    // and where no stairwell is in reach, a beacon in its place, said so
+    const stairs = W.stairs;
+    W.stairs = [];
+    g.objectives.reset();
+    const said0 = g.hud.radioLog.length;
+    const f = g.objectives.start('relay');
+    W.stairs = stairs;
+    const fallback = { kind: f && f.kind, instead: f && f.instead, said: g.hud.radioLog.slice(said0) };
     return {
+      fallback,
       kind: o.kind, onStair: !!stair, siteY: +o.y.toFixed(2), deck: +deck.toFixed(2), below, fromBelow,
-      feet: +g.player.feetY.toFixed(2), done: !g.objectives.active, relays: g.op.relay,
+      feet: +g.player.feetY.toFixed(2), done, relays: g.op.relay,
       said: g.hud.radioLog.some((l) => /[Rr]elay is/.test(l)),
     };
   });
@@ -1634,6 +1646,8 @@ check('a relay is restored on a roof, up a stairwell', async (page) => {
   expect(Math.abs(r.deck - r.siteY) < 0.05, `nothing to stand on at the mast: deck ${r.deck} under a site at ${r.siteY}`);
   expect(r.fromBelow === 0, `working it from ${r.below} m, under the roof, made ${r.fromBelow} s of progress`);
   expect(r.done && r.relays === 1 && r.said, `holding the mast did not restore it: ${JSON.stringify(r)}`);
+  expect(r.fallback.kind === 'hold' && r.fallback.instead === 'relay' && r.fallback.said.some((l) => /instead/.test(l)),
+    `with no stairwell in reach the relay came back as ${JSON.stringify(r.fallback)}`);
   return r;
 });
 
@@ -1853,6 +1867,145 @@ check('a holdout is cut loose, follows you to the pickup, and is not a target', 
   expect(r.stage === 'escort' && r.following, `cutting them loose left stage ${r.stage}, following ${r.following}`);
   expect(r.startD > 30, `the pickup is only ${r.startD} m from the shop`);
   expect(r.done && r.rescued === 1, `they never reached a pickup ${r.startD} m off: ${r.left} m short after ${r.took} s`);
+  return r;
+});
+
+check('no shop is left bare', async (page) => {
+  // A 10 m shop with a stairwell in it read as an empty concrete box: the
+  // shaft and the floor in front of it take the blank walls the shelving and
+  // crates would have gone on. `furnishBare` puts a table, a crate stack and
+  // a shelf unit against whatever wall is free. This counts what stands on
+  // each room's floor by piece — a stack of crates is one, two shelves
+  // meeting in a corner are two — and asks for two in every room. Three is
+  // what the furnishing aims at, and on seed 1 one room cannot hold it: a
+  // 10 m shop with a stairwell and doorways on two of its walls, where the
+  // table and a crate take the only wall left. The route field reaching every open cell of a
+  // room is the open-buildings check's to read.
+  const r = await page.evaluate(() => {
+    const W = window.__game.world;
+    const rows = W.rooms.map((room) => {
+      // a piece of furniture tags every collider it registers with its
+      // number in its room, so a stack of crates is one piece
+      const got = new Set();
+      for (const b of W.boxes) {
+        if (!b.piece || b.base || b.top > room.floor + 2.3) continue;
+        if (b.minX < room.minX || b.maxX > room.maxX || b.minZ < room.minZ || b.maxZ > room.maxZ) continue;
+        got.add(b.piece);
+      }
+      return got.size;
+    });
+    return { rooms: rows.length, fewest: Math.min(...rows), three: rows.filter((n) => n >= 3).length,
+      bare: rows.filter((n) => n < 2).length };
+  });
+  expect(r.rooms > 10, `only ${r.rooms} rooms to furnish`);
+  expect(r.bare === 0, `${r.bare} of ${r.rooms} rooms hold fewer than two pieces (the fewest ${r.fewest})`);
+  return r;
+});
+
+check('a warlord stoops under a shop ceiling, and stands tall in the street', async (page) => {
+  // Hostiles collide at their archetype's height so a warlord can follow you
+  // into a shop, but an elite juggernaut is drawn 3.6 m tall under 2.75 m of
+  // headroom, and its head and shoulders came through the floor above. It
+  // stoops now (`STOOP` in `enemies.js`). This stands one in every room with
+  // the player at the back, walks one in at a doorway, and stands one in the
+  // street, and reads the highest point of its body each time.
+  const r = await page.evaluate(() => {
+    const g = window.__game, W = g.world;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const box = new g.player.position.constructor();
+    const top = (e) => {
+      let y = -Infinity;
+      e.group.updateMatrixWorld(true);
+      for (const m of e.hitMeshes) {
+        const pos = m.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+          box.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+          if (box.y > y) y = box.y;
+        }
+      }
+      return y;
+    };
+    const open = (room, x, z) => x > room.minX + 1.4 && x < room.maxX - 1.4 && z > room.minZ + 1.4 && z < room.maxZ - 1.4
+      && !g.nav.solidAt(x, z) && !W.blocked(x, z, 1.0, room.floor + 0.9);
+    const spot = (room, skip) => {
+      for (let i = 0; i < 64; i++) {
+        const x = room.minX + (room.maxX - room.minX) * ((i % 8) + 0.5) / 8;
+        const z = room.minZ + (room.maxZ - room.minZ) * (Math.floor(i / 8) + 0.5) / 8;
+        if (open(room, x, z) && (!skip || Math.hypot(x - skip.x, z - skip.z) > 3.5)) return { x, z };
+      }
+      return null;
+    };
+    const elite = (x, z) => {
+      const e = g.spawnEnemy('brute', true);
+      e.pos.set(x, W.groundHeight(x, z, 0.12, 0.6), z);
+      e.group.position.copy(e.pos);
+      e.markWatchdog(g.player);
+      e.alert(g.time, 99);       // walking, not shooting
+      e.nextFire = Infinity; e.frags = 0;
+      return e;
+    };
+    const clear = () => { for (const e of g.enemies) { e.alive = false; e.group.visible = false; } window.__step(0.05); };
+
+    // standing in every room, the player at the back of it
+    let rooms = 0, through = 0, worst = -Infinity;
+    for (const room of W.rooms) {
+      const a = spot(room), b = a && spot(room, a);
+      if (!b) continue;
+      g.player.reset(b.x, b.z);
+      const e = elite(a.x, a.z);
+      window.__step(1.2);
+      const over = top(e) - room.ceiling;
+      worst = Math.max(worst, over);
+      if (over > 0.02) through++;
+      rooms++;
+      clear();
+    }
+
+    // walked in at a doorway, under the lintel — kept off the posts
+    // outside, which is where a ranged hostile would otherwise wait
+    let walked = null;
+    for (const room of W.rooms) {
+      const d = room.doors[0], inside = spot(room);
+      if (!inside) continue;
+      const ox = d.x + d.nx * 6, oz = d.z + d.nz * 6;
+      if (g.nav.solidAt(ox, oz) || W.blocked(ox, oz, 1.0, 0.9)) continue;
+      g.player.reset(inside.x, inside.z);
+      const e = elite(ox, oz);
+      e.postAfter = Infinity;
+      let peak = -Infinity, entered = false;
+      for (let f = 0; f < 60 * 6; f++) {
+        g.time += 1 / 60; g.step(1 / 60); g.player.health = 100;
+        const under = W.ceilingAbove(e.pos.x, e.pos.z, 0.1, e.pos.y);
+        if (under < Infinity) { entered = true; peak = Math.max(peak, top(e) - under); }
+      }
+      clear();
+      if (!entered) continue;
+      walked = { entered, peak: +peak.toFixed(2) };
+      break;
+    }
+
+    // and in the street, at its full height
+    const p = g.player.position;
+    g.player.reset(-17, 24);
+    let street = null;
+    for (let k = 0; k < 16 && !street; k++) {
+      const x = p.x + Math.cos(k) * 8, z = p.z + Math.sin(k) * 8;
+      if (W.ceilingAbove(x, z, 2, 0) === Infinity && !g.nav.solidAt(x, z) && !W.blocked(x, z, 1.2, 0.9)) {
+        const e = elite(x, z);
+        window.__step(1);
+        street = +(top(e) - e.pos.y).toFixed(2);
+      }
+    }
+    return { rooms, through, worst: +worst.toFixed(2), walked, street };
+  });
+  expect(r.rooms >= 10, `only ${r.rooms} rooms had room for a warlord to stand`);
+  expect(r.through === 0, `a warlord's head stood ${r.worst} m through the ceiling in ${r.through} of ${r.rooms} rooms`);
+  expect(r.walked && r.walked.entered && r.walked.peak <= 0.02,
+    `walking in at a door, a warlord's head came ${r.walked && r.walked.peak} m through the lintel`);
+  expect(r.street > 3.3, `in the open street a warlord stands only ${r.street} m tall`);
   return r;
 });
 
@@ -4790,10 +4943,21 @@ check('a seed still lays out the city it did', async (page) => {
   // the ground at roof height now. Before it: 1258/1069/12 6b6c3506 (900
   // f85850b3), 1275/1000/11 c712ab7e (817 f6fca580), 1382/1103/10 30c19881
   // (900 634ea5d6).
+  //
+  // And once more, for the bare rooms: a room the rest of the furnishing
+  // left with under three pieces of furniture (columns are not furniture)
+  // gets a table, a crate stack, a shelf unit and if need be a lone crate
+  // against a free wall (`furnishBare`), placed by hash inside the tower's
+  // reserve. Compared collider by collider on all three seeds: nothing
+  // gone, 58, 54 and 83 colliders added and every one inside a room, every
+  // other box in the order it was, the perches and the mark after boot
+  // identical. Before it: 2466/1462/12 a58d0856 (2108 63d74243),
+  // 1915/1215/11 cf6519ea (1457 b4700b44), 2474/1469/10 7f188ef1 (1992
+  // 99ee3366).
   const want = {
-    1: { boxes: 2466, solids: 1462, perches: 12, fp: 'a58d0856', placed: 2108, fpPlaced: '63d74243' },
-    7: { boxes: 1915, solids: 1215, perches: 11, fp: 'cf6519ea', placed: 1457, fpPlaced: 'b4700b44' },
-    20260101: { boxes: 2474, solids: 1469, perches: 10, fp: '7f188ef1', placed: 1992, fpPlaced: '99ee3366' },
+    1: { boxes: 2524, solids: 1627, perches: 12, fp: 'a1e65227', placed: 2166, fpPlaced: '9be24262' },
+    7: { boxes: 1969, solids: 1363, perches: 11, fp: '3797df54', placed: 1511, fpPlaced: '6dfd56be' },
+    20260101: { boxes: 2557, solids: 1704, perches: 10, fp: '53d76d18', placed: 2075, fpPlaced: '9e19509b' },
   };
 
   const got = {};
