@@ -1363,7 +1363,9 @@ check('waves cue objectives, and securing one pays out', async (page) => {
       hidden: document.getElementById('objective').classList.contains('hidden'),
     };
   });
-  expect(JSON.stringify(r.schedule) === JSON.stringify([null, 'cache', 'hold', 'cache', null, 'hold']),
+  // the operation's plan (`story.js`): wave 1 clean, a warlord's wave left
+  // for its evac
+  expect(JSON.stringify(r.schedule) === JSON.stringify([null, 'relay', 'cache', 'sabotage', null, 'rescue']),
     `unexpected wave schedule: ${JSON.stringify(r.schedule)}`);
   expect(r.spawnDist > 25, `the cache landed only ${r.spawnDist} m away`);
   expect(r.site.ground < 0.4 && !r.site.occupied && r.site.inBounds,
@@ -1510,6 +1512,347 @@ check('a warlord going down opens an evac window', async (page) => {
   expect(r.done && r.secured === 1, 'reaching the evac point did not close it');
   expect(r.gained === 750 * 5, `evac paid ${r.gained} on wave 5`);
   expect(r.hp === 100 && r.nades === 5, `evac did not fully rearm: hp ${r.hp}, frags ${r.nades}`);
+  return r;
+});
+
+check('the operation runs in acts, and HALCYON calls each one', async (page) => {
+  // A run is Operation ASHFALL (`story.js`): a briefing before it, three acts
+  // over twelve waves with an objective each wave from the operation's plan,
+  // the convoy on the twelfth, and endless survival once it is out. The
+  // handler calls each act and each wave over the radio, and the debrief
+  // says how far the operation got. This plays the script off the real wave
+  // manager, wins the convoy and dies, reading what was shown and said.
+  const r = await page.evaluate(async () => {
+    const g = window.__game;
+    const { ACTS, FINALE, RADIO } = await import('/src/story.js');
+    // DEPLOY reads the briefing first
+    document.getElementById('start-btn').click();
+    const briefing = {
+      state: g.state,
+      shown: !document.getElementById('briefing').classList.contains('hidden'),
+      paragraphs: document.querySelectorAll('#brief-text p').length,
+      acts: document.querySelectorAll('#brief-acts li').length,
+    };
+    document.getElementById('brief-btn').click();
+    const began = g.state;
+    g.input.locked = true;
+    window.__step(0.1);
+    const radioUp = !document.getElementById('radio').classList.contains('hidden')
+      && document.getElementById('radio-text').textContent === RADIO.deploy[0];
+
+    // the plan and the calls, wave by wave
+    const plan = [], heard = {};
+    const kinds = (from, to) => {
+      const out = [];
+      for (let w = from; w <= to; w++) {
+        g.wave = w - 1; g.objectiveCue = null; g.objectives.reset();
+        const said = g.hud.radioLog.length;
+        g.startWave();
+        out.push(g.objectiveCue ? g.objectiveCue.kind : null);
+        heard[w] = g.hud.radioLog.slice(said);
+        g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+      }
+      return out;
+    };
+    plan.push(...kinds(1, FINALE + 2));
+    const actCalls = ACTS.map((a) => ({ from: a.from, said: heard[a.from].includes(RADIO.act[a.act][0]) }));
+    const actLines = new Set(Object.values(RADIO.act).map((l) => l[0]));
+    const strayActs = Object.entries(heard).filter(([w, lines]) => !ACTS.some((a) => a.from === +w)
+      && lines.some((l) => actLines.has(l))).map(([w]) => +w);
+
+    // the convoy, held to the end
+    g.startWave = () => {};
+    g.objectiveCue = null;
+    g.objectives.reset();
+    g.wave = FINALE;
+    const o = g.objectives.start('convoy');
+    g.player.reset(o.x, o.z);
+    window.__step(o.def.channel + 1);
+    const complete = g.op.complete;
+    const said = g.hud.radioLog.includes(RADIO.complete[0]);
+    // and after it, the city does not stop
+    g.startWave = Object.getPrototypeOf(g).startWave.bind(g);
+    const after = kinds(FINALE + 1, FINALE + 6);
+
+    // the debrief
+    g.damagePlayer(1e4, null);
+    await new Promise((res) => setTimeout(res, 1900));
+    const debrief = document.getElementById('debrief').textContent;
+    // the debrief wrote a best score that outlives the page, and the records
+    // check after this one reads exactly that
+    localStorage.removeItem('ashfall.records');
+    return { briefing, began, radioUp, plan, actCalls, strayActs, complete, said, after, debrief };
+  });
+  expect(r.briefing.state === 'briefing' && r.briefing.shown && r.briefing.paragraphs >= 3 && r.briefing.acts === 3,
+    `DEPLOY did not open the briefing: ${JSON.stringify(r.briefing)}`);
+  expect(r.began === 'playing', `BEGIN left the game in ${r.began}`);
+  expect(r.radioUp, 'the deploy call never came up on the radio');
+  expect(JSON.stringify(r.plan) === JSON.stringify(
+    [null, 'relay', 'cache', 'sabotage', null, 'rescue', 'hunt', 'relay', 'rescue', null, 'sabotage', 'convoy', 'convoy', 'convoy']),
+  `the operation's plan came out ${JSON.stringify(r.plan)}`);
+  expect(r.actCalls.every((a) => a.said), `an act opened unannounced: ${JSON.stringify(r.actCalls)}`);
+  expect(r.strayActs.length === 0, `an act was announced on waves ${r.strayActs}`);
+  expect(r.complete && r.said, `holding the convoy did not complete the operation (${r.complete}, said ${r.said})`);
+  expect(!r.after.includes('convoy') && r.after.filter(Boolean).length >= 4,
+    `after the convoy the waves brought ${JSON.stringify(r.after)}`);
+  expect(/COMPLETE/.test(r.debrief), `the debrief reads "${r.debrief}"`);
+  return r;
+});
+
+check('a relay is restored on a roof, up a stairwell', async (page) => {
+  // A relay mast stands on the roof of a building with a stairwell, and is
+  // only worked from the roof: the shop under it, a storey and more below,
+  // does not count. Standing on it brings the sector up the stairs after you.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.wave = 2;
+    const o = g.objectives.start('relay');
+    const stair = g.world.stairs.find((s) => o.x > s.roof.minX && o.x < s.roof.maxX && o.z > s.roof.minZ && o.z < s.roof.maxZ);
+    const deck = g.world.groundHeight(o.x, o.z, 0.12, o.y + 0.3);
+    // under it, on the street or in the shop
+    g.player.reset(o.x, o.z);
+    const below = +g.player.feetY.toFixed(2);
+    window.__step(4);
+    const fromBelow = +o.progress.toFixed(2);
+    // on the roof
+    g.player.reset(o.x, o.z);
+    g.player.feetY = o.y;
+    g.player.position.y = o.y + g.player.eyeHeight;
+    window.__step(o.def.channel + 1);
+    return {
+      kind: o.kind, onStair: !!stair, siteY: +o.y.toFixed(2), deck: +deck.toFixed(2), below, fromBelow,
+      feet: +g.player.feetY.toFixed(2), done: !g.objectives.active, relays: g.op.relay,
+      said: g.hud.radioLog.some((l) => /[Rr]elay is/.test(l)),
+    };
+  });
+  expect(r.kind === 'relay', `a relay came out as ${r.kind}`);
+  expect(r.onStair && r.siteY > 6, `the relay is not on a stair roof: ${JSON.stringify(r)}`);
+  expect(Math.abs(r.deck - r.siteY) < 0.05, `nothing to stand on at the mast: deck ${r.deck} under a site at ${r.siteY}`);
+  expect(r.fromBelow === 0, `working it from ${r.below} m, under the roof, made ${r.fromBelow} s of progress`);
+  expect(r.done && r.relays === 1 && r.said, `holding the mast did not restore it: ${JSON.stringify(r)}`);
+  return r;
+});
+
+check('a charge on a fuel dump draws them to it, and blows what it reaches', async (page) => {
+  // Sabotage: plant a charge on a burning drum, then keep the Cinder off it
+  // until it blows. While it is live, a hostile that cannot see you goes for
+  // the charge rather than for you, and one that reaches it with you stood
+  // off pulls it. Left alone it blows, and the blast is yours.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.wave = 4;
+    const W = g.world;
+    const open = (x, z) => Math.abs(x) < W.bounds - 4 && Math.abs(z) < W.bounds - 4
+      && !g.nav.solidAt(x, z) && W.groundHeight(x, z, 0.12, 0.6) < 0.5 && !W.blocked(x, z, 0.6, 0.9);
+    const arm = () => {
+      const o = g.objectives.start('sabotage');
+      // plant it from beside the drum
+      for (const a of [0, 1.6, 3.1, 4.7]) {
+        const x = o.x + Math.cos(a) * 1.3, z = o.z + Math.sin(a) * 1.3;
+        if (!W.blocked(x, z, 0.4, o.y + 0.9)) { g.player.reset(x, z); break; }
+      }
+      window.__step(o.def.channel + 0.4);
+      return o;
+    };
+    const o = arm();
+    const atDrum = g.fireBarrels.some((b) => Math.hypot(b.flame.position.x - o.x, b.flame.position.z - o.z) < 0.05);
+    const armed = o.stage === 'fuse' && !!g.lure;
+
+    // a scavenger 14 m off the charge, and the player 75 m beyond it, out of
+    // its sight: coming for the player is walking away from the charge
+    // (a scavenger sees 55 m: the player is past that from it)
+    let spot = null;
+    for (const far of [76, 72, 68]) {
+      for (let k = 0; k < 48 && !spot; k++) {
+        const a = (k / 48) * Math.PI * 2, ux = Math.cos(a), uz = Math.sin(a);
+        const sx = o.x + ux * 12, sz = o.z + uz * 12, px = o.x + ux * far, pz = o.z + uz * far;
+        // a straight walk in to the drum, whose own cell is solid
+        if (open(sx, sz) && open(px, pz) && g.nav.clearLine(sx, sz, o.x + ux * 1.6, o.z + uz * 1.6)) spot = { sx, sz, px, pz };
+      }
+    }
+    g.player.reset(spot.px, spot.pz);
+    const e = g.spawnEnemy('scavenger');
+    e.pos.set(spot.sx, W.groundHeight(spot.sx, spot.sz, 0.12, 0.6), spot.sz);
+    e.group.position.copy(e.pos);
+    e.markWatchdog(g.player);
+    e.alert(g.time, 0);
+    let closest = Infinity;
+    for (let f = 0; f < 60 * 8 && g.objectives.active; f++) {
+      g.time += 1 / 60; g.step(1 / 60);
+      closest = Math.min(closest, Math.hypot(e.pos.x - o.x, e.pos.z - o.z));
+    }
+    const pulled = !g.objectives.active && o.reason === 'pulled';
+
+    // again, held: one stands by the charge and the player stands off
+    e.alive = false; e.group.visible = false;
+    g.objectives.reset();
+    const o2 = arm();
+    const kills = g.kills;
+    const by = g.spawnEnemy('scavenger');
+    by.pos.set(o2.x + 2.6, W.groundHeight(o2.x + 2.6, o2.z, 0.12, 0.6), o2.z);
+    by.group.position.copy(by.pos);
+    by.update = () => {};
+    for (const a of [0, 1.6, 3.1, 4.7]) {
+      const x = o2.x + Math.cos(a) * 12, z = o2.z + Math.sin(a) * 12;
+      if (open(x, z)) { g.player.reset(x, z); break; }
+    }
+    const feed = [];
+    const kill = g.hud.kill.bind(g.hud);
+    g.hud.kill = (who, weapon, hs) => { feed.push(weapon); kill(who, weapon, hs); };
+    window.__step(o2.def.fuse + 1);
+    return {
+      atDrum, armed, closest: +closest.toFixed(1), pulled, reason: o.reason || null,
+      blew: g.op.sabotage === 1, byAlive: by.alive, killed: g.kills - kills, feed,
+      hp: Math.round(g.player.health),
+    };
+  });
+  expect(r.atDrum, 'the charge is not on a burning drum');
+  expect(r.armed, 'planting it did not arm it');
+  expect(r.pulled, `a scavenger out of sight of the player came to ${r.closest} m of a live charge and did not pull it`);
+  expect(r.blew, 'a charge held to the end did not blow the dump');
+  expect(!r.byAlive && r.killed === 1 && r.feed.includes('CHARGE'),
+    `the blast did not kill what stood by it, credited: ${JSON.stringify(r)}`);
+  return r;
+});
+
+check('a lieutenant makes for the edge with an escort, and dies or gets away', async (page) => {
+  // The hunt: a marked lieutenant crosses the sector to its far edge by his
+  // own route field, and his escort keeps with him until something tells it
+  // about you. Kill him before he reaches it; if he gets there he is gone.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.wave = 7;
+    const W = g.world, lim = W.bounds - 6;
+    const o = g.objectives.start('hunt');
+    const lt = o.target;
+    const escort = g.enemies.filter((e) => e.escort === lt);
+    // somewhere far from both him and his exit, out of everyone's sight
+    let far = null, fd = 0;
+    for (const [x, z] of [[-lim, -lim], [-lim, lim], [lim, -lim], [lim, lim], [0, -lim], [0, lim], [-lim, 0], [lim, 0]]) {
+      if (g.nav.solidAt(x, z) || W.blocked(x, z, 0.6, 0.9)) continue;
+      const d = Math.min(Math.hypot(x - lt.pos.x, z - lt.pos.z), Math.hypot(x - o.exit.x, z - o.exit.z));
+      if (d > fd) { fd = d; far = { x, z }; }
+    }
+    g.player.reset(far.x, far.z);
+    const exitAt = (e) => Math.hypot(o.exit.x - e.pos.x, o.exit.z - e.pos.z);
+    const start = exitAt(lt);
+    let apart = 0, n = 0, jump = 0, last = lt.pos.clone();
+    for (let f = 0; f < 60 * 12; f++) {
+      g.time += 1 / 60; g.step(1 / 60);
+      jump = Math.max(jump, lt.pos.distanceTo(last)); last.copy(lt.pos);
+      if (f % 30 === 0) for (const e of escort) { if (!e.alerted) { apart += Math.hypot(e.pos.x - lt.pos.x, e.pos.z - lt.pos.z); n++; } }
+    }
+    const gained = start - exitAt(lt);
+    const marked = Math.hypot(o.x - lt.pos.x, o.z - lt.pos.z);
+    const V = lt.pos.constructor;
+    g.registerHit(lt, lt.damage(1e6, 'body', new V(1, 0, 0), lt.pos.clone()), 'TEST', false);
+    window.__step(0.2);
+    const killed = { done: !g.objectives.active, hunts: g.op.hunt };
+
+    // and one that gets there
+    for (const e of g.enemies) { e.alive = false; e.group.visible = false; }
+    const o2 = g.objectives.start('hunt');
+    const lt2 = o2.target;
+    lt2.pos.set(o2.exit.x + 1, lt2.pos.y, o2.exit.z);
+    window.__step(0.2);
+    return {
+      lieutenant: lt.lieutenant, escorts: escort.length, startD: +start.toFixed(1), gained: +gained.toFixed(1),
+      apart: n ? +(apart / n).toFixed(1) : null, samples: n, jump: +jump.toFixed(2), marked: +marked.toFixed(2),
+      killed, escaped: o2.reason, gone: !lt2.alive, lost: g.objectivesLost,
+    };
+  });
+  expect(r.lieutenant && r.escorts === 3, `${r.escorts} escorts on the lieutenant`);
+  expect(r.gained > 12, `in 12 s the lieutenant got ${r.gained} m nearer an exit ${r.startD} m off`);
+  expect(r.jump < 1, `the lieutenant moved ${r.jump} m in one frame — relocated, not walking`);
+  expect(r.samples > 10 && r.apart < 6, `his escort stood ${r.apart} m from him on average (${r.samples} samples)`);
+  expect(r.marked < 0.05, `the marker is ${r.marked} m off the lieutenant`);
+  expect(r.killed.done && r.killed.hunts === 1, `killing him did not end the hunt: ${JSON.stringify(r.killed)}`);
+  expect(r.escaped === 'escaped' && r.gone && r.lost === 1, `one at his exit did not get away: ${JSON.stringify(r)}`);
+  return r;
+});
+
+check('a holdout is cut loose, follows you to the pickup, and is not a target', async (page) => {
+  // A rescue: a survivor gone to ground in a shop, cut loose, and walked to a
+  // pickup. They follow by the hostiles' own route field; they do not count
+  // toward the wave, a round goes past them, and anything near wears them
+  // down — which is what makes walking them out a job.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {};
+    g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.wave = 6;
+    const W = g.world;
+    const o = g.objectives.start('rescue');
+    const h = o.target;
+    const inRoom = W.rooms.some((m) => o.x > m.minX && o.x < m.maxX && o.z > m.minZ && o.z < m.maxZ);
+    const counted = g.aliveCount;
+
+    // a round at their chest from a metre off goes past them — with their
+    // rig where they stand: nothing has stepped them since they were placed
+    h.group.updateMatrixWorld(true);
+    const V = h.pos.constructor;
+    const chest = new V(h.pos.x, h.pos.y + 1.2, h.pos.z);
+    const shoot = () => {
+      g.camera.position.set(chest.x, chest.y, chest.z + 1);
+      g.hitscan(new V(0, 0, -1), g.weapons.def);
+    };
+    const hp0 = h.hp;
+    shoot();
+    const shotHp = h.hp;
+    // the same shot at a hostile in the same place lands, so the setup is real
+    h.pos.x += 50; h.group.position.copy(h.pos); h.update(0, g.time, g.player, W);
+    const s = g.spawnEnemy('scavenger');
+    s.pos.set(chest.x, chest.y - 1.2, chest.z); s.group.position.copy(s.pos); s.update = () => {};
+    s.group.updateMatrixWorld(true);
+    const sHp = s.hp;
+    shoot();
+    const hostileHit = s.hp < sHp;
+    h.pos.x -= 50; h.group.position.copy(h.pos);
+    // and a scavenger on top of them wears them down
+    s.pos.set(h.pos.x + 1.2, h.pos.y, h.pos.z); s.alerted = true;
+    window.__step(1);
+    const drained = Math.round(hp0 - h.hp);
+    s.alive = false; s.group.visible = false;
+    h.hp = h.maxHp;
+
+    // cut loose
+    g.player.reset(o.x, o.z);
+    window.__step(o.def.channel + 0.4);
+    const stage = o.stage, following = h.following;
+    // to the pickup (the marker has moved there), and wait
+    const pick = { x: o.x, z: o.z };
+    const startD = Math.hypot(h.pos.x - pick.x, h.pos.z - pick.z);
+    g.player.reset(pick.x, pick.z);
+    let t = 0;
+    while (g.objectives.active && t < 60) { window.__step(1); t++; }
+    return {
+      inRoom, counted, shot: shotHp === hp0, hostileHit, drained, stage, following,
+      startD: +startD.toFixed(1), took: t, done: !g.objectives.active, rescued: g.op.rescue,
+      left: +Math.hypot(h.pos.x - pick.x, h.pos.z - pick.z).toFixed(1),
+    };
+  });
+  expect(r.inRoom, 'the holdout is not in a shop');
+  expect(r.counted === 0, `the holdout counts as ${r.counted} hostile alive`);
+  expect(r.hostileHit, 'the shot missed a hostile too: the setup measures nothing');
+  expect(r.shot, 'a round at the holdout hit them');
+  expect(r.drained > 5, `a scavenger beside the holdout took ${r.drained} hp off them in a second`);
+  expect(r.stage === 'escort' && r.following, `cutting them loose left stage ${r.stage}, following ${r.following}`);
+  expect(r.startD > 30, `the pickup is only ${r.startD} m from the shop`);
+  expect(r.done && r.rescued === 1, `they never reached a pickup ${r.startD} m off: ${r.left} m short after ${r.took} s`);
   return r;
 });
 
@@ -3898,7 +4241,46 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
     g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
     const w = g.world, p = g.player;
     const step = (n, each) => { for (let f = 0; f < n; f++) { g.time += 1 / 30; p.health = 100; each?.(f); g.step(1 / 30); } };
-    const out = { stairs: w.stairs.length, walked: 0, stuck: [], held: 0, edges: 0, party: 0, partyHeld: 0, shots: [], climbs: 0, rooms: 0, follow: [] };
+    const out = { stairs: w.stairs.length, walked: 0, stuck: [], held: 0, edges: 0, party: 0, partyHeld: 0, shots: [], climbs: 0, rooms: 0, follow: [], loose: {} };
+
+    // Nothing drawn across a shaft that holds nothing up. A ledge round the
+    // building and a band near its top were slabs right through it, with no
+    // collider: a floor you saw in the stairwell and walked through. Sampled
+    // on a grid across each shaft, because a slab's triangles have their
+    // corners — and their middles — out at the building's.
+    const tris = [];
+    g.city.traverse((m) => {
+      if (!m.isMesh || !m.geometry) return;
+      m.updateMatrixWorld();
+      const pos = m.geometry.attributes.position, idx = m.geometry.index, n = idx ? idx.count / 3 : pos.count / 3;
+      const P = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+      for (let t = 0; t < n; t++) {
+        for (let k = 0; k < 3; k++) P[k].fromBufferAttribute(pos, idx ? idx.getX(t * 3 + k) : t * 3 + k).applyMatrix4(m.matrixWorld);
+        if (Math.abs(P[0].y - P[1].y) > 0.01 || Math.abs(P[0].y - P[2].y) > 0.01) continue;
+        tris.push([P[0].x, P[0].z, P[1].x, P[1].z, P[2].x, P[2].z, P[0].y]);
+      }
+    });
+    const inTri = (px, pz, [ax, az, bx, bz, cx, cz]) => {
+      const d1 = (px - bx) * (az - bz) - (ax - bx) * (pz - bz);
+      const d2 = (px - cx) * (bz - cz) - (bx - cx) * (pz - cz);
+      const d3 = (px - ax) * (cz - az) - (cx - ax) * (pz - az);
+      return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+    };
+    for (const s of w.stairs) {
+      const q = s.inner;
+      const near = tris.filter((t) => t[6] > s.floor + 0.05 && t[6] < s.hut + 0.3
+        && Math.max(t[0], t[2], t[4]) > q.minX && Math.min(t[0], t[2], t[4]) < q.maxX
+        && Math.max(t[1], t[3], t[5]) > q.minZ && Math.min(t[1], t[3], t[5]) < q.maxZ);
+      for (let x = q.minX + 0.15; x < q.maxX - 0.1; x += 0.4) for (let z = q.minZ + 0.15; z < q.maxZ - 0.1; z += 0.4) {
+        for (const t of near) {
+          if (!inTri(x, z, t)) continue;
+          const y = t[6];
+          const held = w.boxes.some((b) => x >= b.minX - 0.01 && x <= b.maxX + 0.01 && z >= b.minZ - 0.01 && z <= b.maxZ + 0.01
+            && (Math.abs(y - b.top) < 0.03 || Math.abs(y - (b.base || 0)) < 0.03 || (y > (b.base || 0) && y < b.top)));
+          if (!held) out.loose[y.toFixed(2)] = (out.loose[y.toFixed(2)] || 0) + 1;
+        }
+      }
+    }
 
     for (const s of w.stairs) {
       // walk the stair's own points, looking at the next one
@@ -4018,6 +4400,7 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
   // onto its roof; every edge held, party walls included; every shot stopped
   // on the deck; a scavenger up in 10-12 s and back down in 8 s.
   expect(r.stairs >= 6, `only ${r.stairs} stairwells on this seed`);
+  expect(Object.keys(r.loose).length === 0, `something drawn across a stairwell holds nothing up, at heights ${JSON.stringify(r.loose)}`);
   expect(r.walked === r.stairs, `${r.stairs - r.walked} of ${r.stairs} stairwells could not be walked up: ${JSON.stringify(r.stuck.slice(0, 3))}`);
   expect(r.edges >= r.stairs * 2 && r.held === r.edges, `walked off ${r.edges - r.held} of ${r.edges} roof edges`);
   expect(r.party > 0 && r.partyHeld === r.party, `jumped ${r.party - r.partyHeld} of ${r.party} party walls`);
@@ -4027,6 +4410,34 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
   expect(r.follow.every((f) => f.upAt !== null), `a scavenger never followed the player up: ${JSON.stringify(r.follow)}`);
   expect(r.follow.every((f) => f.downAt !== null), `a scavenger never came back down after the player: ${JSON.stringify(r.follow)}`);
   return { stairs: r.stairs, edges: r.edges, party: r.party, shots: r.shots.length, climbs: `${r.climbs}/${r.rooms}`, follow: r.follow };
+});
+
+check('sprinting until you are winded does not shake the gun', async (page) => {
+  // Sprint stopped at an empty bar and started again a frame later, with the
+  // key still held, and the gun swapped between its sprint and its run pose
+  // on every frame — reported from play as the gun shaking in your hands
+  // after a jump or a kerb, which is only how long it took to run dry.
+  const r = await page.evaluate(() => {
+    const g = window.__game;
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    const p = g.player, keys = g.input.keys;
+    p.reset(0, 0); p.yaw = 0;
+    keys.add('KeyW'); keys.add('ShiftLeft');
+    let flips = 0, last = p.sprinting, winded = 0;
+    for (let f = 0; f < 600; f++) {
+      g.time += 1 / 60; p.health = 100; g.step(1 / 60);
+      if (p.sprinting !== last) flips++;
+      last = p.sprinting;
+      if (p.winded) winded++;
+    }
+    keys.clear();
+    return { flips, winded };
+  });
+  // Measured: 285 flips in ten seconds with the old rule, 5 now.
+  expect(r.winded > 0, 'ten seconds of sprinting never ran the bar dry');
+  expect(r.flips <= 8, `sprint switched on and off ${r.flips} times in ten seconds of holding it`);
+  return r;
 });
 
 check('hostiles use the buildings: a frag through the door, posts on the exits, a push on your reload', async (page) => {
@@ -4616,7 +5027,8 @@ check('a hostile faces you, and holds its weapon in both hands', async (page) =>
       }
       return +worst.toFixed(3);
     };
-    for (const key of Object.keys(g.enemyTypes)) {
+    // a holdout is not a hostile: it faces the way it walks, not at you
+    for (const key of Object.keys(g.enemyTypes).filter((k) => !g.enemyTypes[k].friendly)) {
       const e = g.spawnEnemy(key);
       e.pos.set(p.x + 9, g.world.groundHeight(p.x + 9, p.z, 0.12, 99), p.z + 3);
       e.group.position.copy(e.pos);
@@ -4843,7 +5255,8 @@ check('a hostile is a body in kit, not a stack of boxes, and costs a spawn what 
     }
     return out;
   });
-  const cost = { scavenger: 100, raider: 100, shotgunner: 100, marksman: 112, brute: 100 };
+  // the holdout came later, and is held to what it costs now
+  const cost = { scavenger: 100, raider: 100, shotgunner: 100, marksman: 112, brute: 100, holdout: 100 };
   for (const [key, row] of Object.entries(r)) {
     expect(row.square < 0.3, `${Math.round(row.square * 100)}% of a ${key}'s body faces square down an axis: it is built of boxes`);
     expect(row.draws === cost[key], `a ${key} costs the spawn stream ${row.draws} draws, not the ${cost[key]} it did`);
@@ -5103,10 +5516,12 @@ reloadGame = game.reload;
 let failed = 0;
 
 // `--only=text` runs just the checks whose name contains it. The suite is
-// twenty-one checks and several minutes; when one of them is what you are
-// working on, waiting for the other twenty is how you stop running it.
+// most of an hour; when one check is what you are working on, waiting for
+// the rest is how you stop running it.
 const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').split('=')[1];
-const selected = (ONLY ? checks.filter((c) => c.name.includes(ONLY)) : checks).filter((c, i) => inShard(i));
+// Alternatives go between bars, `--only=a|b`, and run in suite order: what
+// one check leaves in the browser is what the next one finds.
+const selected = (ONLY ? checks.filter((c) => ONLY.split('|').some((o) => c.name.includes(o))) : checks).filter((c, i) => inShard(i));
 if (SHARD.length === 2 && !(SHARD[0] >= 1 && SHARD[0] <= SHARD[1])) {
   console.log(`--shard wants i/n with 1 <= i <= n, got ${SHARD.join('/')}`);
   process.exit(1);

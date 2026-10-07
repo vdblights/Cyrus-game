@@ -130,6 +130,7 @@ const STEP_HEIGHT = 0.55;      // how high you can walk up without jumping
 const BODY_HEIGHT = 1.85;      // feet to the crown, for ceilings
 const FALL_SAFE = 13;          // impact speed you can absorb unhurt (~4 m drop)
 const MANTLE_HEIGHT = 1.8;     // highest ledge you can haul yourself onto
+const WIND_BACK = 0.33;        // stamina back before a winded sprint picks up again
 // A pull-up runs at a roughly constant climb rate rather than a fixed
 // duration: one fixed duration means a 0.6 m kerb and a 1.8 m wall move the
 // camera at three times the speed of each other, and the tall one reads as
@@ -174,6 +175,7 @@ export class Player {
     this.health = 100;
     this.maxHealth = 100;
     this.stamina = 1;
+    this.winded = false;
     this.lastDamageTime = -99;
     this.bobPhase = 0;
     this.yaw = 0;
@@ -260,7 +262,13 @@ export class Player {
     // firing or aiming drops you out of a sprint
     const wantSprint = (input.down('ShiftLeft') || input.down('ShiftRight'))
       && iz < 0 && !this.crouching && !input.aim && !input.fire;
-    this.sprinting = wantSprint && this.stamina > 0.02;
+    // Run out and you are winded until a third of it is back. Sprint used to
+    // turn off at empty and on again a frame later, every frame, with the
+    // key held: the gun swapped between its sprint and run poses sixty times
+    // a second, reported from play as the gun shaking in your hands.
+    if (this.stamina <= 0.02) this.winded = true;
+    else if (this.stamina >= WIND_BACK) this.winded = false;
+    this.sprinting = wantSprint && !this.winded;
 
     if (this.sprinting && moving) this.stamina = Math.max(0, this.stamina - dt * 0.28);
     else this.stamina = Math.min(1, this.stamina + dt * (moving ? 0.16 : 0.32));

@@ -85,6 +85,10 @@
     </div>
     <div id="cook-bar" class="hidden"><div id="cook-fill"></div></div>
     <div id="wave-banner" class="hidden"></div>
+    <div id="radio" class="hidden">
+      <div class="radio-head"><span class="radio-dot"></span><span id="radio-from">HALCYON</span></div>
+      <div id="radio-text"></div>
+    </div>
     <div id="pickup-toast"></div>
   </div>
 
@@ -92,7 +96,7 @@
   <div id="menu" class="overlay">
     <div class="menu-inner">
       <h1 class="title">ASHFALL</h1>
-      <p class="subtitle">Sector 7 &mdash; abandoned. Something still moves down there.</p>
+      <p class="subtitle">Carrow, Sector 7 &mdash; buried in ash. Someone is still alive down there.</p>
       <div id="loading" class="loading busy">
         <div class="survey">
           <canvas id="survey"></canvas>
@@ -156,6 +160,18 @@
     </div>
   </div>
 
+  <div id="briefing" class="overlay hidden">
+    <div class="menu-inner brief">
+      <div class="brief-kicker">OPERATION</div>
+      <h2 class="title small">ASHFALL</h2>
+      <p class="subtitle">CARROW &middot; SECTOR 7 &middot; CALLSIGN WREN &middot; HANDLER HALCYON</p>
+      <div id="brief-text"></div>
+      <ol id="brief-acts"></ol>
+      <button id="brief-btn" class="btn">BEGIN</button>
+      <p class="armoury-hint">Enter to begin &middot; the operation runs twelve waves, and the city does not stop after it</p>
+    </div>
+  </div>
+
   <div id="pause" class="overlay hidden">
     <div class="menu-inner">
       <h2 class="title small">PAUSED</h2>
@@ -183,6 +199,7 @@
   <div id="gameover" class="overlay hidden">
     <div class="menu-inner">
       <h2 class="title small dead">YOU DIED</h2>
+      <div id="debrief"></div>
       <div id="stats"></div>
       <button id="retry-btn" class="btn">REDEPLOY</button>
     </div>

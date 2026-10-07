@@ -460,3 +460,41 @@ kbd {
 .shelf .pips i { display: inline-block; width: 9px; height: 9px; margin-right: 3px; border: 1px solid var(--amber-dim); vertical-align: 1px; }
 .shelf .pips i.on { background: var(--amber); border-color: var(--amber); }
 .armoury-hint { font-size: 12px; color: rgba(255, 220, 180, 0.5); letter-spacing: 0.06em; margin-top: 10px; }
+
+/* ---------------- radio, briefing, debrief ---------------- */
+#radio {
+  position: absolute; left: 26px; bottom: 132px; width: min(380px, calc(100vw - 52px));
+  padding: 10px 14px 12px; background: rgba(8, 10, 12, 0.62);
+  border-left: 3px solid var(--amber); font-size: 15px; line-height: 1.35;
+  animation: radio-in 0.25s ease-out;
+}
+#radio .radio-head { font-size: 11px; letter-spacing: 0.24em; color: var(--amber); margin-bottom: 4px; }
+#radio .radio-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 8px;
+  background: var(--amber); animation: blink 0.9s infinite;
+}
+#radio-text { color: var(--hud); }
+@keyframes radio-in { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+
+/* taller than a short window, it scrolls from its top rather than
+   centring its title off the screen */
+#briefing { overflow-y: auto; align-items: safe center; }
+.brief { max-width: 620px; text-align: left; padding: 18px 30px; }
+.brief .title, .brief .subtitle, .brief-kicker { text-align: center; }
+.brief .subtitle { margin-bottom: 16px; }
+.brief-kicker { letter-spacing: 0.4em; font-size: 12px; color: var(--amber-dim); }
+#brief-text p { margin: 0 0 8px; font-size: 15px; line-height: 1.4; }
+#brief-acts { list-style: none; padding: 0; margin: 12px 0 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+#brief-acts li {
+  flex: 1 1 150px; padding: 8px 10px; border: 1px solid rgba(255, 179, 71, 0.3);
+  font-size: 12px; letter-spacing: 0.12em; color: var(--amber-dim);
+}
+#brief-acts li b { display: block; color: var(--amber); font-size: 14px; }
+.brief .btn { display: block; margin: 6px auto; }
+.brief .armoury-hint { text-align: center; }
+
+#debrief { margin-top: 10px; letter-spacing: 0.14em; color: var(--amber); font-size: 15px; }
+#debrief .tally { color: rgba(255, 220, 180, 0.85); letter-spacing: 0.06em; margin-top: 6px; }
+#debrief .tally b { color: var(--amber); }
+#debrief .quote { font-style: italic; color: rgba(255, 220, 180, 0.6); letter-spacing: 0.02em; margin-top: 10px; font-size: 14px; }
+@media (max-width: 520px) { #radio { bottom: 150px; font-size: 14px; } }

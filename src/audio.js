@@ -280,6 +280,13 @@ class Audio {
     this._noise(0.5, 'bandpass', 1200, 1.4, 0.05, 500);
   }
 
+  /** The handler keying up: a squelch and a burst of static. */
+  radio() {
+    if (!this.ctx) return;
+    this._tone('square', 1450, 1450, 0.05, 0.035);
+    this._noise(0.22, 'bandpass', 2400, 0.9, 0.05, 1700);
+  }
+
   objectiveTick() { if (this.ctx) this._tone('square', 880, 1120, 0.05, 0.07); }
 
   objectiveDone() {

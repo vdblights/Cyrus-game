@@ -13,6 +13,7 @@ npm start                      # serve at http://localhost:8000 (no deps needed)
 npm test                       # the headless suite (needs npm install first)
 npm test -- --shard=2/4        # every fourth check from the second, as CI runs it
 npm test -- --only=auto        # just the checks whose name contains "auto"
+npm test -- --only="a|b"       # either, in suite order, in one browser
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
@@ -55,7 +56,8 @@ builds, never to play.
 | `src/player.js` | `Input` and `Player`: look, movement, footing, health |
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
 | `src/enemies.js` | Archetypes, AI, procedural bodies, laser telegraph |
-| `src/objectives.js` | Site placement, channel state machine, marker, waypoint |
+| `src/objectives.js` | Site placement, channel and stage state machine, marker, waypoint, and the cast an objective puts on the map (a lieutenant, a holdout) |
+| `src/story.js` | Operation ASHFALL as data: the briefing, the acts, which objective each wave brings, and every line the handler says |
 | `src/armoury.js` | What a run can buy between waves, what each tier does, and the screen it is bought on |
 | `src/drops.js` | What a hostile drops: the ammunition can, medical case and grenade, and their halos |
 | `src/grenades.js` | Fuse, flight, bounce, detonation |
@@ -374,6 +376,37 @@ These each cost real debugging time. Changing them needs a reason.
   objective, the intermission before the next wave — ran out while nobody
   was playing. It stops while paused or in the armoury now. Measured by the
   armoury check: 0.12 s over five frames, against 0.
+- **A band round a building is a ring, not a slab.** The ledge at the
+  foot of every tower (`skirt`, 2.8-3.2 m) and the string course under its
+  cap were boxes the size of the footprint: inside a closed block nobody
+  saw them, but across an open ground floor the skirt was the ceiling you
+  saw, 25 cm under the slab you hit, and up a stairwell both were floors
+  with nothing under them, which you walked through — reported from play
+  as the building's floor cutting into the stairwell. `ringGeo` in
+  `city.js` draws the four sides only; the skirt is swapped to one inside a
+  reserve where the ground floor is open, so it costs the stream what it
+  did, and the band is decoration either way. The stairwell check samples a
+  grid across every shaft for flat faces that are neither on a collider nor
+  inside one — sampled, not read off triangle centres, because a slab's
+  triangles have their corners and their middles out at the building's
+  corners, and the first audit, reading centres, found nothing. With either
+  band put back as a slab, every stairwell on seed 1 reports it. A ring is
+  as deep as what shows of it and 2-3 cm into the wall, no deeper. The
+  first cut was 55 cm, the rim and most of the wall under it, and `what
+  stands on a perch holds you up` read four of those strips beside seed 1's
+  terraces as 55 cm shelves with nothing under their outer edge. The rim had
+  always been there and always been unsupported, but as one slab its
+  triangles' centres were inside the block, so the check never sampled it.
+  At 27 cm the strip is narrower than a foot, which the check already
+  skips, and the rim you see is the same.
+- **Sprint stops when you run dry and stays stopped until a third is
+  back** (`WIND_BACK`, `player.winded`). It used to cut out at an empty
+  bar and come back a frame later with the key held, every frame: the gun
+  swapped between its sprint and run poses sixty times a second, reported
+  from play as the gun shaking in your hands after a jump or a kerb — which
+  was only how long it took to run the bar down. `sprinting until you are
+  winded does not shake the gun`: 285 flips in ten seconds with the old
+  rule, 6 now.
 - **A fall lands on whatever it crossed in the frame.** Airborne footing
   asked `groundHeight` with a ceiling 2 cm over where the fall *ended*, so a
   landing that crossed a surface by more than that in one step went
@@ -1254,6 +1287,39 @@ These each cost real debugging time. Changing them needs a reason.
   time, and their clocks outlive the wave that called them. Refusing a cue
   while one was up meant whole waves passed with no objective at all; cues now
   queue and expire on their own deadline (`cueObjective`).
+- **The operation is data, and the cast is hostiles that read a flag.**
+  `story.js` is the briefing, the three acts, the plan (`objectiveFor`:
+  which objective each wave brings, the convoy until it is out, then a
+  rotation) and every radio line, picked by a count and never by
+  `Math.random`. So the story moves neither the layout nor the spawns,
+  and changing a line changes nothing else. What the newer objectives put
+  on the map is built out of `Enemy`, not beside it. **A holdout is an
+  archetype with `friendly`**, and five readers have to know it:
+  `aliveCount` (or the wave never clears while one lives), `hitscan` and
+  `meleeStrike` (it is not a target), `alert`/`hear` (it never fights), and
+  `explode`, which hurts it and credits nobody. It is drawn by its own
+  batches, which cost nothing while none is alive, and the boot compile
+  shows one with every other archetype. It follows by the route field
+  (`_follow`), straight at you only for the last 8 m, because a line of
+  sight out of a shop runs through windows. Pressed against a wall it
+  stands in the shoulder of cells the field blocks round every solid, where
+  `heading` has no answer, and steering at the player from there is
+  steering into the wall. A hostile gets out of that with its avoidance,
+  and a holdout has none, so `_route` steps to the cheapest open cell
+  beside it (`NavGrid.costAt`). Without that, on seed 1 a holdout cut loose
+  79 m from its pickup moved 6 m in a minute. **A lieutenant is a raider
+  with `flee`**, walking a second `NavGrid` built from his exit (the class
+  imports nothing, so a second instance is free of the stream). His
+  `escort`s keep with him until something alerts them. While a charge is
+  live, `game.lure` draws any alerted hostile that cannot see you to it.
+  All three are walking somewhere other than at you on purpose, so the
+  watchdog holds off for each of them; it would otherwise read a
+  lieutenant leaving as lost and relocate him. The new props are built in
+  a `reserve`, because the objective system is built after the city, where
+  the stream is picking spawns. Siting draws `Math.random` at run time, the
+  same as `findSite` always has. A charge blows on top of its drum
+  (`y + 1.1`): blown from the drum's middle, every blast line started
+  inside its collider, and nothing in reach was exposed.
 - **The stuck watchdog is a last resort, never a nudge.** It relocates a
   hostile 20-45 m away, usually out of view, so every false trigger is an
   enemy vanishing mid-charge in front of the player. Three guards keep it
@@ -1528,6 +1594,13 @@ reason was right there in the readers: a counter tops out at 1.28 m, and
 or not. Sample what a body can stand on (`ceilingAbove` again) before
 counting a refusal against the reader under test.
 
+Every check reloads the page, and `localStorage` outlives the reload.
+The operation check dies at wave 18 to read its debrief, which wrote a best
+score of 36,000, and `settings and records survive a reload`, three checks
+later, saved 4,321 under it and read back the larger. A check that ends a
+run takes its record back out (`ashfall.records`). `--only="a|b"` runs
+both in one browser, in suite order, which is how to see a leak like it.
+
 A check that samples "the first N" of a list is a check on the list's
 order. `a hostile follows you onto a car roof` took the first eight decks
 in `world.boxes`, which after the fountain became sixteen staves were all
@@ -1643,6 +1716,33 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The operation pass came out of one question from play: who are the
+enemies, why are they attacking us, and what are we trying to do? Asked
+back, the answers were a recovery operation (Carrow, the Cinder, WREN and
+HALCYON), told by a handler on the radio and a briefing card, in three
+acts over twelve waves with the convoy as a finale and endless survival
+after it, and all four objectives offered: a rooftop relay, sabotage, a
+hunt and a rescue. The invariant on the operation has the parts that
+bite. Five checks came with it, fifteen breaks between them, each
+confirmed to fail: the old schedule (the plan comes out cache and hold),
+the acts never announced, DEPLOY skipping the briefing, a convoy that
+never completes, a relay on the street, a relay counted from the shop
+under it (4 s of progress), no lure (a scavenger out of sight never came
+nearer the charge than 12 m), a charge that hurts no hostile, no flee (the
+lieutenant walked 26 m *away* from his exit, toward the player), no escort
+(12.8 m apart), the holdout counted as a hostile, shootable, never
+drained, without the field fallback (6 m in a minute), and never
+following. The shootable break first *passed*: the check shot the holdout
+the moment it was placed, before anything had brought its rig's matrices
+to where it stood, so the round was tested against where it spawned. The
+same thing is true of anything a check moves and then raycasts against
+without stepping; `updateMatrixWorld(true)` first. Rendering the cast is
+what found the holdout wearing the same red lenses as every hostile, which
+at any distance reads as one of them; it wears its band's mint now
+(`type.eye`). The briefing first clipped its own title in a 620 px window;
+it scrolls from its top now (`align-items: safe center`). Nothing is
+drawn a frame that was not before while none of the cast is alive.
 
 The tactics-and-armoury pass came straight after the stairs, as the two
 smaller things asked for alongside them: hostiles that use the buildings,
@@ -2729,9 +2829,13 @@ secure origin, which Vercel provides.
 
 Suggested next work, in the order I would do it:
 
-1. **Tune the objective economy.** The payouts (300/500/750 per wave) and the
-   clocks (55/80/65 s) are first guesses. Whether crossing the sector actually
-   beats holding the plaza is a play question, not a code one.
+1. **Tune the operation against play.** The payouts (300-1,500 a wave, in
+   `OBJECTIVE_PAY`), the clocks, the lieutenant's pace and the holdout's
+   drain are first guesses, and so is whether twelve waves is the right
+   length for an operation. Whether a holdout can be walked out at wave 9
+   with a wave on the street, and whether anyone reaches the convoy, are
+   play questions. A relay on a seed with no stairwell in reach falls back
+   to a beacon, which is right but unannounced.
 2. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
