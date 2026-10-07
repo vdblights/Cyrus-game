@@ -1877,9 +1877,9 @@ check('no shop is left bare', async (page) => {
   // a shelf unit against whatever wall is free. This counts what stands on
   // each room's floor by piece — a stack of crates is one, two shelves
   // meeting in a corner are two — and asks for two in every room. Three is
-  // what the furnishing aims at, and on seed 1 one room cannot hold it: a
-  // 10 m shop with a stairwell and doorways on two of its walls, where the
-  // table and a crate take the only wall left. The route field reaching every open cell of a
+  // what the furnishing aims at; on seed 1, 13 of 21 rooms hold it, and the
+  // rest are 10 m shops whose stairwell and doorways leave one blank wall,
+  // because nothing is put down under a window (`furnishBare` has why). The route field reaching every open cell of a
   // room is the open-buildings check's to read.
   const r = await page.evaluate(() => {
     const W = window.__game.world;
@@ -3660,8 +3660,10 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
       if (b.floor || b.top < 0.8 || b.top > 1.7) continue;
       const cx = b.cx ?? (b.minX + b.maxX) / 2, cz = b.cz ?? (b.minZ + b.maxZ) / 2;
       if (Math.abs(W.groundHeight(cx, cz, 0.42, 99) - b.top) > 0.05) continue;
-      // somewhere a body can stand, not a shop counter under the floors above
-      if (W.ceilingAbove(cx, cz, 0.42, b.top) < b.top + 1.9) continue;
+      // a car roof, a crate in the street: under the sky. Indoors a deck is a
+      // counter or a table, in reach of a hook from the floor, and a
+      // scavenger rightly fights you from there rather than climbing
+      if (W.ceilingAbove(cx, cz, 0.42, b.top) < Infinity) continue;
       // one deck per place: the fountain's rim is sixteen staves, first in
       // the list, and eight of them were all this sampled
       if (out.some((o) => Math.hypot(o.at[0] - cx, o.at[1] - cz) < 4)) continue;
@@ -4948,16 +4950,16 @@ check('a seed still lays out the city it did', async (page) => {
   // left with under three pieces of furniture (columns are not furniture)
   // gets a table, a crate stack, a shelf unit and if need be a lone crate
   // against a free wall (`furnishBare`), placed by hash inside the tower's
-  // reserve. Compared collider by collider on all three seeds: nothing
-  // gone, 58, 54 and 83 colliders added and every one inside a room, every
-  // other box in the order it was, the perches and the mark after boot
-  // identical. Before it: 2466/1462/12 a58d0856 (2108 63d74243),
+  // reserve, against blank walls only. Compared collider by collider on all
+  // three seeds: nothing gone, 31, 18 and 52 colliders added and every one
+  // inside a room, every other box in the order it was, the perches and
+  // the mark after boot identical. Before it: 2466/1462/12 a58d0856 (2108 63d74243),
   // 1915/1215/11 cf6519ea (1457 b4700b44), 2474/1469/10 7f188ef1 (1992
   // 99ee3366).
   const want = {
-    1: { boxes: 2524, solids: 1627, perches: 12, fp: 'a1e65227', placed: 2166, fpPlaced: '9be24262' },
-    7: { boxes: 1969, solids: 1363, perches: 11, fp: '3797df54', placed: 1511, fpPlaced: '6dfd56be' },
-    20260101: { boxes: 2557, solids: 1704, perches: 10, fp: '53d76d18', placed: 2075, fpPlaced: '9e19509b' },
+    1: { boxes: 2497, solids: 1540, perches: 12, fp: 'b323ced2', placed: 2139, fpPlaced: 'e5d0438f' },
+    7: { boxes: 1933, solids: 1268, perches: 11, fp: '9d1c7f32', placed: 1475, fpPlaced: 'de4ab94c' },
+    20260101: { boxes: 2526, solids: 1617, perches: 10, fp: 'e1cfa671', placed: 2044, fpPlaced: '9123bce6' },
   };
 
   const got = {};

@@ -300,12 +300,18 @@ These each cost real debugging time. Changing them needs a reason.
   crates go on. `furnishBare` in `city.js` runs after the rest of a room's
   furnishing and, while it holds fewer than three pieces of furniture,
   adds a table, a crate stack, a shelf unit and a lone crate against free
-  walls. Columns are structure, not furniture, and do not count, or a big
-  room with four columns and nothing else counted as furnished. Three
+  blank walls. Columns are structure, not furniture, and do not count, or a
+  big room with four columns and nothing else counted as furnished. Four
   things keep it honest. **Each piece stays clear of what moves through the
   room**: the stairwell's landing, a doorway's half-width and 1.2 m from
   every doorway (1.6 left the tightest rooms bare), and a metre from every
-  other piece, so the route field still reaches every open cell. **A
+  other piece, so the route field still reaches every open cell. **Nothing
+  goes under a window.** A shop window's sill is a 1.23 m ledge, and with a
+  table or a crate stack just inside it, `a pull-up carries the view`
+  climbed through a window, landed on the sill and settled onto the
+  furniture, a second rise inside one climb that lurched the view 2.3-2.4
+  cm in a frame against a 2 cm bar. Stacking crates against a window read
+  as a barricade, and it was tried, but the climb is what it buys. **A
   table's top and legs are its solids and a box the size of it is its
   collider**, so a body meets the table and a round goes under it between
   the legs. The shelf unit is the same, boards, sides and a back panel. A
@@ -316,14 +322,19 @@ These each cost real debugging time. Changing them needs a reason.
   and two shelves meeting in a corner as two; clustering touching boxes
   got both wrong. It is built inside the tower's reserve on hash salts
   nothing else uses, so it costs the stream nothing; the layout check was
-  re-measured once for it, collider by collider. On seed 1, 20 of 21 rooms
-  hold three or more; the last is a stair shop with doorways on two walls,
-  where a table and a crate take the only wall left. `no shop is left
+  re-measured once for it, collider by collider. On seed 1, 13 of 21 rooms
+  hold three or more and every room at least two; the rest are 10 m stair
+  shops whose shaft and doorways leave one blank wall. `no shop is left
   bare` asks for two in every room: 7 rooms short with the furnisher off
-  (the fewest 0) and 3 with columns counted as furniture. What it cost:
-  solids 1,462 → 1,627 on seed 1, and a pellet's raycast and the game step
-  in a fight both within noise (0.56-0.63 ms against 0.58-0.83 a pellet,
-  0.4-0.5 ms against 0.4 a step, twice each).
+  (the fewest 0) and 3 with columns counted as furniture. What it cost,
+  measured with pieces on the windows too (165 solids, against 78 now):
+  a pellet's raycast and the game step in a fight both within noise
+  (0.56-0.63 ms against 0.58-0.83 a pellet, 0.4-0.5 ms against 0.4 a
+  step, twice each). Furniture changes what the box list holds, and two
+  checks that sample it moved: `a hostile follows you onto a car roof`
+  sampled tables, where a scavenger rightly hooks you from the floor
+  rather than climbing, so it samples decks under the open sky now; and
+  the pull-up check found the window climb above.
 - **A box off the ground may be a deck: a ceiling to everything but the
   feet over it.** Thirteen of seed 1's 21 open ground floors — every one
   under a roof no higher than 14 m (`STAIR.top`) with a corner whose walls

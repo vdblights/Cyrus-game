@@ -2673,8 +2673,8 @@ export function buildCity(scene, painted = null) {
    * keeps out of the stairwell's way (`shaft.blocks`), a doorway's
    * half-width and 1.2 m from every doorway, and a metre from everything
    * else furnished, so the route field still reaches the whole floor.
-   * Crates and shelving go on a blank wall where there is one and any wall
-   * where not; a table fits under a window's sill. Every roll is a hash of
+   * Everything goes against a blank wall (`site` has why). Every roll is a
+   * hash of
    * where the building is, on salts nothing else uses, and it is all built
    * inside the tower's reserve, so the stream never sees it.
    */
@@ -2692,16 +2692,16 @@ export function buildCity(scene, painted = null) {
       }
       return true;
     };
-    // somewhere along a wall: the face, then a place along it, both started
-    // from a roll so no two buildings pick the same corner. A blank wall
-    // first where it matters; failing that any wall, and crates stacked
-    // against a window read as what they would be, a barricade
-    const site = (len, deep, salt, blankFirst) => (blankFirst && near(len, deep, salt, true)) || near(len, deep, salt, false);
-    const near = (len, deep, salt, blankOnly) => {
+    // somewhere along a blank wall: the face, then a place along it, both
+    // started from a roll so no two buildings pick the same corner. Never
+    // under a window: the sill is a ledge, and with anything standing just
+    // inside it a pull-up through the window lands on that, a second rise
+    // in the middle of a climb that lurches the view
+    const site = (len, deep, salt) => {
       const f0 = Math.floor(r(salt) * 4);
       for (let i = 0; i < 4; i++) {
         const f = faces[(f0 + i) % 4];
-        if (blankOnly && f.street) continue;
+        if (f.street) continue;
         const room0 = f.len - len - 1.2;
         if (room0 < 0) continue;
         for (const t of [r(salt + 1) - 0.5, 0.35, -0.35, 0, 0.18, -0.18]) {
@@ -2715,8 +2715,8 @@ export function buildCity(scene, painted = null) {
     };
 
     // a table: a top on four legs. A body meets the whole of it, to its top;
-    // a round meets the top and the legs, and goes under it between them
-    const t = site(1.5, 0.8, 101, false);
+    // a round meets the top and the legs, and goes under it between them.
+    const t = site(1.5, 0.8, 101);
     if (t) {
       const from = w.boxes.length;
       const top = 0.78;
@@ -2729,7 +2729,7 @@ export function buildCity(scene, painted = null) {
       pieces.push({ x: t.px, z: t.pz, w: t.gw, d: t.gd });
     }
     // two crates against a blank wall, and a third on them
-    const c = site(1.55, 0.75, 111, true);
+    const c = site(1.55, 0.75, 111);
     if (c) {
       const from = w.boxes.length;
       const along = c.gw > c.gd, s = 0.72;
@@ -2743,7 +2743,7 @@ export function buildCity(scene, painted = null) {
       pieces.push({ x: c.px, z: c.pz, w: c.gw, d: c.gd });
     }
     // and a low shelf unit on a blank wall, standing on its own feet
-    const u = site(1.4, 0.45, 131, true);
+    const u = site(1.4, 0.45, 131);
     if (u) {
       // boards, sides and a back panel against the wall, each something a
       // round stops at; a body meets the whole unit
@@ -2763,7 +2763,7 @@ export function buildCity(scene, painted = null) {
     // and where that still leaves it short, a lone crate, which fits a gap
     // nothing longer does
     if (pieces.filter((q) => !q.column).length < 3) {
-      const o = site(0.75, 0.75, 141, true);
+      const o = site(0.75, 0.75, 141);
       if (o) {
         const from = w.boxes.length;
         part(0.75, 0.75, 0.75, o.px, KERB, o.pz, rustFor(o.px, o.pz), true, TILE.rust);
