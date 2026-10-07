@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { randRange, SUPPORT_RADIUS } from './world.js';
 import { audio } from './audio.js';
+import { reserve } from './rng.js';
+import { NavGrid } from './nav.js';
+import { objectiveFor } from './story.js';
 
 /**
  * Objectives: a reason to leave the plaza.
@@ -41,16 +44,44 @@ export const OBJECTIVES = {
     colour: 0x7ad06a, radius: 3.4, column: 1.4, channel: 2, decay: 2,
     limit: 65, minD: 55, maxD: 105,
   },
+  // up a stairwell onto a roof, and held while the Cinder come up after you
+  relay: {
+    label: 'RELAY MAST', brief: 'RESTORE THE RELAY', verb: 'HANDSHAKING',
+    colour: 0xb48cff, radius: 3.4, column: 1.2, channel: 20, decay: 0.5,
+    limit: 120, minD: 25, maxD: 120, draws: 60,
+  },
+  // a charge planted on a burning drum, then kept from them for `fuse` seconds
+  sabotage: {
+    label: 'FUEL DUMP', brief: 'MINE THE DUMP', verb: 'PLANTING',
+    colour: 0xff7a2f, radius: 2.4, column: 1.0, channel: 3.5, decay: 1.5,
+    limit: 75, minD: 30, maxD: 90, fuse: 18, defuse: 1.8, standOff: 6,
+  },
+  // a marked hostile crossing the sector to its far side with an escort
+  hunt: {
+    label: 'LIEUTENANT', brief: 'KILL THE LIEUTENANT', verb: '',
+    colour: 0xff3b2f, radius: 1.6, column: 0.7, channel: 1, decay: 1,
+    limit: 140, minD: 40, maxD: 75, cross: 70,
+  },
+  // a survivor pinned in a shop, cut loose and walked to a pickup
+  rescue: {
+    label: 'HOLDOUT', brief: 'REACH THE HOLDOUT', verb: 'CUTTING FREE',
+    colour: 0x9cf0c0, radius: 2.4, column: 1.0, channel: 2.5, decay: 1.5,
+    limit: 90, minD: 30, maxD: 95, escort: 120, pickup: 4,
+  },
+  // the finale: the depot held while the convoy loads
+  convoy: {
+    label: 'DEPOT', brief: 'HOLD THE DEPOT', verb: 'LOADING',
+    colour: 0x7ad06a, radius: 7, column: 2.8, channel: 40, decay: 0.3,
+    limit: 150, minD: 45, maxD: 95, draws: 70,
+  },
 };
 
 /**
- * Which objective a wave brings, if any. Wave 1 is left clean so the first
- * contact is about learning to shoot; warlord waves get an evac instead, run
- * once the elite is down.
+ * Which objective a wave brings, if any: the operation's plan (`objectiveFor`
+ * in `story.js`), kept under this name for anything that asks here.
  */
-export function objectiveForWave(wave) {
-  if (wave < 2 || wave % 5 === 0) return null;
-  return wave % 3 === 0 ? 'hold' : 'cache';
+export function objectiveForWave(wave, complete = false) {
+  return objectiveFor(wave, complete);
 }
 
 export const cssColour = (n) => '#' + n.toString(16).padStart(6, '0');
@@ -63,6 +94,7 @@ export class ObjectiveSystem {
     this.group.visible = false;
     scene.add(this.group);
     this.buildMarker();
+    this.buildStoryProps();
   }
 
   /**
@@ -131,7 +163,59 @@ export class ObjectiveSystem {
     }
   }
 
+  /**
+   * The props the newer objectives show, built inside a `reserve`: the
+   * marker is built after the city, where the stream is picking spawns, and
+   * the original three cost it what they always did.
+   */
+  buildStoryProps() {
+    reserve(() => {
+      const relay = new THREE.Group();
+      for (const a of [0, 2.1, 4.2]) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 2.2, 6), this.propMat);
+        leg.position.set(Math.cos(a) * 0.45, 1.0, Math.sin(a) * 0.45);
+        leg.rotation.set(Math.sin(a) * 0.22, 0, -Math.cos(a) * 0.22);
+        relay.add(leg);
+      }
+      const head = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.4, 8), this.propMat);
+      head.position.y = 2.6;
+      relay.add(head);
+      const dish = new THREE.Mesh(new THREE.SphereGeometry(0.45, 14, 6, 0, Math.PI * 2, 0, 0.9), this.propMat);
+      dish.position.y = 2.9;
+      dish.rotation.x = Math.PI / 2.4;
+      relay.add(dish);
+      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), this.glowMat);
+      tip.position.y = 3.35;
+      relay.add(tip);
+
+      const charge = new THREE.Group();
+      const brick = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.18, 0.22), this.propMat);
+      brick.position.y = 1.05;
+      charge.add(brick);
+      const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), this.glowMat);
+      lamp.position.set(0.1, 1.17, 0.06);
+      charge.add(lamp);
+
+      const depot = new THREE.Group();
+      for (const s of [-1, 1]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.13, 3.4, 8), this.propMat);
+        post.position.set(s * 1.6, 1.7, 0);
+        depot.add(post);
+      }
+      const sign = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.5, 0.1), this.glowMat);
+      sign.position.y = 3.3;
+      depot.add(sign);
+
+      Object.assign(this.props, { relay, charge, convoy: depot, sabotage: new THREE.Group(), hunt: new THREE.Group(), rescue: new THREE.Group() });
+      for (const k of ['relay', 'charge', 'convoy', 'sabotage', 'hunt', 'rescue']) {
+        this.props[k].visible = false;
+        this.group.add(this.props[k]);
+      }
+    });
+  }
+
   reset() {
+    if (this.active) this.release(this.active, false);
     this.active = null;
     this.group.visible = false;
     for (const p of Object.values(this.props)) p.visible = false;
@@ -140,15 +224,18 @@ export class ObjectiveSystem {
   /** Start the objective a wave calls for, unless one is already running. */
   startForWave(wave) {
     if (this.active) return null;
-    const kind = objectiveForWave(wave);
+    const kind = objectiveForWave(wave, this.game.op?.complete);
     return kind ? this.start(kind) : null;
   }
 
   start(kind) {
     const def = OBJECTIVES[kind];
     if (!def || this.active) return null;
-    const site = this.findSite(def);
-    if (!site) return null;                 // no room on this seed: skip it
+    const site = this.siteFor(kind, def);
+    // A relay needs a stairwell in reach, a rescue a shop, a hunt a route
+    // across the sector; a seed short of one gets a beacon instead, rather
+    // than a wave with nothing to do.
+    if (!site) return kind === 'hold' ? null : this.start('hold');
 
     const g = this.game;
     const p = g.player.position;
@@ -158,7 +245,10 @@ export class ObjectiveSystem {
       // update lands, and a run always starts with a real bearing
       progress: 0, dist: Math.hypot(p.x - site.x, p.z - site.z), inside: false, ticked: 0,
       startedAt: g.time, expiresAt: g.time + def.limit, nextCall: 0,
+      stage: 'go', label: null, note: null, fill: null,
+      exit: site.exit || null, target: null,
     };
+    const a = this.active;
 
     this.group.position.set(site.x, site.y, site.z);
     this.group.visible = true;
@@ -167,17 +257,32 @@ export class ObjectiveSystem {
     this.ringMat.color.setHex(def.colour);
     this.columnMat.color.setHex(def.colour);
     this.glowMat.color.setHex(def.colour);
-    for (const [k, p] of Object.entries(this.props)) p.visible = k === kind;
+    for (const [k, prop] of Object.entries(this.props)) prop.visible = k === kind;
+
+    if (kind === 'hunt') this.spawnHunt(a, site);
+    if (kind === 'rescue') this.spawnHoldout(a, site);
 
     audio.objectiveStart();
     g.hud.banner(def.label, def.brief);
-    return this.active;
+    g.onObjectiveStart?.(a);
+    return a;
+  }
+
+  // ------------------------------------------------------------------ sites
+  siteFor(kind, def) {
+    if (kind === 'relay') return this.roofSite(def);
+    if (kind === 'sabotage') return this.dumpSite(def) || this.findSite(def);
+    if (kind === 'rescue') return this.shopSite(def);
+    if (kind === 'hunt') return this.routeSite(def);
+    return this.findSite(def);
   }
 
   /**
    * Open street-level ground a long way off. Rooftops are excluded on
    * purpose: an objective you can only reach by finding the one staircase
-   * that serves it is a search, not a run.
+   * that serves it is a search, not a run. The relay is the exception, and
+   * it is sited by `roofSite` on a roof whose stairwell door is what the
+   * radio sends you to find.
    */
   findSite(def) {
     const w = this.game.world;
@@ -204,12 +309,137 @@ export class ObjectiveSystem {
     }
     return null;
   }
+  /** In the distance band from the player, first by a shuffled order. */
+  _inBand(list, def, at) {
+    const p = this.game.player.position;
+    const ok = list.filter((o) => { const d = Math.hypot(at(o).x - p.x, at(o).z - p.z); return d >= def.minD && d <= def.maxD; });
+    if (!ok.length) return null;
+    return ok[Math.floor(Math.random() * ok.length)];
+  }
 
+  /** A stair roof in reach, on its open deck clear of the bulkhead and the plant. */
+  roofSite(def) {
+    const w = this.game.world;
+    const s = this._inBand(w.stairs, def, (s) => ({ x: (s.roof.minX + s.roof.maxX) / 2, z: (s.roof.minZ + s.roof.maxZ) / 2 }));
+    if (!s) return null;
+    const cx = (s.roof.minX + s.roof.maxX) / 2, cz = (s.roof.minZ + s.roof.maxZ) / 2;
+    const qx = (s.roof.maxX - s.roof.minX) / 4, qz = (s.roof.maxZ - s.roof.minZ) / 4;
+    for (const [ox, oz] of [[0, 0], [qx, qz], [-qx, qz], [qx, -qz], [-qx, -qz], [qx, 0], [-qx, 0], [0, qz], [0, -qz]]) {
+      const x = cx + ox, z = cz + oz, q = s.shaft;
+      if (x > q.minX - 1.2 && x < q.maxX + 1.2 && z > q.minZ - 1.2 && z < q.maxZ + 1.2) continue;
+      if (w.blocked(x, z, 1.0, s.deck + 0.9)) continue;
+      return { x, y: s.deck, z, stair: s };
+    }
+    return null;
+  }
+
+  /** A burning drum: the Cinder keep their fuel where they keep their fires. */
+  dumpSite(def) {
+    const g = this.game, w = g.world;
+    const b = this._inBand(g.fireBarrels || [], def, (b) => b.flame.position);
+    if (!b) return null;
+    const { x, z } = b.flame.position;
+    return { x, y: w.groundHeight(x, z, SUPPORT_RADIUS, 0.6), z };
+  }
+
+  /** The back of a shop: somewhere a holdout would have gone to ground. */
+  shopSite(def) {
+    const g = this.game, w = g.world;
+    const room = this._inBand(w.rooms, def, (r) => ({ x: (r.minX + r.maxX) / 2, z: (r.minZ + r.maxZ) / 2 }));
+    if (!room) return null;
+    const cx = (room.minX + room.maxX) / 2, cz = (room.minZ + room.maxZ) / 2;
+    const d = room.doors[0];
+    for (const t of [0.35, 0.2, 0.5, 0]) {
+      const x = cx - d.nx * (room.maxX - room.minX) * t, z = cz - d.nz * (room.maxZ - room.minZ) * t;
+      if (w.blocked(x, z, 0.6, room.floor + 0.9) || g.nav.solidAt(x, z)) continue;
+      if (room.stair) {
+        const q = room.stair.shaft;
+        if (x > q.minX - 1 && x < q.maxX + 1 && z > q.minZ - 1 && z < q.maxZ + 1) continue;
+      }
+      return { x, y: room.floor, z, room };
+    }
+    return null;
+  }
+
+  /** Where a lieutenant comes in, and the far side of the sector he is making for. */
+  routeSite(def) {
+    const from = this.findSite(def);
+    if (!from) return null;
+    const w = this.game.world, lim = w.bounds - 8;
+    const p = this.game.player.position;
+    let best = null, bd = 0;
+    for (let i = 0; i < 40; i++) {
+      const a = (i / 40) * Math.PI * 2, r = lim * (0.75 + (i % 3) * 0.1);
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      const d = Math.hypot(x - from.x, z - from.z);
+      if (d < def.cross || Math.hypot(x - p.x, z - p.z) < 30) continue;
+      const floor = w.groundHeight(x, z, SUPPORT_RADIUS, 0.5);
+      if (floor > 0.5 || w.blocked(x, z, 0.8, floor + 0.9) || this.game.nav.solidAt(x, z)) continue;
+      if (d > bd) { bd = d; best = { x, z }; }
+    }
+    if (!best) return null;
+    return { ...from, exit: best };
+  }
+
+  // -------------------------------------------------------------- the cast
+  /** A lieutenant, marked, with an escort, walking the route field to his exit. */
+  spawnHunt(a, site) {
+    const g = this.game;
+    if (!this.huntNav) this.huntNav = new NavGrid(g.world);
+    this.huntNav.update(a.exit.x, a.exit.z, true);
+    const lt = g.spawnEnemy('raider');
+    this.place(lt, site.x, site.z);
+    lt.lieutenant = true;
+    lt.flee = { nav: this.huntNav, exit: a.exit };
+    lt.hp = lt.maxHp = Math.round(lt.maxHp * 3.2);
+    lt.parts.band?.material.color.setHex(0xff3b2f);
+    lt.alerted = true;
+    a.target = lt;
+    a.from = Math.hypot(a.exit.x - site.x, a.exit.z - site.z);
+    for (const [k, type] of [[0, 'raider'], [1, 'raider'], [2, 'scavenger']]) {
+      const e = g.spawnEnemy(type);
+      const ang = k * 2.1;
+      this.place(e, site.x + Math.cos(ang) * 2, site.z + Math.sin(ang) * 2);
+      e.escort = lt;
+    }
+  }
+
+  /** A holdout where they went to ground, waiting to be cut loose. */
+  spawnHoldout(a, site) {
+    const h = this.game.spawnEnemy('holdout');
+    this.place(h, site.x, site.z);
+    h.following = false;
+    a.target = h;
+  }
+
+  place(e, x, z) {
+    const w = this.game.world;
+    e.pos.set(x, w.groundHeight(x, z, SUPPORT_RADIUS, 0.6), z);
+    e.group.position.copy(e.pos);
+    e.markWatchdog(this.game.player);
+  }
+
+  /** Take a lieutenant who got away, or a holdout who got out, off the map. */
+  remove(e) {
+    if (!e || !e.alive) return;
+    e.alive = false;
+    e.state = 'dead';
+    e.deathT = 99;
+    e.group.visible = false;
+  }
+
+  // ----------------------------------------------------------------- update
   update(dt) {
     const a = this.active;
     if (!a) return;
     const g = this.game;
     const p = g.player.position;
+
+    if (a.kind === 'hunt') { this.updateHunt(a); if (this.active) this.animate(); return; }
+    if (a.kind === 'rescue' && a.stage === 'escort') { this.updateEscort(a, dt); if (this.active) this.animate(); return; }
+    if (a.kind === 'sabotage' && a.stage === 'fuse') { this.updateFuse(a); if (this.active) this.animate(); return; }
+    if (a.kind === 'rescue') this.drainHoldout(a, dt);
+    if (!this.active) return;
 
     a.dist = Math.hypot(p.x - a.x, p.z - a.z);
     // the height test is what stops a rooftop directly above the site from
@@ -225,7 +455,11 @@ export class ObjectiveSystem {
       }
       const quarter = Math.floor((a.progress / a.def.channel) * 4);
       if (quarter > a.ticked) { a.ticked = quarter; audio.objectiveTick(); }
-      if (a.progress >= a.def.channel) { this.finish(true); return; }
+      if (a.progress >= a.def.channel) {
+        if (a.kind === 'sabotage') this.armCharge(a);
+        else if (a.kind === 'rescue') this.cutLoose(a);
+        else { this.finish(true); return; }
+      }
     } else if (a.progress > 0) {
       a.progress = Math.max(0, a.progress - dt * a.def.decay);
       a.ticked = Math.floor((a.progress / a.def.channel) * 4);
@@ -235,13 +469,116 @@ export class ObjectiveSystem {
     this.animate();
   }
 
+  /** The charge is live: a fuse to hold, and every hostile near drawn to pull it. */
+  armCharge(a) {
+    const g = this.game;
+    a.stage = 'fuse';
+    a.fuseEnd = g.time + a.def.fuse;
+    a.expiresAt = a.fuseEnd + 1;
+    a.label = 'CHARGE';
+    this.props.sabotage.visible = false;
+    this.props.charge.visible = true;
+    g.lure = { x: a.x, z: a.z };
+    g.alertNearby(45);
+    g.onObjectiveStage?.(a);
+  }
+
+  updateFuse(a) {
+    const g = this.game, p = g.player.position;
+    a.dist = Math.hypot(p.x - a.x, p.z - a.z);
+    const left = a.fuseEnd - g.time;
+    a.fill = 1 - left / a.def.fuse;
+    a.note = `BLOWS IN ${Math.max(0, Math.ceil(left))} S — KEEP THEM OFF IT`;
+    // pulled by a hostile who reaches it with the player standing off
+    for (const e of g.enemies) {
+      if (!e.alive || e.type.friendly) continue;
+      if (Math.hypot(e.pos.x - a.x, e.pos.z - a.z) < a.def.defuse && a.dist > a.def.standOff) {
+        a.reason = 'pulled';
+        this.finish(false);
+        return;
+      }
+    }
+    if (left <= 0) {
+      // on top of the drum, where it was planted
+      g.explode(new THREE.Vector3(a.x, a.y + 1.1, a.z), 'charge');
+      this.finish(true);
+    }
+  }
+
+  updateHunt(a) {
+    const g = this.game, p = g.player.position, lt = a.target;
+    if (!lt || !lt.alive) { this.finish(true); return; }
+    a.x = lt.pos.x; a.y = lt.pos.y; a.z = lt.pos.z;
+    this.group.position.set(a.x, a.y, a.z);
+    a.dist = Math.hypot(p.x - a.x, p.z - a.z);
+    const left = Math.hypot(a.exit.x - a.x, a.exit.z - a.z);
+    a.fill = Math.max(0, 1 - left / a.from);
+    a.note = `${a.def.brief} — ${Math.round(a.dist)} M`;
+    if (left < 3) { a.reason = 'escaped'; this.finish(false); return; }
+    if (g.time >= a.expiresAt) { a.reason = 'escaped'; this.finish(false); }
+  }
+
+  /** Cut loose: the holdout follows, and the marker moves to the pickup. */
+  cutLoose(a) {
+    const g = this.game, h = a.target;
+    const pickup = this.findSite({ ...OBJECTIVES.extraction, minD: 35, maxD: 85 });
+    if (!pickup || !h || !h.alive) { this.finish(false); return; }
+    h.following = true;
+    a.stage = 'escort';
+    a.label = 'PICKUP';
+    a.x = pickup.x; a.y = pickup.y; a.z = pickup.z;
+    a.expiresAt = g.time + a.def.escort;
+    this.group.position.set(pickup.x, pickup.y, pickup.z);
+    this.ring.scale.set(a.def.pickup, a.def.pickup, 1);
+    g.onObjectiveStage?.(a);
+  }
+
+  /**
+   * Hostile fire finds a holdout the way it finds you: anything alerted with
+   * a line to them wears them down, faster up close. They are not in the fire
+   * loop — no hostile aims at one — so this is how being exposed costs them.
+   */
+  drainHoldout(a, dt) {
+    const g = this.game, h = a.target;
+    if (!h || !h.alive) { this.finish(false); return; }
+    for (const e of g.enemies) {
+      if (!e.alive || e.type.friendly || !e.alerted) continue;
+      const d = Math.hypot(e.pos.x - h.pos.x, e.pos.z - h.pos.z);
+      if (e.type.melee ? d > 1.8 : d > 25) continue;
+      if (!e.type.melee && !g.world.lineOfSight(e.pos.x, e.pos.y + 1.5, e.pos.z, h.pos.x, h.pos.y + 1.2, h.pos.z)) continue;
+      h.hp -= (e.type.melee ? 12 : 2.5) * dt;
+      h.hurtFlash = 0.08;
+    }
+    if (h.hp <= 0) { h.die(null); this.finish(false); }
+  }
+
+  updateEscort(a, dt) {
+    const g = this.game, p = g.player.position, h = a.target;
+    this.drainHoldout(a, dt);
+    if (!this.active) return;
+    a.dist = Math.hypot(p.x - a.x, p.z - a.z);
+    a.fill = Math.max(0, h.hp / h.maxHp);
+    a.note = `GET THEM TO THE PICKUP — ${Math.round(a.dist)} M`;
+    if (Math.hypot(h.pos.x - a.x, h.pos.z - a.z) < a.def.pickup) { this.finish(true); return; }
+    if (g.time >= a.expiresAt) this.finish(false);
+  }
+
   finish(secured) {
     const a = this.active;
     this.active = null;
     this.group.visible = false;
     for (const p of Object.values(this.props)) p.visible = false;
+    this.release(a, secured);
     if (secured) this.game.onObjectiveSecured(a);
     else this.game.onObjectiveLost(a);
+  }
+
+  /** Whatever an objective put on the map, taken back off it. */
+  release(a, secured) {
+    const g = this.game;
+    if (a.kind === 'sabotage') g.lure = null;
+    if (a.kind === 'hunt' && !secured) this.remove(a.target);
+    if (a.kind === 'rescue' && a.target?.alive) this.remove(a.target);
   }
 
   /**
@@ -256,8 +593,14 @@ export class ObjectiveSystem {
     this.ringMat.opacity = (0.45 + pulse * 0.35) * urgent;
     this.columnMat.opacity = (0.10 + pulse * 0.07) * urgent;
     const prop = this.props[a.kind];
-    prop.rotation.y = t * 0.6;
-    prop.position.y = Math.sin(t * 1.7) * 0.05;
+    if (a.kind === 'relay' || a.kind === 'convoy') {
+      prop.position.y = 0;                 // a mast stands; only the light breathes
+    } else {
+      prop.rotation.y = t * 0.6;
+      prop.position.y = Math.sin(t * 1.7) * 0.05;
+    }
+    // a live charge blinks faster as it runs down
+    if (a.stage === 'fuse') this.props.charge.children[1].visible = (t * (2 + a.fill * 8)) % 1 < 0.5;
   }
 
   /**

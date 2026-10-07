@@ -7,6 +7,7 @@ import { GrenadeSystem, FUSE, BLAST_RADIUS, BLAST_DAMAGE } from './grenades.js';
 import { Effects } from './effects.js';
 import { Enemy, ENEMY_TYPES, HostileBatches, primeEnemyKits, sampleBodies } from './enemies.js';
 import { ObjectiveSystem, objectiveForWave } from './objectives.js';
+import { BRIEFING, ACTS, FINALE, RADIO, actFor, pickLine, radioLine } from './story.js';
 import { HUD } from './hud.js';
 import { Post } from './post.js';
 import { audio } from './audio.js';
@@ -27,6 +28,9 @@ const SIZE = new THREE.Vector2();
 
 /** Where every run starts: the plaza near the middle of the sector. */
 const INSERTION = { x: -17, z: 24 };
+
+/** What each objective pays, times the wave it is finished on. */
+const OBJECTIVE_PAY = { cache: 300, hold: 500, extraction: 750, relay: 600, sabotage: 600, hunt: 700, rescue: 800, convoy: 1500 };
 
 /** Every material slot that can hold a texture boot should upload. */
 const TEXTURE_SLOTS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap',
@@ -758,8 +762,13 @@ class Game {
 
   bindUI() {
     const start = () => this.startRun();
-    document.getElementById('start-btn').onclick = start;
+    // DEPLOY from the menu reads the briefing first; REDEPLOY goes straight in
+    document.getElementById('start-btn').onclick = () => this.brief();
     document.getElementById('retry-btn').onclick = start;
+    document.getElementById('brief-btn').onclick = start;
+    addEventListener('keydown', (e) => {
+      if (this.state === 'briefing' && (e.code === 'Enter' || e.code === 'Space') && !e.repeat) { e.preventDefault(); start(); }
+    });
     document.getElementById('resume-btn').onclick = () => this.resume();
     document.getElementById('quit-btn').onclick = () => this.toMenu();
 
@@ -861,6 +870,21 @@ class Game {
   }
 
   // ------------------------------------------------------------ run control
+  /** The briefing card: who you are, what Carrow is, what the job is. */
+  brief() {
+    if (this.state !== 'menu') return this.startRun();
+    audio.init();
+    audio.resume();
+    document.getElementById('brief-text').innerHTML = BRIEFING.map((p) => `<p>${p}</p>`).join('');
+    document.getElementById('brief-acts').innerHTML = ACTS.map((a, i) => {
+      const to = i + 1 < ACTS.length ? ACTS[i + 1].from - 1 : FINALE;
+      return `<li><b>${a.title} &middot; ${a.name}</b>WAVES ${a.from}&ndash;${to}</li>`;
+    }).join('');
+    document.getElementById('menu').classList.add('hidden');
+    document.getElementById('briefing').classList.remove('hidden');
+    this.state = 'briefing';
+  }
+
   startRun() {
     audio.init();
     audio.resume();
@@ -911,7 +935,15 @@ class Game {
     this.pushCalled = -1;
     this.runStart = this.time;
 
+    // The operation: which act it has reached, what has been done for it,
+    // and whether the convoy is out — after which the run is endless.
+    this.op = { act: 0, complete: false, relay: 0, rescue: 0, hunt: 0, sabotage: 0, cache: 0, hold: 0, extraction: 0 };
+    this.lure = null;
+    this.hud.clearRadio();
+    this.hud.onRadio = () => audio.radio();
+
     document.getElementById('menu').classList.add('hidden');
+    document.getElementById('briefing').classList.add('hidden');
     document.getElementById('gameover').classList.add('hidden');
     document.getElementById('pause').classList.add('hidden');
     this.hud.show(true);
@@ -919,7 +951,8 @@ class Game {
     this.state = 'playing';
     this.input.requestLock();
     this.nextWaveAt = this.time + 3;
-    this.hud.banner('SECTOR 7', 'HOSTILES INBOUND');
+    this.hud.banner('OPERATION ASHFALL', 'CARROW &middot; SECTOR 7');
+    this.say(RADIO.deploy);
   }
 
   /** Whether the armoury can be opened now: between waves, the sector clear. */
@@ -971,6 +1004,7 @@ class Game {
     audio.stopAmbience();
     document.getElementById('pause').classList.add('hidden');
     document.getElementById('gameover').classList.add('hidden');
+    document.getElementById('briefing').classList.add('hidden');
     document.getElementById('menu').classList.remove('hidden');
     this.hud.show(false);
     this.input.exitLock();
@@ -992,6 +1026,14 @@ class Game {
     const mins = Math.floor((this.time - this.runStart) / 60);
     const secs = Math.floor((this.time - this.runStart) % 60).toString().padStart(2, '0');
     setTimeout(() => {
+      const op = this.op || {};
+      const act = actFor(Math.max(1, this.wave));
+      const tally = [['RELAYS', op.relay], ['HOLDOUTS OUT', op.rescue], ['LIEUTENANTS', op.hunt], ['DUMPS', op.sabotage]]
+        .map(([k, v]) => `${k} <b>${v || 0}</b>`).join(' &middot; ');
+      document.getElementById('debrief').innerHTML =
+        `<div>OPERATION ASHFALL &mdash; ${op.complete ? 'COMPLETE &middot; HELD TO WAVE ' + this.wave : act.title + ' &middot; ' + act.name}</div>` +
+        `<div class="tally">${tally}</div>` +
+        `<div class="quote">&ldquo;${pickLine(RADIO.dead, this.wave)}&rdquo;</div>`;
       document.getElementById('stats').innerHTML =
         `<div>WAVE REACHED <b>${this.wave}</b></div>` +
         `<div>SCORE <b>${this.score.toLocaleString()}</b></div>` +
@@ -1008,7 +1050,7 @@ class Game {
   // ----------------------------------------------------------------- waves
   get aliveCount() {
     let n = 0;
-    for (const e of this.enemies) if (e.alive) n++;
+    for (const e of this.enemies) if (e.alive && !e.type.friendly) n++;
     return n;
   }
 
@@ -1032,12 +1074,19 @@ class Game {
     this.waveHpScale = 1 + (w - 1) * 0.09;
     this.nextSpawnAt = this.time;
 
-    const kind = objectiveForWave(w);
+    const kind = objectiveForWave(w, this.op?.complete);
     if (kind) this.cueObjective(kind, 6);
 
     const unlocked = this.weapons.unlockForWave(w);
     audio.wave();
-    this.hud.banner('WAVE ' + w, this.bossPending ? `${total} HOSTILES &middot; WARLORD` : `${total} HOSTILES`);
+    // the act it is, on the wave that opens one, and the handler's call
+    const act = actFor(w);
+    const count = this.bossPending ? `${total} HOSTILES &middot; WARLORD` : `${total} HOSTILES`;
+    this.hud.banner('WAVE ' + w, act.opens && !act.endless ? `${act.title} &middot; ${act.name} &middot; ${count}` : count);
+    if (this.op) this.op.act = act.act;
+    if (act.opens && !act.endless) this.say(RADIO.act[act.act]);
+    if (w > FINALE) this.say(RADIO.waveEndless, w);
+    else if (RADIO.wave[w]) this.say(RADIO.wave[w]);
     if (unlocked.length) setTimeout(() => this.hud.toast('WEAPON RECOVERED: ' + unlocked.join(', ')), 1200);
   }
 
@@ -1073,6 +1122,7 @@ class Game {
           const bonus = 250 * this.wave;
           this.score += bonus;
           this.hud.banner('SECTOR CLEAR', `+${bonus} &middot; B FOR THE ARMOURY`);
+          this.say(RADIO.clear, this.wave);
           this.weapons.addAmmo(0.3, true);
           this.hud.toast('AMMO RESUPPLY');
         } else if (this.time - this.waveClearedAt > 7) {
@@ -1097,6 +1147,7 @@ class Game {
       this.spawnEnemy('brute', true);
       audio.wave();
       this.hud.banner('WARLORD', 'ELITE HOSTILE INBOUND');
+      this.say(RADIO.warlord);
     }
   }
 
@@ -1271,16 +1322,74 @@ class Game {
   }
 
   // ----------------------------------------------------------- objectives
+  /** A line from the handler, picked by `n` so the same run says the same thing. */
+  say(lines, n = 0, d = 0) {
+    if (lines && lines.length) this.hud.radio(radioLine(lines, n, d));
+  }
+
+  /** An objective has gone live: the handler calls it, with how far. */
+  onObjectiveStart(obj) {
+    const lines = RADIO.objective[obj.kind];
+    if (lines) this.say(lines.start, this.objectivesSecured + this.wave, obj.dist);
+  }
+
+  /** It has moved on a stage: a charge armed, a holdout cut loose. */
+  onObjectiveStage(obj) {
+    const lines = RADIO.objective[obj.kind];
+    if (lines?.stage) this.say(lines.stage, 0, obj.dist);
+  }
+
   /**
    * What finishing one pays. The scale is deliberately above a wave clear
    * bonus: crossing the sector under fire should beat holding the plaza.
    */
   onObjectiveSecured(obj) {
     const w = Math.max(1, this.wave);
-    const payout = { cache: 300, hold: 500, extraction: 750 }[obj.kind] * w;
+    const payout = OBJECTIVE_PAY[obj.kind] * w;
     this.score += payout;
     this.objectivesSecured++;
+    if (this.op) this.op[obj.kind] = (this.op[obj.kind] || 0) + 1;
     audio.objectiveDone();
+    this.say(RADIO.objective[obj.kind]?.done, this.objectivesSecured);
+
+    if (obj.kind === 'relay') {
+      this.weapons.addAmmo(0.3, true);
+      this.player.heal(25);
+      this.hud.banner('RELAY RESTORED', `+${payout}`);
+      return;
+    }
+    if (obj.kind === 'sabotage') {
+      this.weapons.addAmmo(0.4, true);
+      this.nades = Math.min(this.maxNades, this.nades + 1);
+      this.hud.banner('DUMP DESTROYED', `+${payout}`);
+      return;
+    }
+    if (obj.kind === 'hunt') {
+      this.weapons.addAmmo(0.4, true);
+      this.nades = Math.min(this.maxNades, this.nades + 2);
+      this.hud.banner('LIEUTENANT DOWN', `+${payout} &middot; HIS KIT IS YOURS`);
+      return;
+    }
+    if (obj.kind === 'rescue') {
+      this.weapons.addAmmo(0.35, true);
+      this.player.heal(50);
+      this.hud.banner('HOLDOUT OUT', `+${payout}`);
+      return;
+    }
+    if (obj.kind === 'convoy') {
+      // the operation is over; the run is not
+      this.weapons.addAmmo(0.6, true);
+      this.nades = this.maxNades;
+      this.player.heal(this.player.maxHealth);
+      if (this.op && !this.op.complete) {
+        this.op.complete = true;
+        this.hud.banner('OPERATION COMPLETE', `+${payout} &middot; HOLD AS LONG AS YOU CAN`);
+        this.say(RADIO.complete);
+      } else {
+        this.hud.banner('CONVOY OUT', `+${payout}`);
+      }
+      return;
+    }
 
     if (obj.kind === 'cache') {
       this.weapons.addAmmo(0.5, true);
@@ -1303,7 +1412,8 @@ class Game {
   onObjectiveLost(obj) {
     this.objectivesLost++;
     audio.objectiveFail();
-    this.hud.toast(obj.def.label + ' LOST');
+    this.hud.toast((obj.label || obj.def.label) + ' LOST');
+    this.say(RADIO.objective[obj.kind]?.lost, this.objectivesLost);
   }
 
   // --------------------------------------------------------------- combat
@@ -1331,7 +1441,8 @@ class Game {
     RAY.far = def.range;
 
     const enemyMeshes = [];
-    for (const e of this.enemies) if (e.alive) enemyMeshes.push(...e.hitMeshes);
+    // a holdout is not a target: the round goes past them
+    for (const e of this.enemies) if (e.alive && !e.type.friendly) enemyMeshes.push(...e.hitMeshes);
 
     const hitsE = RAY.intersectObjects(enemyMeshes, false);
     const hitsW = RAY.intersectObjects(this.world.solids, false);
@@ -1392,7 +1503,7 @@ class Game {
     this.camera.getWorldDirection(V1);
     let struck = false;
     for (const e of this.enemies) {
-      if (!e.alive) continue;
+      if (!e.alive || e.type.friendly) continue;
       V2.copy(e.pos).setY(e.pos.y + 1.2).sub(this.player.position);
       if (Math.abs(V2.y) > 1.6) continue;                    // out of reach vertically
       V2.y = 0;
@@ -1448,8 +1559,12 @@ class Game {
     // target is fully hidden cuts the damage rather than cancelling it.
     const originY = pos.y + 0.75;
 
-    for (const e of owner === 'hostile' ? [] : [...this.enemies]) {
+    // A blast does not care whose side anyone is on: a holdout caught in one
+    // is hurt by it, and nobody is credited.
+    for (const e of [...this.enemies]) {
       if (!e.alive) continue;
+      const friendly = !!e.type.friendly;
+      if (owner === 'hostile' && !friendly) continue;
       const dist = Math.hypot(e.pos.x - pos.x, e.pos.z - pos.z, (e.pos.y + 1) - pos.y);   // aim at the chest
       if (dist > BLAST_RADIUS) continue;
 
@@ -1459,7 +1574,7 @@ class Game {
       const result = e.damage(BLAST_DAMAGE * falloff * (exposed ? 1 : 0.4),
         'body', V1, V2.copy(e.pos).setY(e.pos.y + 1.2));
       e.pos.addScaledVector(V1, falloff * 1.4);
-      this.registerHit(e, result, 'FRAG', false);
+      if (!friendly) this.registerHit(e, result, owner === 'charge' ? 'CHARGE' : 'FRAG', false);
     }
 
     // the player is not exempt from their own grenade

@@ -21,7 +21,12 @@ export class HUD {
       objMarker: $('objective-marker'), objDist: $('objective-marker').querySelector('.om-dist'),
       captureHint: $('capture-hint'), captureText: $('capture-text'),
       captureNewTab: $('capture-newtab'),
+      radio: $('radio'), radioText: $('radio-text'),
     };
+    this.radioQueue = [];
+    this.radioUntil = -1;      // game time the line on screen comes down
+    this.radioLog = [];        // every line said this run, for a check to read
+    this.onRadio = null;       // the squelch, when a line comes up
     this.radar = $('radar');
     this.radarCtx = this.radar.getContext('2d');
     this.hitTimer = 0;
@@ -38,6 +43,40 @@ export class HUD {
   }
 
   show(v) { this.el.hud.classList.toggle('hidden', !v); }
+
+  /**
+   * A line from the handler. Lines queue rather than replace each other, so
+   * the wave call and the objective call that lands under it are both heard;
+   * each stays up long enough to read, on game time, so a pause holds it.
+   */
+  radio(text) {
+    if (!text) return;
+    this.radioQueue.push(text);
+    this.radioLog.push(text);
+  }
+
+  clearRadio() {
+    this.radioQueue.length = 0;
+    this.radioLog.length = 0;
+    this.radioUntil = -1;
+    this.el.radio.classList.add('hidden');
+  }
+
+  _radioTick(now) {
+    if (this.radioUntil >= 0 && now < this.radioUntil) return;
+    const next = this.radioQueue.shift();
+    if (!next) {
+      if (this.radioUntil >= 0) { this.radioUntil = -1; this.el.radio.classList.add('hidden'); }
+      return;
+    }
+    this.el.radioText.textContent = next;
+    this.el.radio.classList.remove('hidden');
+    this.el.radio.style.animation = 'none';
+    void this.el.radio.offsetWidth;
+    this.el.radio.style.animation = '';
+    this.radioUntil = now + 2.5 + next.length * 0.045;
+    this.onRadio?.();
+  }
 
   /**
    * Mouse capture state. Hidden once the pointer is locked; otherwise it says
@@ -134,6 +173,7 @@ export class HUD {
     });
 
     this.objective(game);
+    this._radioTick(game.time);
     this.drawRadar(game);
   }
 
@@ -151,13 +191,14 @@ export class HUD {
     const left = Math.max(0, o.expiresAt - game.time);
     const mins = Math.floor(left / 60);
     const secs = Math.floor(left % 60).toString().padStart(2, '0');
-    this.el.objLabel.textContent = o.def.label;
+    this.el.objLabel.textContent = o.label || o.def.label;
     this.el.objTimer.textContent = `${mins}:${secs}`;
     this.el.objTimer.classList.toggle('urgent', left < 20);
-    this.el.objFill.style.width = (o.progress / o.def.channel) * 100 + '%';
-    this.el.objNote.textContent = o.inside
+    // a stage with a readout of its own (a fuse, an escort, a hunt) says so
+    this.el.objFill.style.width = (o.fill ?? o.progress / o.def.channel) * 100 + '%';
+    this.el.objNote.textContent = o.note || (o.inside
       ? `${o.def.verb} ${Math.round((o.progress / o.def.channel) * 100)}%`
-      : `${o.def.brief} — ${Math.round(o.dist)} M`;
+      : `${o.def.brief} — ${Math.round(o.dist)} M`);
 
     const m = game.objectives.screenMarker(game.camera, innerWidth, innerHeight);
     if (!m) return;
@@ -259,9 +300,10 @@ export class HUD {
       const rz = dx * Math.sin(yaw) + dz * Math.cos(yaw);
       const px = cx + (rx / range) * r;
       const py = cy + (rz / range) * r;
-      ctx.fillStyle = e.type.hp > 200 ? '#ff8a2a' : '#ff4033';
+      const big = e.type.hp > 200 || e.lieutenant;
+      ctx.fillStyle = e.type.friendly ? '#9cf0c0' : e.type.hp > 200 ? '#ff8a2a' : '#ff4033';
       ctx.beginPath();
-      ctx.arc(px, py, e.type.hp > 200 ? 3.5 : 2.6, 0, Math.PI * 2);
+      ctx.arc(px, py, big ? 3.5 : 2.6, 0, Math.PI * 2);
       ctx.fill();
     }
 

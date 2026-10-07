@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/vdblights/Cyrus-game/actions/workflows/ci.yml/badge.svg)](https://github.com/vdblights/Cyrus-game/actions/workflows/ci.yml)
 
-A small browser first-person shooter set in an abandoned city at dusk. Hold a
-ruined plaza in Sector 7 against waves of scavengers and raiders with a modern
-weapon set.
+A small browser first-person shooter set in an abandoned city at dusk.
+Operation ASHFALL: twelve waves in the ruins of Carrow, then as long as you
+can last.
 
 No build step, no asset files, no network calls — open the page and play.
 
@@ -272,6 +272,36 @@ It is paid for in scrip, which every point you score earns and which shows
 under your score. Spending it costs no score, so buying armour is never a
 choice between surviving and your best score. What you fit lasts the run.
 
+## The operation
+
+Eleven weeks ago the Halloran refinery burned for nine days and buried the
+city of Carrow in ash. The city was evacuated, and not everyone got out. The
+Cinder stayed: looters at first, now a militia of a few hundred under
+warlords, holding the city street by street and anyone left in it. That is
+who is coming at you, and why. They hold Sector 7 and you are in it.
+
+You are WREN, a recovery contractor. HALCYON is your handler, and the only
+voice on your radio. The job: bring the district's dead relays back so the
+survivors still holding out in there can be found, get them out, and hold the
+depot when the convoy comes for the last of them.
+
+DEPLOY opens the briefing; REDEPLOY after a death goes straight back in. A
+run is three acts over twelve waves, each wave bringing the objective the
+operation's plan gives it, and HALCYON calls each act, each wave and each
+objective over the radio in the bottom left:
+
+| Act | Waves | What it is about |
+| --- | --- | --- |
+| I &middot; Dead Air | 1&ndash;4 | The first relay, a stockpile, a fuel dump |
+| II &middot; Holdouts | 5&ndash;8 | A warlord, the first survivors, a lieutenant with the routes |
+| III &middot; The Convoy | 9&ndash;12 | More survivors, another dump, then the depot |
+
+Wave 12 brings the convoy: hold the depot while it loads, and the operation
+is complete. If it cannot hold, it comes again the next wave until it is out.
+After that the city does not stop, and the objectives keep coming in turn.
+When you go down, the debrief says how far the operation got and what you
+did for it.
+
 ## Objectives
 
 Wave survival on its own rewards standing still in the best cover you can
@@ -282,11 +312,30 @@ something worth having at the far end of it and start a clock.
 | --- | --- | --- | --- |
 | Supply cache | 40&ndash;80 m out | Stand on it for 4 s | Ammo, frags, 300 &times; wave |
 | Beacon | 40&ndash;75 m out | Hold a 6.5 m circle for 18 s | Ammo, 35 health, 500 &times; wave |
+| Relay mast | On a roof, 25&ndash;120 m out | Find the stairwell, hold the mast for 20 s | Ammo, 25 health, 600 &times; wave |
+| Fuel dump | A burning drum, 30&ndash;90 m out | Plant a charge (3.5 s), keep them off it for 18 s | Ammo, a frag, 600 &times; wave |
+| Lieutenant | Crossing the sector | Kill him before he reaches the far edge | Ammo, two frags, 700 &times; wave |
+| Holdout | In a shop, 30&ndash;95 m out | Cut them loose (2.5 s), walk them to a pickup | Ammo, 50 health, 800 &times; wave |
+| Depot | 45&ndash;95 m out, wave 12 | Hold a 7 m circle for 40 s | Full heal, full rearm, 1,500 &times; wave |
 | Evac point | 55&ndash;105 m out | Reach it before the window shuts | Full heal, full rearm, 750 &times; wave |
 
-One runs at a time. Wave 1 is left clean, every third wave calls for a beacon
-and the rest call for a cache; an evac window opens instead when a warlord
-goes down. Progress bleeds back if you are driven off rather than resetting,
+One runs at a time. Wave 1 is left clean so the first contact is about
+learning to shoot; an evac window opens instead when a warlord goes down.
+The newer four each ask something different of you:
+
+- **A relay** is up a stairwell on a roof, and only counts from the roof.
+  Holding it brings the sector up the stairs after you.
+- **A charge**, once planted, draws every hostile that cannot see you to the
+  drum. One that reaches it while you are more than 6 m off pulls it. When
+  it blows it is your blast, so stand off and let it take whoever is near.
+- **A lieutenant** walks his own route to the edge of the sector with three
+  escorts beside him, and shoots at you on the way without stopping. Get
+  there first.
+- **A holdout** follows you once cut loose, by the same routes the hostiles
+  use. They are not a target and your rounds pass them, but anything near
+  wears them down, and a blast hurts them like anyone else.
+
+Progress bleeds back if you are driven off rather than resetting,
 so being pushed out costs ground without wiping the job, and a beacon
 transmits &mdash; working one pulls hostiles in from 55 m while you stand there.
 
@@ -598,7 +647,8 @@ src/nav.js          walkable grid over the city, and a route field to the player
 src/player.js       input, movement, camera, health
 src/weapons.js      weapon definitions, view models, firing and recoil
 src/enemies.js      hostile archetypes, AI, procedural bodies
-src/objectives.js   objective sites, channels, markers and waypoints
+src/objectives.js   objective sites, channels, stages, the cast they put on the map
+src/story.js        Operation ASHFALL: the briefing, the acts, the plan, the radio
 src/grenades.js     thrown frags: fuse, bounce physics, detonation
 src/effects.js      pooled tracers, impacts, blood, casings, explosions
 src/textures.js     canvas-painted textures (asphalt, facades, rust, cloth, sky)

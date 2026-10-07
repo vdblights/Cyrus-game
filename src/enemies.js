@@ -126,6 +126,20 @@ const PUSH = { range: 25, hold: 1.2, haste: 1.3 };
 const CLIMB = { above: 0.5, near: 9, min: 0.6, max: 1.8, base: 0.6, perM: 0.4 };
 
 /**
+ * The cast an objective puts on the map (`objectives.js`), and how each of
+ * them moves differently from a hostile hunting you.
+ *
+ * A holdout follows the player once cut loose, by the same route field the
+ * hostiles use, standing off `near` and hurrying past `far`. A lieutenant
+ * walks his own route field to the far side of the sector at `pace` of his
+ * archetype's speed, shooting at you if he sees you but never stopping to;
+ * his escort keeps within `escort` of him until something alerts it. And
+ * while a charge is live, an alerted hostile that cannot see you and is
+ * within `lure` of it goes for the charge instead.
+ */
+const CAST = { near: 2.6, far: 8, pace: 0.8, escort: 2.5, lure: 40 };
+
+/**
  * A crouch behind cover: how far the hips come down (in the body's own
  * units, so a big archetype drops further), and the thigh and knee that put
  * the feet back on the ground under them — a 0.42 m thigh and a 0.44 m shin
@@ -174,6 +188,18 @@ export const ENEMY_TYPES = {
     damage: 7, rate: 0.13, burst: 6, burstPause: 2.8, preferred: 9, accuracy: 0.105, mag: 60, reload: 3.2, frags: 1,
     color: 0x7d5a5a, accent: 0x3a3533, score: 400, detect: 70, sound: 'smg', marker: 0xb03be0,
     kit: { head: 'helm', armour: 'plated', coat: 0, weapon: 'drum' },
+  },
+  // Not a hostile: a survivor a rescue puts on the map. `friendly` keeps it
+  // out of the wave count, the player's fire and every hostile's attention
+  // but the drain `objectives.js` applies; it follows the player once freed.
+  holdout: {
+    name: 'HOLDOUT', hp: 120, speed: 4.4, scale: 0.95, melee: false, friendly: true,
+    damage: 0, rate: 1, preferred: 2, accuracy: 1, color: 0x8d8574, accent: 0x5a4c3a,
+    score: 0, detect: 0, marker: 0x9cf0c0,
+    // the lenses every hostile glows red through are the band's mint on
+    // them: at forty metres a red-eyed body in a coat reads as one of them
+    eye: 0x9cf0c0,
+    kit: { head: 'hood', armour: 'light', coat: 0.22, weapon: 'rifle' },
   },
 };
 
@@ -783,7 +809,7 @@ function buildBody(type) {
   upper.add(band);
   parts.band = band;
 
-  const eye = new THREE.Mesh(geo.eye, new THREE.MeshBasicMaterial({ color: 0xff4a2a }));
+  const eye = new THREE.Mesh(geo.eye, new THREE.MeshBasicMaterial({ color: type.eye ?? 0xff4a2a }));
   eye.position.set(...atNeck(AT.eye));
   neck.add(eye);
   parts.eye = eye;
@@ -1082,6 +1108,10 @@ export class Enemy {
     this.stair = null;        // the stairwell it is up, if any (`_stairWalk`)
     this.stairFrom = 0;       // the point of its walk it last reached
     this.stairTo = 0;         // and the one it is walking to
+    this.flee = null;         // a lieutenant's route off the map ({ nav, exit })
+    this.escort = null;       // the lieutenant it walks beside
+    this.lieutenant = false;
+    this.following = false;   // a holdout, cut loose
     this.lastDistCheck = Infinity;
     this.watchX = this.pos.x;
     this.watchZ = this.pos.z;
@@ -1153,7 +1183,7 @@ export class Enemy {
    * something that just noticed them.
    */
   alert(time = 0, readyIn = randRange(0.55, 1.3)) {
-    if (this.alerted || !this.alive) return;
+    if (this.alerted || !this.alive || this.type.friendly) return;
     this.alerted = true;
     this.nextFire = Math.max(this.nextFire, time + readyIn);
     this.nextThrow = Math.max(this.nextThrow, time + 3);
@@ -1166,7 +1196,7 @@ export class Enemy {
    * before it does anything about it.
    */
   hear(x, z, time) {
-    if (this.alerted || !this.alive) return;
+    if (this.alerted || !this.alive || this.type.friendly) return;
     this.heard = { x, z };
     this.heardUntil = time + 2.5;
   }
@@ -1397,6 +1427,7 @@ export class Enemy {
     }
 
     if (this.hurtFlash > 0) this.hurtFlash -= dt;
+    if (this.type.friendly) { this._follow(dt, player, world); return; }
 
     const toPlayer = V1.copy(player.position).sub(this.pos);
     toPlayer.y = 0;
@@ -1450,13 +1481,33 @@ export class Enemy {
     // The player has gone into a building: a ranged hostile covers a doorway
     // from outside rather than walking in after them (`Game.coverPost`
     // hands out at most two posts a building, so the rest still come in).
-    this.post = this.alerted && !onPerch && !this.type.melee && !pushing && !this.stair && time >= this.postAfter
+    this.post = this.alerted && !onPerch && !this.type.melee && !pushing && !this.stair && !this.flee && time >= this.postAfter
       ? (game.coverPost?.(this) || null) : null;
     const post = this.post;
     const stairDir = V5;
-    const stairs = onPerch || post ? false : this._stairWalk(stairDir, player, toPlayer, world);
+    const stairs = onPerch || post || this.flee ? false : this._stairWalk(stairDir, player, toPlayer, world);
     const inShaft = stairs === 'in' || stairs === 'with';
-    if (!this.alerted) {
+    // Walking beside a lieutenant, it has not been told about you yet.
+    const escorting = !this.alerted && this.escort && this.escort.alive;
+    // Going for a live charge, it is not coming for you.
+    const lure = game.lure;
+    const lured = !!lure && this.alerted && !sees && !onPerch && !post && !stairs && !this.flee
+      && Math.hypot(lure.x - this.pos.x, lure.z - this.pos.z) < CAST.lure;
+    if (this.flee) {
+      // A lieutenant makes for his exit by his own route field, and stops for
+      // nothing: he shoots at you on the way if he can see you.
+      const f = this.flee;
+      if (!f.nav.heading(this.pos.x, this.pos.z, moveDir)) {
+        moveDir.set(f.exit.x - this.pos.x, 0, f.exit.z - this.pos.z);
+        if (moveDir.lengthSq() > 1e-6) moveDir.normalize();
+      }
+    } else if (escorting) {
+      const l = this.escort, ex = l.pos.x - this.pos.x, ez = l.pos.z - this.pos.z, ed = Math.hypot(ex, ez);
+      if (ed > CAST.escort) moveDir.set(ex / ed, 0, ez / ed);
+    } else if (lured) {
+      const lx = lure.x - this.pos.x, lz = lure.z - this.pos.z, ld = Math.hypot(lx, lz);
+      if (ld > 0.4) moveDir.set(lx / ld, 0, lz / ld);
+    } else if (!this.alerted) {
       // still hunting: drift toward the player at a walk
       if (stairs) moveDir.copy(stairDir);
       else if (!onPerch) this._approach(moveDir, toPlayer, sees, nav);
@@ -1510,7 +1561,7 @@ export class Enemy {
     // Only one already coming for you: a raider strafing at its range, or
     // backing off to hold it, has no business charging a car.
     let climbing = false;
-    if (this.alerted && !onPerch && !inShaft && moveDir.dot(toPlayer) > 0.7 * moveDir.length()
+    if (this.alerted && !onPerch && !inShaft && !this.flee && !lured && moveDir.dot(toPlayer) > 0.7 * moveDir.length()
         && player.feetY > this.pos.y + CLIMB.above && dist < CLIMB.near) {
       const ahead = world.mantleTarget(this.pos.x, this.pos.z, this.radius, this.pos.y,
         toPlayer.x, toPlayer.z, CLIMB.min, CLIMB.max, 1.8 + this.radius);
@@ -1597,9 +1648,13 @@ export class Enemy {
     // Someone holding a perch is doing their job while they wait for a target
     // to walk into view, so give them far longer before the watchdog moves
     // them — but not forever, or a wave could stall on a roof.
+    // Nor is anything walking somewhere other than at you on purpose: a
+    // lieutenant leaving, his escort beside him, a hostile going for a charge.
     this.stuckTimer += dt;
     const checkEvery = onPerch && !parked ? 12 : 4;
-    if (this.stuckTimer > checkEvery) {
+    if (this.flee || escorting || lured) {
+      if (this.stuckTimer > checkEvery) { this._snapshotWindow(player); this.trail.length = 0; this.noProgress = 0; }
+    } else if (this.stuckTimer > checkEvery) {
       const elapsed = this.stuckTimer;
       // Progress needs three measurements, because every one of them alone
       // lies. Closing distance alone condemns a hostile chasing a player who
@@ -1653,7 +1708,7 @@ export class Enemy {
       }
     }
 
-    const speed = this.type.speed * (this.alerted ? 1 : 0.45) * (pushing ? PUSH.haste : 1);
+    const speed = this.type.speed * (this.alerted || escorting ? 1 : 0.45) * (pushing ? PUSH.haste : 1) * (this.flee ? CAST.pace : 1);
     this.vel.lerp(V3.copy(moveDir).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
     world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
@@ -1686,7 +1741,8 @@ export class Enemy {
     // face the player once alerted, otherwise face travel direction
     // — or, in a stairwell with the player out of sight, the way it is going
     const travel = this.vel.lengthSq() > 0.05 ? V3.copy(this.vel).normalize() : null;
-    const faceTarget = this.alerted && !(inShaft && !sees) ? toPlayer : travel;
+    // — or, leaving or going for a charge with the player out of sight, that way
+    const faceTarget = this.alerted && !((inShaft || this.flee || lured) && !sees) ? toPlayer : travel;
     if (faceTarget) {
       // the body is built facing -z, so its yaw points -z along the target
       const want = Math.atan2(-faceTarget.x, -faceTarget.z);
@@ -1876,6 +1932,76 @@ export class Enemy {
    * and an animation is only ever written once, for the gun.
    */
   /** Start a climb toward `dir` if there is a lip within an arm's length. */
+  /**
+   * A holdout: waits where it went to ground until cut loose, then follows
+   * the player — by the route field when they are out of sight, straight at
+   * them when not — standing off a couple of metres and hurrying when left
+   * behind. It never fires and nothing here aims at it; what being exposed
+   * costs it is `ObjectiveSystem.drainHoldout`.
+   */
+  _follow(dt, player, world) {
+    const P = player.position;
+    const dx = P.x - this.pos.x, dz = P.z - this.pos.z, dist = Math.hypot(dx, dz);
+    const move = V2.set(0, 0, 0);
+    if (this.following && dist > CAST.near) {
+      // By the route field, all the way: a line of sight out of a shop runs
+      // through a window as often as a door, and a holdout with no avoidance
+      // walks straight into the wall under it. Straight at you only for the
+      // last few metres, or where the field has no answer.
+      const nav = this.game.nav;
+      const close = dist < CAST.far && world.lineOfSight(this.pos.x, this.pos.y + 1.5, this.pos.z, P.x, P.y, P.z);
+      if (close || !nav || !this._route(nav, move)) move.set(dx / dist, 0, dz / dist);
+    }
+    const speed = this.type.speed * (dist > CAST.far ? 1.2 : dist < CAST.near + 1.5 ? 0.55 : 1);
+    this.vel.lerp(V3.copy(move).multiplyScalar(speed), Math.min(1, dt * 6));
+    this.pos.addScaledVector(this.vel, dt);
+    world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
+    world.clampToBounds(this.pos, this.radius);
+    const support = world.groundHeight(this.pos.x, this.pos.z, SUPPORT_RADIUS, this.pos.y + 0.55);
+    if (support > this.pos.y) this.pos.y = Math.min(support, this.pos.y + dt * 6);
+    else if (support < this.pos.y) this.pos.y = Math.max(support, this.pos.y - dt * 14);
+    for (const other of this.game.enemies) {
+      if (other === this || !other.alive) continue;
+      const ox = this.pos.x - other.pos.x, oz = this.pos.z - other.pos.z, d = Math.hypot(ox, oz);
+      const minD = this.radius + other.radius;
+      if (d < minD && d > 1e-3) { this.pos.x += (ox / d) * (minD - d) * 0.5; this.pos.z += (oz / d) * (minD - d) * 0.5; }
+    }
+    this.group.position.copy(this.pos);
+    // facing the way it walks, or the player when it has caught up
+    const face = this.vel.lengthSq() > 0.05 ? V3.copy(this.vel) : this.following ? V3.set(dx, 0, dz) : null;
+    if (face && face.lengthSq() > 1e-6) {
+      let diff = Math.atan2(-face.x, -face.z) - this.group.rotation.y;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      this.group.rotation.y += diff * Math.min(1, dt * 7);
+    }
+    this.lookYaw += (0 - this.lookYaw) * Math.min(1, dt * 5);
+    this.aimPitch += (0 - this.aimPitch) * Math.min(1, dt * 6);
+    this._animate(dt, dist);
+    this.group.updateMatrixWorld(true);
+  }
+
+  /**
+   * The route field's heading from here, or — pressed against a wall, inside
+   * the shoulder the field keeps clear of every solid, where it has no
+   * answer — toward whichever cell beside it is nearest the player by the
+   * field. A hostile gets out of that shoulder by its avoidance; a holdout
+   * has none, and steering straight at the player from there is steering
+   * into the wall it is against.
+   */
+  _route(nav, out) {
+    if (nav.heading(this.pos.x, this.pos.z, out)) return true;
+    let best = -1, bx = 0, bz = 0;
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2, ox = Math.cos(a), oz = Math.sin(a);
+      const c = nav.costAt(this.pos.x + ox * nav.cell, this.pos.z + oz * nav.cell);
+      if (c > 0 && (best < 0 || c < best)) { best = c; bx = ox; bz = oz; }
+    }
+    if (best < 0) return false;
+    out.set(bx, 0, bz);
+    return true;
+  }
+
   _tryClimb(world, dir) {
     const ledge = world.mantleTarget(this.pos.x, this.pos.z, this.radius, this.pos.y,
       dir.x, dir.z, CLIMB.min, CLIMB.max);
@@ -2030,7 +2156,7 @@ export class Enemy {
     }
 
     // eye flares when hurt
-    if (P.eye) P.eye.material.color.setHex(this.hurtFlash > 0 ? 0xffffff : 0xff4a2a);
+    if (P.eye) P.eye.material.color.setHex(this.hurtFlash > 0 ? 0xffffff : this.type.eye ?? 0xff4a2a);
   }
 
   /**

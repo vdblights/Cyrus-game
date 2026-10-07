@@ -291,6 +291,14 @@ export class NavGrid {
     return false;
   }
 
+  /** Cost to the player from the cell at (x, z): -1 where blocked or unreached. */
+  costAt(x, z) {
+    const i = this.col(x), j = this.col(z);
+    if (!this.inside(i, j)) return -1;
+    const k = j * this.size + i;
+    return this.blocked[k] ? -1 : this.dist[k];
+  }
+
   /** Debug/probe summary: how much of the sector a hostile can walk. */
   stats() {
     let open = 0, reachable = 0;
