@@ -1662,7 +1662,10 @@ seconds a half-made edit was on disk and hung until it was killed. Finish
 editing, then run, and kill a run before changing the layout under it.
 Nor render alongside it: a look script booting a second game on the same
 machine pushed one of the suite's boots past the harness's 60 s wait, and
-the whole run died eighteen checks in. Work on a second change in a `git
+the whole run died eighteen checks in. Four shards started together on this
+machine all missed that wait on their very first boot and ran nothing;
+two, the second started a minute and a half after the first, ran the
+whole suite. Work on a second change in a `git
 worktree` (it serves its own `src/`, with `node_modules` symlinked in), and
 give a look script its own longer wait for the menu.
 **`buildCity`'s helpers are nested `function`s declared after its
