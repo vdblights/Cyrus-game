@@ -198,6 +198,9 @@ aisles of shelving, a counter, tables, crates. It is cover from a marksman on a
 roof, whose sight line the floors cut, and a fight at close range through
 doorways and windows; a jump indoors stops at the ceiling, and so does a
 grenade. Hostiles follow you in, a warlord stooping under the ceiling to do it.
+The floors are what a looted shop leaves: paper drifted along the walls and
+blown in at the doors, plaster down from the ceiling, and glass under every
+window.
 
 Most of the lower ones go further: a stairwell in a back corner of the shop,
 switchback flights of concrete steps climbing lap over lap to a bulkhead on
@@ -210,7 +213,8 @@ route field is built from the stair's door, every hostile that can fit under
 the flights walks there and climbs after you, and they come back down the
 same way when you leave. A ranged hostile with a clear shot at the roof from
 the street takes it instead, and one on the roof with a shot down holds it.
-Juggernauts are too tall for the stairs and wait below.
+A juggernaut comes up stooped under the flights; a warlord is too big for
+the stairs and waits below.
 
 They use the buildings against you, too. Go into a shop and up to two of the
 riflemen take posts outside, each with a sight line into a doorway, and hold

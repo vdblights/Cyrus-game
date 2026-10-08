@@ -1389,39 +1389,15 @@ function debris(group, world, litterMat, chipMats) {
   const sheet = (x, z) => {
     if (!clear(x, z)) return;
     const y = world.groundHeight(x, z, 0.05, 0.6) + 0.006;
-    const q = (Math.random() * 4) | 0, u0 = (q % 2) * 0.5, v0 = q < 2 ? 0.5 : 0;
-    const w = randRange(0.18, 0.38), d = w * randRange(0.6, 1.0), a = Math.random() * Math.PI * 2;
-    const c = Math.cos(a), sn = Math.sin(a);
-    const corner = (cx, cz) => [x + cx * c - cz * sn, y, z + cx * sn + cz * c];
-    const pts = [corner(-w / 2, -d / 2), corner(w / 2, -d / 2), corner(w / 2, d / 2), corner(-w / 2, d / 2)];
     // flat on one level, or a corner hangs in the air over the kerb
-    for (const [px, , pz] of pts) {
-      if (Math.abs(world.groundHeight(px, pz, 0.02, 0.6) + 0.006 - y) > 0.01) return;
-      if (world.occupied(px, pz, 0.02, 0.4)) return;
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pts.flat(), 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(
-      [u0, v0, u0 + 0.5, v0, u0 + 0.5, v0 + 0.5, u0, v0 + 0.5], 2));
-    // corners run anticlockwise seen from below with this rotation, so the
-    // sky-facing order is 0-2-1 / 0-3-2
-    g.setIndex([0, 2, 1, 0, 3, 2]);
-    bucket(x, z, litterMat).push(g);
+    const g = litterSheet(x, y, z, (px, pz) => Math.abs(world.groundHeight(px, pz, 0.02, 0.6) + 0.006 - y) <= 0.01
+      && !world.occupied(px, pz, 0.02, 0.4));
+    if (g) bucket(x, z, litterMat).push(g);
   };
   const chip = (x, z) => {
     if (!clear(x, z)) return;
-    const y = world.groundHeight(x, z, 0.05, 0.6);
-    const w = randRange(0.06, 0.22), h = randRange(0.04, 0.1), d = randRange(0.05, 0.18);
-    const mat = chipMats[Math.random() < 0.6 ? 1 : 0];
-    // a plain box: at a tenth of a metre a chamfer is 32 more triangles a
-    // chip nobody can see, and the chips land in the concrete batches that
-    // the shadow cascades draw again
-    const g = boxGeo(w, h, d, TILE.concrete);
-    g.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(
-      new THREE.Euler(randRange(-0.3, 0.3), Math.random() * Math.PI, randRange(-0.3, 0.3))));
-    g.translate(x, y + h * 0.2, z);
-    bucket(x, z, mat).push(g);
+    const g = litterChip(x, world.groundHeight(x, z, 0.05, 0.6), z, chipMats);
+    bucket(x, z, g.mat).push(g.geo);
   };
 
   const apron = (LOT + 6) / 2;
@@ -1459,6 +1435,150 @@ function debris(group, world, litterMat, chipMats) {
     mesh.userData.tint = tintAt(b.x, b.z, 33, 0.18);
     group.add(mesh);
   }
+}
+
+/**
+ * A sheet of litter lying at `y`: newsprint, card, white paper or plastic,
+ * a quarter of the litter tile each, turned at random. Null unless `fits`
+ * holds at every corner, because a sheet asked only about its middle hangs
+ * a corner over a kerb.
+ */
+function litterSheet(x, y, z, fits) {
+  const q = (Math.random() * 4) | 0, u0 = (q % 2) * 0.5, v0 = q < 2 ? 0.5 : 0;
+  const w = randRange(0.18, 0.38), d = w * randRange(0.6, 1.0), a = Math.random() * Math.PI * 2;
+  const c = Math.cos(a), sn = Math.sin(a);
+  const corner = (cx, cz) => [x + cx * c - cz * sn, y, z + cx * sn + cz * c];
+  const pts = [corner(-w / 2, -d / 2), corner(w / 2, -d / 2), corner(w / 2, d / 2), corner(-w / 2, d / 2)];
+  for (const [px, , pz] of pts) if (!fits(px, pz)) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pts.flat(), 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(
+    [u0, v0, u0 + 0.5, v0, u0 + 0.5, v0 + 0.5, u0, v0 + 0.5], 2));
+  // corners run anticlockwise seen from below with this rotation, so the
+  // sky-facing order is 0-2-1 / 0-3-2
+  g.setIndex([0, 2, 1, 0, 3, 2]);
+  return g;
+}
+
+/**
+ * A chip of brick or concrete sitting on `y`. A plain box: at a tenth of a
+ * metre a chamfer is 32 more triangles a chip nobody can see, and the chips
+ * land in the concrete batches that the shadow cascades draw again.
+ */
+function litterChip(x, y, z, chipMats, scale = 1) {
+  const w = randRange(0.06, 0.22) * scale, h = randRange(0.04, 0.1) * scale, d = randRange(0.05, 0.18) * scale;
+  const mat = chipMats[Math.random() < 0.6 ? 1 : 0];
+  const geo = boxGeo(w, h, d, TILE.concrete);
+  geo.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(
+    new THREE.Euler(randRange(-0.3, 0.3), Math.random() * Math.PI, randRange(-0.3, 0.3))));
+  geo.translate(x, y + h * 0.2, z);
+  return { geo, mat };
+}
+
+/** How far a shop's floor finish stands over the pavement it is laid on. */
+const FINISH = 0.015;
+
+/**
+ * What a looted shop has on its floor: paper drifted into the corners and
+ * along the walls, a fan of it blown in at each doorway and more across the
+ * floor; flakes of plaster down from the ceiling; and glass under every
+ * window, from the pane that was in it. All of it is decoration by the flush
+ * rule — a few millimetres over the floor finish, and only where every
+ * corner of it finds the shop floor and nothing standing on it — so it is
+ * walked over and shot through, and it is placed inside `decor`, after
+ * everything else, where it costs the layout and the street nothing.
+ */
+function shopLitter(group, world, litterMat, shardMat, chipMats) {
+  const T = 0.35;                                   // a shopfront wall, as `groundFloor` builds it
+  const floorAt = (room, x, z, pad) => x > room.minX + T + pad && x < room.maxX - T - pad
+    && z > room.minZ + T + pad && z < room.maxZ - T - pad
+    && Math.abs(world.groundHeight(x, z, 0.02, room.floor + 0.5) - room.floor) < 0.005
+    && !world.blocked(x, z, pad, room.floor + 0.1);
+  for (const room of world.rooms) {
+    const geos = new Map();
+    const add = (mat, geo) => { let a = geos.get(mat); if (!a) geos.set(mat, a = []); a.push(geo); };
+    // what was laid, for anything that wants to know a shop is not bare
+    const laid = room.litter = { sheets: 0, chips: 0, glass: 0 };
+    const y = room.floor + FINISH;
+    const x0 = room.minX + T, x1 = room.maxX - T, z0 = room.minZ + T, z1 = room.maxZ - T;
+    const iw = x1 - x0, id = z1 - z0, area = iw * id;
+    const sheet = (x, z) => {
+      if (!floorAt(room, x, z, 0.05)) return;
+      const g = litterSheet(x, y + 0.006, z, (px, pz) => floorAt(room, px, pz, 0.01));
+      if (g) { add(litterMat, g); laid.sheets++; }
+    };
+    // against a wall: which wall by its length, how far out by a square, so
+    // it banks up at the foot
+    const byWall = (out) => {
+      const t = Math.random() * 2 * (iw + id);
+      const o = 0.12 + out * Math.random() ** 2;
+      if (t < iw) return [x0 + t, z0 + o];
+      if (t < 2 * iw) return [x0 + t - iw, z1 - o];
+      if (t < 2 * iw + id) return [x0 + o, z0 + t - 2 * iw];
+      return [x1 - o, z0 + t - 2 * iw - id];
+    };
+    for (let k = Math.round(area / 7); k > 0; k--) { const [x, z] = byWall(0.9); sheet(x, z); }
+    for (let k = Math.round(area / 9); k > 0; k--) sheet(x0 + Math.random() * iw, z0 + Math.random() * id);
+    // blown in at the doors, spreading as it comes
+    for (const d of room.doors) {
+      const tx = -d.nz, tz = d.nx;
+      for (let k = Math.round(d.width * 2.5); k > 0; k--) {
+        const into = 0.4 + 3.2 * Math.random() ** 1.5;
+        const across = (Math.random() - 0.5) * (d.width * 0.7 + into * 0.8);
+        sheet(d.x - d.nx * (T / 2 + into) + tx * across, d.z - d.nz * (T / 2 + into) + tz * across);
+      }
+    }
+    // plaster down from the ceiling, and more of it along the walls
+    const chip = (x, z) => {
+      if (!floorAt(room, x, z, 0.15)) return;
+      const c = litterChip(x, y, z, chipMats, 0.7);
+      add(c.mat, c.geo);
+      laid.chips++;
+    };
+    for (let k = Math.round(area / 10); k > 0; k--) chip(x0 + Math.random() * iw, z0 + Math.random() * id);
+    for (let k = Math.round(area / 12); k > 0; k--) { const [x, z] = byWall(0.5); chip(x, z); }
+    // the glass that was in each window, inside under it
+    for (const wdw of room.windows) {
+      const tx = -wdw.nz, tz = wdw.nx;
+      for (let k = Math.round(wdw.width * 9); k > 0; k--) {
+        const into = 0.05 + 1.4 * Math.random() ** 2;
+        const across = (Math.random() - 0.5) * (wdw.width + into * 0.6);
+        const x = wdw.x - wdw.nx * (T / 2 + into) + tx * across, z = wdw.z - wdw.nz * (T / 2 + into) + tz * across;
+        const g = shard(x, y + 0.004, z, randRange(0.015, 0.07));
+        if (g && [0, 1, 2].every((i) => floorAt(room, g.p[i * 3], g.p[i * 3 + 2], 0.005))) { add(shardMat, g.geo); laid.glass++; }
+      }
+    }
+    for (const [mat, list] of geos) {
+      const mesh = new THREE.Mesh(mergeIntoOne(list), mat);
+      mesh.receiveShadow = true;
+      mesh.userData.debris = true;
+      mesh.userData.tint = tintAt((room.minX + room.maxX) / 2, (room.minZ + room.maxZ) / 2, 33, 0.18);
+      group.add(mesh);
+    }
+  }
+}
+
+/**
+ * A shard of glass lying flat: a sliver of a triangle, wound to face up
+ * whichever way its corners fell. Unwrapped planar at the glass tile, though
+ * the shard material carries no map and declares no tile.
+ */
+function shard(x, y, z, size) {
+  const a = Math.random() * Math.PI * 2;
+  const p = [];
+  for (let i = 0; i < 3; i++) {
+    const t = a + (i / 3) * Math.PI * 2 + randRange(-0.5, 0.5), r = size * randRange(0.35, 1);
+    p.push(x + Math.cos(t) * r, y, z + Math.sin(t) * r);
+  }
+  // facing up: (b - a) x (c - a) has a positive y
+  const cy = (p[5] - p[2]) * (p[6] - p[0]) - (p[3] - p[0]) * (p[8] - p[2]);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 2].map((i) => [p[i * 3] / TILE.glass, p[i * 3 + 2] / TILE.glass]).flat(), 2));
+  geo.setIndex(cy > 0 ? [0, 1, 2] : [0, 2, 1]);
+  return { geo, p };
 }
 
 /** One tuft: two crossed cards, each built front and back. */
@@ -1776,6 +1896,14 @@ export const CITY_PAINT = [
         roughness: 0.92, metalness: 0, envMapIntensity: 0.5, vertexColors: true,
         polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
       });
+      // Broken glass on a shop floor. The wrecks' glass is dark and metallic,
+      // a pane seen against the sky; a shard seen from above against dark
+      // concrete is the other way round, pale and smooth, and the dark glass
+      // laid flat read as scraps of black card.
+      m.shardMat = new THREE.MeshStandardMaterial({
+        color: 0xb9c9c2, roughness: 0.12, metalness: 0, envMapIntensity: 1.6, vertexColors: true,
+        polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+      });
     },
   },
   {
@@ -1868,6 +1996,7 @@ function labelMaterials(m) {
   m.waterMat.userData.name = 'water';
   m.dampMat.userData.name = 'damp';
   m.litterMat.userData.name = 'litter';
+  m.shardMat.userData.name = 'shards';
 }
 
 /**
@@ -1887,7 +2016,7 @@ export function buildCity(scene, painted = null) {
   labelMaterials(mats);
   const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
     asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, ironMat, gratingMat, railMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
-    waterMat, dampMat, litterMat } = mats;
+    waterMat, dampMat, litterMat, shardMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
   const rustFor = (x, z) =>
@@ -2177,6 +2306,7 @@ export function buildCity(scene, painted = null) {
     puddles(group, world, waterMat, dampMat);
     debris(group, world, litterMat, [concreteMat, darkConcrete]);
     streetIron(group, world, coverMat, grateMat, tactileMat);
+    shopLitter(group, world, litterMat, shardMat, [concreteMat, darkConcrete]);
   });
 
   const batches = bakeStatic(group, world);
@@ -2847,7 +2977,7 @@ export function buildCity(scene, painted = null) {
       k += 10;
     }
 
-    const room = { minX: x - bw / 2, maxX: x + bw / 2, minZ: z - bd / 2, maxZ: z + bd / 2, floor: KERB, ceiling: under, doors: [] };
+    const room = { minX: x - bw / 2, maxX: x + bw / 2, minZ: z - bd / 2, maxZ: z + bd / 2, floor: KERB, ceiling: under, doors: [], windows: [] };
     const shaft = h <= STAIR.top ? placeShaft(x, z, bw, bd, T, faces, r) : null;
     const footprint = { minX: x - bw / 2, maxX: x + bw / 2, minZ: z - bd / 2, maxZ: z + bd / 2 };
 
@@ -2872,7 +3002,7 @@ export function buildCity(scene, painted = null) {
     }
     // a floor finish over the pavement, flush with it, with vertices across
     // it for the bake to darken
-    part(bw - T * 2, 0.015, bd - T * 2, x, KERB, z, darkConcrete, false, TILE.concrete, { cells: 8 });
+    part(bw - T * 2, FINISH, bd - T * 2, x, KERB, z, darkConcrete, false, TILE.concrete, { cells: 8 });
 
     // a piece of wall along a face, from `a` to `b` along it, `lo` to `hi` up it
     const wall = (f, a, b, lo, hi, mat = conc, collide = true, tile = TILE.concrete) => {
@@ -2896,7 +3026,13 @@ export function buildCity(scene, painted = null) {
       }
       for (let i = 0; i < bays; i++) {
         const a = -half + span * i + PIER / 2, b = a + span - PIER;
-        if (kinds[i] === 'window') wall(f, a, b, 0, KERB + 0.95);
+        if (kinds[i] === 'window') {
+          wall(f, a, b, 0, KERB + 0.95);
+          const m = (a + b) / 2;
+          room.windows.push(f.along === 'x'
+            ? { x: x + m, z: f.at, nx: 0, nz: f.s, width: b - a }
+            : { x: f.at, z: z + m, nx: f.s, nz: 0, width: b - a });
+        }
         else if (kinds[i] === 'shut') wall(f, a, b, 0, under, rustFor(x + a, z + b), true, TILE.rust);
         // a doorway: open to the ceiling, its shutter rolled up into a box at
         // the top, which is above any head

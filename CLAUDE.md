@@ -294,6 +294,28 @@ These each cost real debugging time. Changing them needs a reason.
   one in at a doorway and stands one in the street: 0.84 m through the
   ceiling in 21 of 21 rooms with the stoop off, 0.32 m in 2 with the query
   narrowed, and 3.57 m tall outside either way.
+  **The stoop takes a juggernaut up a stairwell.** A flight's headroom is
+  2.41-2.5 m and a juggernaut is 2.57 m of body, so none was ever sent up;
+  the stair walk now asks whether it fits *stooped* (`fitsStair`: the crown
+  at full stoop, 1.46 of its units, under `stair.clear`), and on a stair it
+  collides at that height (`bodyHeight`), or a flight overhead is a wall
+  and the shaft's door a lintel. Every elite fits but a warlord (2.86 m
+  stooped). A lane is 1.25 m and an elite raider 1.31 m across, and a test
+  of the width was written and taken out, because one walked four
+  stairwells without it. **Headroom is asked from the hips**
+  (`STOOP.hip`), not the feet: on a flight the tread two steps up has its
+  underside 5 cm over the feet, so asked from the feet every hostile
+  stooped all the way up every stair, which nothing caught for a whole
+  pass because a scavenger stooping is only a pose. `a juggernaut stoops up
+  a stairwell after you, and a warlord stays down` follows the player up
+  all 13 of seed 1's stairwells with one (up in 17-26 s, down in 13-18 s,
+  no relocations) and reads every point of its body against the flight
+  over it: 0 of 13 up with the old gate or the old collision height, 0.265
+  m through a flight with the stoop off, and a scavenger stooped 0.27 with
+  the query back at the feet. A ranged hostile walking after a player on a
+  roof is handed a post outside the shop under it, which is the posts
+  working, so the check keeps it off them (`postAfter = Infinity`) — a
+  raider without that misses the same 6 stairwells a juggernaut does.
 - **A room is furnished to three pieces, or as near as it fits.** A 10 m
   shop with a stairwell was an empty concrete box: the shaft and the floor
   in front of it (`shaft.blocks`) took the blank walls that shelving and
@@ -368,9 +390,9 @@ These each cost real debugging time. Changing them needs a reason.
   watchdog, because laps of a 3 x 6 m shaft look exactly like a hostile
   going nowhere. A ranged hostile with a clear shot at the roof from the
   street takes it rather than climbing, and one on the roof with a shot down
-  holds it. A body taller than the headroom under a flight (`stair.clear`,
+  holds it. A body that does not fit stooped under a flight (`stair.clear`,
   the lap less the slab, at most the 2.5 m doors) is never sent up, which
-  is every juggernaut. The layout outside those buildings is untouched,
+  is a warlord; see the stoop invariant for the juggernaut. The layout outside those buildings is untouched,
   proved collider by collider (see the layout check), after one fix:
   `areaClear` read the parapet's 30 cm overhang as an obstacle in the
   street and moved seed 20260101's perches, so it ignores boxes standing
@@ -860,9 +882,22 @@ These each cost real debugging time. Changing them needs a reason.
   times because those batches cast shadows, and took a frame from 190k
   triangles to 424k. The weeds sway on game time (`windTime`, advanced in
   `frame`), with the tip moving as `v²` and the phase running across the
-  city so a gust is seen to travel. `puddles and litter lie on the ground
+  city so a gust is seen to travel. A shop floor has its own pass
+  (`shopLitter`), because `occupied` calls every room taken and `debris`
+  never lays anything in one: paper banked along the walls and fanned in at
+  each doorway, plaster chips, and glass under every window. It lies on the
+  floor finish, 1.5 cm over the pavement (`FINISH`) — laid on the pavement
+  it is under the finish and not drawn — and asks `blocked` at every
+  corner, which is what a body walking in meets. The glass has its own
+  material: the wrecks' glass, dark and metallic, read as scraps of black
+  card laid flat, and a shard seen from above against dark concrete is pale
+  and smooth. It runs last inside the same `decor`, so the street's
+  ironwork keeps the draws it had. `puddles and litter lie on the ground
   they are drawn on` and `weeds move in the wind, and are still when time
-  is` guard them.
+  is` guard them; the first asks every room for paper, plaster and glass
+  under its windows, and fails with the shop pass not run, with the corners
+  not asked (141 vertices inside furniture) and with the litter laid under
+  the finish.
 - **What is set into the street asks the ground under every corner.**
   `streetIron` in `city.js` lays manhole covers in the lanes, gully grates
   in the gutters and blister paving on the dropped kerb at both ends of
@@ -1781,6 +1816,14 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The pass after that took two more off it: a juggernaut up the stairs and
+litter on the shop floors, both in the invariants above. The juggernaut
+needed nothing new, only the stoop asked about at the foot of a stair, and
+looking for why a stooped one fitted turned up every hostile stooping on
+every flight since the stoop landed. The litter is about 1,350 sheets, 600
+chips and 3,000 shards on seed 1: 13k triangles on a 404k city, and the
+layout and the stream mark after boot unchanged.
 
 The pass after it took three things off the list: a warlord's head
 through a shop's ceiling (it stoops), the bare stair shops (furnished), and
@@ -2920,28 +2963,22 @@ Suggested next work, in the order I would do it:
    the courtyard would show through. The shadow map would still see a solid
    wall, and so would `hitscan`, which is the bigger question: a hole you can
    see through and not shoot through reads as a bug.
-3. **Litter on the shop floors.** Every room has its furniture now, but
-   the floor finish is bare concrete. Flush litter and chips are free by
-   the decoration rules, and the street's `debris` already knows how to
-   lay them on one level.
-4. **Tune the armoury's prices against play.** The costs (500-4,000
+3. **Tune the armoury's prices against play.** The costs (500-4,000
    scrip) are first guesses against about 1,500 points a wave early on.
    Whether a run can afford the plate carrier before wave 4, and whether
    anyone buys optics, is a play question.
-5. **Frags at a roof.** The planner already aims at the player wherever
+4. **Frags at a roof.** The planner already aims at the player wherever
    they stand, but a throw from the street onto a stair roof has to clear a
    parapet 8-15 m up, and whether it ever finds one has not been measured.
    A hostile at the foot of the stairs could cover the door instead of
-   climbing, the way posts cover a shop.
-6. **Upper floors you walk through**, if play asks for them. A stairwell
+   climbing, the way posts cover a shop. Today a ranged hostile after a
+   player on a roof is handed a post outside the *shop* under it, which
+   watches a doorway the player is not behind.
+5. **Upper floors you walk through**, if play asks for them. A stairwell
    climbs past every floor of its building and opens on none of them. A
    floor off a landing is a room with a `base` and a deck under it, which
    the readers now handle; the route field still is not, but the stair
    points already are, so a floor would be a branch off the walk.
-7. **A juggernaut up the stairs.** A warlord stoops into a shop now, but
-   no juggernaut is ever sent up a stairwell, because a flight's headroom
-   is under its body. The stoop would fit one under a flight; the stair
-   walk would have to know it does.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403

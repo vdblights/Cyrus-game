@@ -159,7 +159,20 @@ const CROUCH = { drop: 0.36, thigh: 1.1, knee: -1.9, lean: 0.22 };
  * what has it down before a lintel rather than under it: in a doorway the
  * head leans in under the slab's edge before the feet are under it.
  */
-const STOOP = { top: 1.9, margin: 0.06, leg: 0.86, max: 0.5, lean: 0.3 };
+const STOOP = { top: 1.9, margin: 0.06, leg: 0.86, max: 0.5, lean: 0.3, hip: 0.9 };
+
+/** The crown of a body stooped as far as it goes, in metres. */
+const stoopedHeight = (e) => (STOOP.top - STOOP.max + STOOP.margin) * e.group.scale.x;
+
+/** Whether a body goes up a stairwell: stooped, under a flight's headroom. */
+const fitsStair = (e, stair) => stoopedHeight(e) <= stair.clear;
+
+/**
+ * The height a body collides at. Its archetype's, so an elite follows you
+ * into a shop; on a stair, its stooped crown, or a flight overhead is a
+ * wall and the shaft's door a lintel it cannot pass.
+ */
+const bodyHeight = (e) => (e.stair ? Math.min(1.9 * e.type.scale, stoopedHeight(e)) : 1.9 * e.type.scale);
 
 /**
  * Hostile archetypes. `preferred` is the range the AI tries to hold; melee
@@ -1292,8 +1305,10 @@ export class Enemy {
    * of points — through the door, up each flight, across each landing and
    * out of the bulkhead — one at a time. It turns round mid-flight when the
    * player does, comes back down the same way when the player leaves, and
-   * forgets the stair at its foot. A body too tall for the headroom under a
-   * flight is never sent up one.
+   * forgets the stair at its foot. A body sent up stoops under each flight
+   * (`_headroom`) and collides at its stooped height while it is on one, so
+   * the question at the foot is whether it fits stooped under the headroom
+   * of a flight. A juggernaut does, and every elite but a warlord.
    *
    * @returns {false|'out'|'in'|'with'} false when there is no stair in it;
    *   'out' when walking open ground or a roof toward one, where avoidance
@@ -1308,7 +1323,7 @@ export class Enemy {
       if (this.pos.x < r.minX - 2 || this.pos.x > r.maxX + 2 || this.pos.z < r.minZ - 2 || this.pos.z > r.maxZ + 2) this.stair = null;
     }
     if (!this.stair) {
-      if (!here || 1.9 * this.group.scale.x > here.stair.clear) return false;
+      if (!here || !fitsStair(this, here.stair)) return false;
       const foot = here.stair.path[0];
       const d = Math.hypot(foot.x - this.pos.x, foot.z - this.pos.z);
       if (d > 0.7 || Math.abs(this.pos.y - foot.y) > 0.6) {
@@ -1727,7 +1742,7 @@ export class Enemy {
     const speed = this.type.speed * (this.alerted || escorting ? 1 : 0.45) * (pushing ? PUSH.haste : 1) * (this.flee ? CAST.pace : 1);
     this.vel.lerp(V3.copy(moveDir).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
-    world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
+    world.resolve(this.pos, this.radius, this.pos.y, 0.55, bodyHeight(this));
     world.clampToBounds(this.pos, this.radius);
 
     // Follow the surface underfoot: stairs and platforms carry hostiles too,
@@ -1972,7 +1987,7 @@ export class Enemy {
     const speed = this.type.speed * (dist > CAST.far ? 1.2 : dist < CAST.near + 1.5 ? 0.55 : 1);
     this.vel.lerp(V3.copy(move).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
-    world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
+    world.resolve(this.pos, this.radius, this.pos.y, 0.55, bodyHeight(this));
     world.clampToBounds(this.pos, this.radius);
     const support = world.groundHeight(this.pos.x, this.pos.z, SUPPORT_RADIUS, this.pos.y + 0.55);
     if (support > this.pos.y) this.pos.y = Math.min(support, this.pos.y + dt * 6);
@@ -2019,10 +2034,15 @@ export class Enemy {
     return true;
   }
 
-  /** Down under a ceiling lower than its crown, by as much as it takes (`STOOP`). */
+  /**
+   * Down under a ceiling lower than its crown, by as much as it takes
+   * (`STOOP`). Asked from the hips, not the feet: on a flight the tread two
+   * steps up has its underside a few centimetres over the feet, and a body
+   * asked from its feet stooped all the way up every stair.
+   */
   _headroom(dt, world) {
     const s = this.group.scale.x;
-    const room = world.ceilingAbove(this.pos.x, this.pos.z, this.radius, this.pos.y) - this.pos.y;
+    const room = world.ceilingAbove(this.pos.x, this.pos.z, this.radius, this.pos.y + STOOP.hip * s) - this.pos.y;
     const want = THREE.MathUtils.clamp((STOOP.top + STOOP.margin) - room / s, 0, STOOP.max);
     // quick to go down, slower to come back up
     this.stoop += (want - this.stoop) * Math.min(1, dt * (want > this.stoop ? 10 : 3));
