@@ -228,14 +228,14 @@ export class ObjectiveSystem {
     return kind ? this.start(kind) : null;
   }
 
-  start(kind) {
+  start(kind, instead = null) {
     const def = OBJECTIVES[kind];
     if (!def || this.active) return null;
     const site = this.siteFor(kind, def);
     // A relay needs a stairwell in reach, a rescue a shop, a hunt a route
     // across the sector; a seed short of one gets a beacon instead, rather
     // than a wave with nothing to do.
-    if (!site) return kind === 'hold' ? null : this.start('hold');
+    if (!site) return kind === 'hold' ? null : this.start('hold', kind);
 
     const g = this.game;
     const p = g.player.position;
@@ -247,6 +247,7 @@ export class ObjectiveSystem {
       startedAt: g.time, expiresAt: g.time + def.limit, nextCall: 0,
       stage: 'go', label: null, note: null, fill: null,
       exit: site.exit || null, target: null,
+      instead,                          // what was asked for, when this is the beacon in its place
     };
     const a = this.active;
 

@@ -2666,6 +2666,114 @@ export function buildCity(scene, painted = null) {
   }
 
   /**
+   * A room the rest of the furnishing left bare — a 10 m shop with a
+   * stairwell in it, where the shaft and the floor in front of it take the
+   * blank walls the shelving and crates would have gone on — gets a table,
+   * a stack of crates and a shelf unit against whatever wall is free. Each
+   * keeps out of the stairwell's way (`shaft.blocks`), a doorway's
+   * half-width and 1.2 m from every doorway, and a metre from everything
+   * else furnished, so the route field still reaches the whole floor.
+   * Everything goes against a blank wall (`site` has why). Every roll is a
+   * hash of
+   * where the building is, on salts nothing else uses, and it is all built
+   * inside the tower's reserve, so the stream never sees it.
+   */
+  function furnishBare(w, pieces, faces, room, shaft, x, z, r, part, metal, tag) {
+    if (pieces.filter((q) => !q.column).length >= 3) return;
+    const T = 0.35;
+    const clear = (px, pz, gw, gd) => {
+      if (shaft && shaft.blocks(px, pz, gw, gd)) return false;
+      for (const d of room.doors) {
+        const dx = Math.max(0, Math.abs(px - d.x) - gw / 2), dz = Math.max(0, Math.abs(pz - d.z) - gd / 2);
+        if (Math.hypot(dx, dz) < d.width / 2 + 1.2) return false;
+      }
+      for (const q of pieces) {
+        if (Math.abs(px - q.x) < (gw + q.w) / 2 + 1.0 && Math.abs(pz - q.z) < (gd + q.d) / 2 + 1.0) return false;
+      }
+      return true;
+    };
+    // somewhere along a blank wall: the face, then a place along it, both
+    // started from a roll so no two buildings pick the same corner. Never
+    // under a window: the sill is a ledge, and with anything standing just
+    // inside it a pull-up through the window lands on that, a second rise
+    // in the middle of a climb that lurches the view
+    const site = (len, deep, salt) => {
+      const f0 = Math.floor(r(salt) * 4);
+      for (let i = 0; i < 4; i++) {
+        const f = faces[(f0 + i) % 4];
+        if (f.street) continue;
+        const room0 = f.len - len - 1.2;
+        if (room0 < 0) continue;
+        for (const t of [r(salt + 1) - 0.5, 0.35, -0.35, 0, 0.18, -0.18]) {
+          const along = t * room0, inward = f.at - f.s * (T / 2 + 0.12 + deep / 2);
+          const px = f.along === 'x' ? x + along : inward, pz = f.along === 'x' ? inward : z + along;
+          const gw = f.along === 'x' ? len : deep, gd = f.along === 'x' ? deep : len;
+          if (clear(px, pz, gw, gd)) return { px, pz, gw, gd, face: f };
+        }
+      }
+      return null;
+    };
+
+    // a table: a top on four legs. A body meets the whole of it, to its top;
+    // a round meets the top and the legs, and goes under it between them.
+    const t = site(1.5, 0.8, 101);
+    if (t) {
+      const from = w.boxes.length;
+      const top = 0.78;
+      w.solids.push(part(t.gw, 0.05, t.gd, t.px, KERB + top - 0.05, t.pz, metal, false, TILE.metal));
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        w.solids.push(part(0.06, top - 0.05, 0.06, t.px + sx * (t.gw / 2 - 0.08), KERB, t.pz + sz * (t.gd / 2 - 0.08), metal, false, TILE.metal));
+      }
+      w.addBox(t.px - t.gw / 2, t.pz - t.gd / 2, t.px + t.gw / 2, t.pz + t.gd / 2, KERB + top);
+      tag(from);
+      pieces.push({ x: t.px, z: t.pz, w: t.gw, d: t.gd });
+    }
+    // two crates against a blank wall, and a third on them
+    const c = site(1.55, 0.75, 111);
+    if (c) {
+      const from = w.boxes.length;
+      const along = c.gw > c.gd, s = 0.72;
+      for (const k of [-1, 1]) {
+        const px = c.px + (along ? k * 0.4 : 0), pz = c.pz + (along ? 0 : k * 0.4);
+        part(s, s, s, px, KERB, pz, rustFor(px, pz), true, TILE.rust);
+      }
+      const lean = (r(121) - 0.5) * 0.3;
+      part(0.62, 0.62, 0.62, c.px + (along ? lean : 0), KERB + s, c.pz + (along ? 0 : lean), rustFor(c.px, c.pz + 1), true, TILE.rust);
+      tag(from);
+      pieces.push({ x: c.px, z: c.pz, w: c.gw, d: c.gd });
+    }
+    // and a low shelf unit on a blank wall, standing on its own feet
+    const u = site(1.4, 0.45, 131);
+    if (u) {
+      // boards, sides and a back panel against the wall, each something a
+      // round stops at; a body meets the whole unit
+      const along = u.gw > u.gd, f = u.face;
+      const add = (gw, gh, gd, px, py, pz) => w.solids.push(part(gw, gh, gd, px, py, pz, metal, false, TILE.metal));
+      for (const lv of [0.12, 0.62, 1.12]) add(u.gw, 0.04, u.gd, u.px, KERB + lv, u.pz);
+      for (const k of [-1, 1]) {
+        const px = u.px + (along ? k * (u.gw / 2 - 0.03) : 0), pz = u.pz + (along ? 0 : k * (u.gd / 2 - 0.03));
+        add(along ? 0.05 : u.gw, 1.3, along ? u.gd : 0.05, px, KERB, pz);
+      }
+      const bx = u.px + (f.along === 'x' ? 0 : f.s * (u.gw / 2 - 0.02)), bz = u.pz + (f.along === 'x' ? f.s * (u.gd / 2 - 0.02) : 0);
+      add(along ? u.gw : 0.03, 1.3, along ? 0.03 : u.gd, bx, KERB, bz);
+      w.addBox(u.px - u.gw / 2, u.pz - u.gd / 2, u.px + u.gw / 2, u.pz + u.gd / 2, KERB + 1.3);
+      tag(w.boxes.length - 1);
+      pieces.push({ x: u.px, z: u.pz, w: u.gw, d: u.gd });
+    }
+    // and where that still leaves it short, a lone crate, which fits a gap
+    // nothing longer does
+    if (pieces.filter((q) => !q.column).length < 3) {
+      const o = site(0.75, 0.75, 141);
+      if (o) {
+        const from = w.boxes.length;
+        part(0.75, 0.75, 0.75, o.px, KERB, o.pz, rustFor(o.px, o.pz), true, TILE.rust);
+        tag(from);
+        pieces.push({ x: o.px, z: o.pz, w: 0.75, d: 0.75 });
+      }
+    }
+  }
+
+  /**
    * A ground floor you can walk into, under the floors of a building that
    * stay solid (`opensAt` says which). Built inside the tower's `reserve`
    * and placed by `hash2`, so it costs the seeded stream nothing; what it
@@ -2804,9 +2912,20 @@ export function buildCity(scene, painted = null) {
     }
 
     // inside — everything kept off a stairwell and the floor in front of it
+    const pieces = [];                 // footprints furnished, to keep the next clear of
+    // every collider a piece of furniture registered carries the piece's
+    // number in its room, so a stack of crates reads as one thing
+    let pieceN = 0;
+    const tag = (from) => { pieceN++; for (let k = from; k < w.boxes.length; k++) w.boxes[k].piece = pieceN; };
     const furnish = (gw, gh, gd, px, py, pz, mat, tile = TILE.concrete) => {
       if (shaft && shaft.blocks(px, pz, gw, gd)) return;
+      const from = w.boxes.length;
       part(gw, gh, gd, px, py, pz, mat, true, tile);
+      // a column is structure, not furniture: it keeps things clear of it
+      // and does not count toward a room being furnished
+      const column = gh >= under - 0.01;
+      if (!column) tag(from);
+      pieces.push({ x: px, z: pz, w: gw, d: gd, column });
     };
     const iw = bw - T * 2, id = bd - T * 2;           // the room, wall to wall
     if (Math.min(iw, id) > 15) {
@@ -2862,6 +2981,8 @@ export function buildCity(scene, painted = null) {
         furnish(c, c, c, px, KERB, pz, rustFor(px, pz), TILE.rust);
       }
     }
+
+    furnishBare(w, pieces, faces, room, shaft, x, z, r, part, metal, tag);
 
     if (!shaft) return null;
     const stair = stairwell(g, w, shaft, x, z, bw, bd, h, conc, metal, tint, body, cap, party, under, footprint);

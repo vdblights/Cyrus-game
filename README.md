@@ -194,10 +194,10 @@ already inside your guard.
 About one building in three has a ground floor you can walk into — the ones
 with a concrete ground storey and a shopfront of piers, rust shutters and
 windows over a sill. Inside is a dim shop under the floors above: columns,
-aisles of shelving, a counter, crates. It is cover from a marksman on a
+aisles of shelving, a counter, tables, crates. It is cover from a marksman on a
 roof, whose sight line the floors cut, and a fight at close range through
 doorways and windows; a jump indoors stops at the ceiling, and so does a
-grenade. Hostiles follow you in.
+grenade. Hostiles follow you in, a warlord stooping under the ceiling to do it.
 
 Most of the lower ones go further: a stairwell in a back corner of the shop,
 switchback flights of concrete steps climbing lap over lap to a bulkhead on
@@ -324,6 +324,8 @@ learning to shoot; an evac window opens instead when a warlord goes down.
 The newer four each ask something different of you:
 
 - **A relay** is up a stairwell on a roof, and only counts from the roof.
+  Where no stairwell is in reach, HALCYON sends you to a beacon instead and
+  says so.
   Holding it brings the sector up the stairs after you.
 - **A charge**, once planted, draws every hostile that cannot see you to the
   drum. One that reaches it while you are more than 6 m off pulls it. When

@@ -273,6 +273,68 @@ These each cost real debugging time. Changing them needs a reason.
   put back the way it was (21 of 21 rooms not entered; every room's floor
   blocked to the route field; a crown through the ceiling; 21 doorways
   blind; a grenade shoved out of the building).
+- **A warlord stoops under a ceiling, asked across its whole body.**
+  Hostiles collide at their archetype's height so an elite can follow you
+  into a shop, but one is drawn 3.6 m tall under 2.75 m of headroom, and its
+  head and shoulders came up through the floor above in all 21 rooms on
+  seed 1. `_headroom` in `enemies.js` reads `ceilingAbove` every step and
+  lowers the hips by as much as the crown needs (`STOOP`, at most half the
+  body's height). The pose bends each thigh forward by `a` and its shin
+  back by `2a`, which keeps the foot under the hip, and leans the upper
+  body in. The eyes come down with it, so it sees what its body can. Two
+  things are load-bearing. **Headroom is asked across the whole body's
+  radius**, not a fraction of it: at 0.6 of it a warlord in a doorway,
+  0.76 m out from the front wall, had its leaning head under the slab's
+  edge and its query outside it. A look-ahead along its velocity was
+  written for the same reason and taken out, because the full-width query
+  already sees a slab 0.9 m before the feet reach it and the check passed
+  without it. **A death starts from the stoop**, or a warlord killed
+  stooped jumped up to full height to fall. `a warlord stoops under a shop
+  ceiling, and stands tall in the street` stands one in every room, walks
+  one in at a doorway and stands one in the street: 0.84 m through the
+  ceiling in 21 of 21 rooms with the stoop off, 0.32 m in 2 with the query
+  narrowed, and 3.57 m tall outside either way.
+- **A room is furnished to three pieces, or as near as it fits.** A 10 m
+  shop with a stairwell was an empty concrete box: the shaft and the floor
+  in front of it (`shaft.blocks`) took the blank walls that shelving and
+  crates go on. `furnishBare` in `city.js` runs after the rest of a room's
+  furnishing and, while it holds fewer than three pieces of furniture,
+  adds a table, a crate stack, a shelf unit and a lone crate against free
+  blank walls. Columns are structure, not furniture, and do not count, or a
+  big room with four columns and nothing else counted as furnished. Four
+  things keep it honest. **Each piece stays clear of what moves through the
+  room**: the stairwell's landing, a doorway's half-width and 1.2 m from
+  every doorway (1.6 left the tightest rooms bare), and a metre from every
+  other piece, so the route field still reaches every open cell. **Nothing
+  goes under a window.** A shop window's sill is a 1.23 m ledge, and with a
+  table or a crate stack just inside it, `a pull-up carries the view`
+  climbed through a window, landed on the sill and settled onto the
+  furniture, a second rise inside one climb that lurched the view 2.3-2.4
+  cm in a frame against a 2 cm bar. Stacking crates against a window read
+  as a barricade, and it was tried, but the climb is what it buys. **A
+  table's top and legs are its solids and a box the size of it is its
+  collider**, so a body meets the table and a round goes under it between
+  the legs. The shelf unit is the same, boards, sides and a back panel. A
+  hidden mesh as the solid would stop a round in the air between the
+  boards, and the bake skips hidden meshes, so it would not even be drawn
+  to explain it. **Every collider a piece registers carries its number
+  in the room** (`b.piece`), so a check counts a crate stack as one piece
+  and two shelves meeting in a corner as two; clustering touching boxes
+  got both wrong. It is built inside the tower's reserve on hash salts
+  nothing else uses, so it costs the stream nothing; the layout check was
+  re-measured once for it, collider by collider. On seed 1, 13 of 21 rooms
+  hold three or more and every room at least two; the rest are 10 m stair
+  shops whose shaft and doorways leave one blank wall. `no shop is left
+  bare` asks for two in every room: 7 rooms short with the furnisher off
+  (the fewest 0) and 3 with columns counted as furniture. What it cost,
+  measured with pieces on the windows too (165 solids, against 78 now):
+  a pellet's raycast and the game step in a fight both within noise
+  (0.56-0.63 ms against 0.58-0.83 a pellet, 0.4-0.5 ms against 0.4 a
+  step, twice each). Furniture changes what the box list holds, and two
+  checks that sample it moved: `a hostile follows you onto a car roof`
+  sampled tables, where a scavenger rightly hooks you from the floor
+  rather than climbing, so it samples decks under the open sky now; and
+  the pull-up check found the window climb above.
 - **A box off the ground may be a deck: a ceiling to everything but the
   feet over it.** Thirteen of seed 1's 21 open ground floors — every one
   under a roof no higher than 14 m (`STAIR.top`) with a corner whose walls
@@ -1317,7 +1379,10 @@ These each cost real debugging time. Changing them needs a reason.
   lieutenant leaving as lost and relocate him. The new props are built in
   a `reserve`, because the objective system is built after the city, where
   the stream is picking spawns. Siting draws `Math.random` at run time, the
-  same as `findSite` always has. A charge blows on top of its drum
+  same as `findSite` always has. Where the city has nowhere for an
+  objective (no stairwell in reach of a relay), a beacon stands in for it,
+  and carries what was asked for (`instead`), so the handler says why
+  rather than calling a beacon from nowhere. A charge blows on top of its drum
   (`y + 1.1`): blown from the drum's middle, every blast line started
   inside its collider, and nothing in reach was exposed.
 - **The stuck watchdog is a last resort, never a nudge.** It relocates a
@@ -1716,6 +1781,18 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The pass after it took three things off the list: a warlord's head
+through a shop's ceiling (it stoops), the bare stair shops (furnished), and
+a relay that fell back to a beacon without a word (HALCYON says why). The
+invariants on the stoop and the furnishing have the measurements. Two
+traps from it are worth keeping. Both new behaviours first came out
+redundant or wrong against their own checks: the stoop's look-ahead passed
+with itself taken out, and the first furnishing count measured walls
+rather than furniture. Confirming every part of a change bites is what
+found both. And a ranged hostile walking toward a player in a building
+takes a post outside the door, so a check that wants one to walk in has
+to keep it off the posts (`postAfter = Infinity`).
 
 The operation pass came out of one question from play: who are the
 enemies, why are they attacking us, and what are we trying to do? Asked
@@ -2834,8 +2911,7 @@ Suggested next work, in the order I would do it:
    drain are first guesses, and so is whether twelve waves is the right
    length for an operation. Whether a holdout can be walked out at wave 9
    with a wave on the street, and whether anyone reaches the convoy, are
-   play questions. A relay on a seed with no stairwell in reach falls back
-   to a beacon, which is right but unannounced.
+   play questions.
 2. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
    shell wall opens onto an invented room 2.6-5 m deep, where the real space
    behind it is the courtyard. Ruin walls share the facade materials. Giving
@@ -2844,12 +2920,10 @@ Suggested next work, in the order I would do it:
    the courtyard would show through. The shadow map would still see a solid
    wall, and so would `hitscan`, which is the bigger question: a hole you can
    see through and not shoot through reads as a bug.
-3. **Furnish the small shops.** A 10 m room is a counter, a shelf unit and
-   a crate or two, and some read bare. Anything added is a collider (body
-   height) and has to keep the route field reaching every open cell — the
-   open-buildings check reads exactly that, and the counter's first
-   placement sealed seven rooms. Flush litter and chips on the floor finish
-   are free by the decoration rules.
+3. **Litter on the shop floors.** Every room has its furniture now, but
+   the floor finish is bare concrete. Flush litter and chips are free by
+   the decoration rules, and the street's `debris` already knows how to
+   lay them on one level.
 4. **Tune the armoury's prices against play.** The costs (500-4,000
    scrip) are first guesses against about 1,500 points a wave early on.
    Whether a run can afford the plate carrier before wave 4, and whether
@@ -2864,10 +2938,10 @@ Suggested next work, in the order I would do it:
    floor off a landing is a room with a `base` and a deck under it, which
    the readers now handle; the route field still is not, but the stair
    points already are, so a floor would be a branch off the walk.
-7. **An elite under a ceiling.** Hostiles collide at their archetype's
-   height so a warlord can follow you in; an elite juggernaut is 3.7 m and
-   its head shows through the slab. No juggernaut fits the stairs, either. A crouched walk under a ceiling (the
-   rig already has `CROUCH`) would hide it.
+7. **A juggernaut up the stairs.** A warlord stoops into a shop now, but
+   no juggernaut is ever sent up a stairwell, because a flight's headroom
+   is under its body. The stoop would fit one under a flight; the stair
+   walk would have to know it does.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403
