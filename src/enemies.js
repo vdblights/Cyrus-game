@@ -98,6 +98,7 @@ const PERCH_PATIENCE = 15;
 const THROW = { cook: 0.6, reach: 3.2, minRange: 6, maxRange: 26, blind: 2.5, every: 14, gap: 7, retry: 1.5,
   angles: [0.12, 0.22, 0.35, 0.55, 0.8, 1.05], fastest: 21, step: 1 / 30 };
 const TH_P = new THREE.Vector3(), TH_V = new THREE.Vector3(), TH_D = new THREE.Vector3();
+const V_WATCH = new THREE.Vector3();
 const FUSE_LEFT = FUSE - THROW.cook;
 
 /**
@@ -1386,7 +1387,9 @@ export class Enemy {
     const P = player.position;
     const targets = [[P.x, player.feetY + 0.2, P.z]];
     const room = this.game.playerRoom;
-    if (room) for (const d of room.doors) targets.push([d.x - d.nx * 1.5, room.floor + 0.2, d.z - d.nz * 1.5]);
+    // in at a doorway — not while they are up the stair, where the shop's
+    // doors are nowhere near them
+    if (room && !this.game.playerStair) for (const d of room.doors) targets.push([d.x - d.nx * 1.5, room.floor + 0.2, d.z - d.nz * 1.5]);
     let best = Infinity;
     const out = TH_D;
     for (const [tx, ty, tz] of targets) {
@@ -1549,9 +1552,14 @@ export class Enemy {
       const wantBack = !t.melee && !holdPerch && dist < t.preferred * 0.6;
 
       if (post) {
-        // to the post and then still on it, watching the door
+        // to the post and then still on it, watching the door — by the route
+        // field to a stair post it cannot see, which leads to the stair's foot
         const px = post.x - this.pos.x, pz = post.z - this.pos.z, pd = Math.hypot(px, pz);
-        if (pd > 0.8) moveDir.set(px / pd, 0, pz / pd);
+        if (pd > 0.8) {
+          if (!post.stair || !nav || nav.clearLine(this.pos.x, this.pos.z, post.x, post.z)
+              || !nav.heading(this.pos.x, this.pos.z, moveDir)) moveDir.set(px / pd, 0, pz / pd);
+          else this.routed = true;
+        }
       } else if (stairs && (inShaft || !sees || t.melee || wantCloser || pushing)) {
         // Up after them, or down after them: a hostile in the street with a
         // clear shot at a roof still takes it, and one on a roof with a shot
@@ -1680,10 +1688,12 @@ export class Enemy {
     // to walk into view, so give them far longer before the watchdog moves
     // them — but not forever, or a wave could stall on a roof.
     // Nor is anything walking somewhere other than at you on purpose: a
-    // lieutenant leaving, his escort beside him, a hostile going for a charge.
+    // lieutenant leaving, his escort beside him, a hostile going for a charge
+    // — or standing still on purpose, on a post covering a door.
     this.stuckTimer += dt;
     const checkEvery = onPerch && !parked ? 12 : 4;
-    if (this.flee || escorting || lured) {
+    const onPost = post && Math.hypot(post.x - this.pos.x, post.z - this.pos.z) < 1.5;
+    if (this.flee || escorting || lured || onPost) {
       if (this.stuckTimer > checkEvery) { this._snapshotWindow(player); this.trail.length = 0; this.noProgress = 0; }
     } else if (this.stuckTimer > checkEvery) {
       const elapsed = this.stuckTimer;
@@ -1774,7 +1784,10 @@ export class Enemy {
     // — or, in a stairwell with the player out of sight, the way it is going
     const travel = this.vel.lengthSq() > 0.05 ? V3.copy(this.vel).normalize() : null;
     // — or, leaving or going for a charge with the player out of sight, that way
-    const faceTarget = this.alerted && !((inShaft || this.flee || lured) && !sees) ? toPlayer : travel;
+    // — or, holding a post with the player out of sight, the door it covers
+    const watch = post && !sees && Math.hypot(post.x - this.pos.x, post.z - this.pos.z) < 1.5
+      ? V_WATCH.set(post.wx - this.pos.x, 0, post.wz - this.pos.z) : null;
+    const faceTarget = watch || (this.alerted && !((inShaft || this.flee || lured) && !sees) ? toPlayer : travel);
     if (faceTarget) {
       // the body is built facing -z, so its yaw points -z along the target
       const want = Math.atan2(-faceTarget.x, -faceTarget.z);

@@ -1201,23 +1201,65 @@ class Game {
   coverPost(e) {
     const room = this.playerRoom;
     if (!room) return null;
-    if (e.post && e.post.room === room) return e.post;
-    // one already in with them, or nearly, keeps on coming
+    // Up its stairwell or on its roof, the doors that matter are the stair's:
+    // a post in the shop covering the door they will come down through. A
+    // post on the stair is kept when they come back down into the shop,
+    // which is the point of it; a post on a street door is not kept while
+    // they are up, because it watches nothing they can come out of.
+    const up = this.playerStair && this.playerStair.stair.room === room ? this.playerStair.stair : null;
+    if (e.post && e.post.room === room && (!up || e.post.stair)) return e.post;
     const x = e.pos.x, z = e.pos.z, at = this.player.position;
-    if ((x > room.minX && x < room.maxX && z > room.minZ && z < room.maxZ) || Math.hypot(x - at.x, z - at.z) < 10) return null;
-    if (!room.posts) room.posts = this._postsFor(room);
+    // one already in with them, or nearly, keeps on coming — unless they are
+    // up the stair, where in the shop is where the post is
+    if (!up && ((x > room.minX && x < room.maxX && z > room.minZ && z < room.maxZ) || Math.hypot(x - at.x, z - at.z) < 10)) return null;
+    const posts = up ? (up.posts || (up.posts = this._stairPostsFor(up, room))) : (room.posts || (room.posts = this._postsFor(room)));
     const taken = new Set();
     for (const o of this.enemies) if (o !== e && o.alive && o.post && o.post.room === room) taken.add(o.post);
     if (taken.size >= 2) return null;
-    // only one it can walk straight to: a post across the block is reached
-    // by the route field, which leads to the player and so in at the door
-    let best = null, bd = 30;
-    for (const p of room.posts) {
+    // Only a post it can walk straight to: a post across the block is
+    // reached by the route field, which leads to the player and so in at
+    // the door. A stair post is the exception — up a stair, the field leads
+    // to the stair's foot, and the post is beside it.
+    let best = null, bd = up ? 60 : 30;
+    for (const p of posts) {
       if (taken.has(p)) continue;
       const d = Math.hypot(p.x - e.pos.x, p.z - e.pos.z);
-      if (d < bd && this.nav.clearLine(e.pos.x, e.pos.z, p.x, p.z)) { bd = d; best = p; }
+      if (d < bd && (up || this.nav.clearLine(e.pos.x, e.pos.z, p.x, p.z))) { bd = d; best = p; }
     }
     return best;
+  }
+
+  /**
+   * Places on a shop's floor covering the door of its stairwell: 2.5 to 7 m
+   * from it, anywhere in front of it — in a 10 m shop the door opens toward
+   * a wall less than 3 m off, so straight out from it is out of the room —
+   * clear of the shaft and the furniture, with a standing sight line into
+   * the door.
+   */
+  _stairPostsFor(stair, room) {
+    const w = this.world, out = [];
+    const a = stair.path[0], b = stair.path[1];
+    const nl = Math.hypot(a.x - b.x, a.z - b.z), nx = (a.x - b.x) / nl, nz = (a.z - b.z) / nl;
+    // the door is in the shaft's wall, a third of the way from the lobby out
+    const dx = b.x + (a.x - b.x) * 0.32, dz = b.z + (a.z - b.z) * 0.32;
+    const q = stair.shaft;
+    for (const reach of [2.5, 4, 5.5, 7]) {
+      for (let k = 0; k < 16; k++) {
+        const t = (k / 16) * Math.PI * 2, ox = Math.cos(t), oz = Math.sin(t);
+        if (ox * nx + oz * nz < 0.15) continue;                 // in front of the door
+        const x = dx + ox * reach, z = dz + oz * reach;
+        if (x < room.minX + 0.8 || x > room.maxX - 0.8 || z < room.minZ + 0.8 || z > room.maxZ - 0.8) continue;
+        if (x > q.minX - 0.4 && x < q.maxX + 0.4 && z > q.minZ - 0.4 && z < q.maxZ + 0.4) continue;
+        const floor = w.groundHeight(x, z, SUPPORT_RADIUS, room.floor + 0.5);
+        if (Math.abs(floor - room.floor) > 0.05 || w.blocked(x, z, 0.6, floor + 0.9) || this.nav.solidAt(x, z)) continue;
+        if (!w.lineOfSight(x, floor + 1.5, z, b.x, room.floor + 1.2, b.z)) continue;
+        const post = { x, z, wx: dx, wz: dz };
+        Object.defineProperty(post, 'room', { value: room, enumerable: false });
+        Object.defineProperty(post, 'stair', { value: stair, enumerable: false });
+        out.push(post);
+      }
+    }
+    return out;
   }
 
   _postsFor(room) {
@@ -1232,7 +1274,7 @@ class Game {
           if (floor > 0.5 || w.blocked(x, z, 0.7, floor + 0.9) || w.occupied(x, z, 0.6, floor + 0.6)) continue;
           if (this.nav.solidAt(x, z)) continue;
           if (!w.lineOfSight(x, floor + 1.5, z, ix, room.floor + 1.2, iz)) continue;
-          const post = { door: d, x, z };
+          const post = { door: d, x, z, wx: d.x, wz: d.z };
           Object.defineProperty(post, 'room', { value: room, enumerable: false });
           out.push(post);
         }

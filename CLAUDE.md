@@ -313,9 +313,9 @@ These each cost real debugging time. Changing them needs a reason.
   over it: 0 of 13 up with the old gate or the old collision height, 0.265
   m through a flight with the stoop off, and a scavenger stooped 0.27 with
   the query back at the feet. A ranged hostile walking after a player on a
-  roof is handed a post outside the shop under it, which is the posts
-  working, so the check keeps it off them (`postAfter = Infinity`) — a
-  raider without that misses the same 6 stairwells a juggernaut does.
+  roof may be handed a post at the stair door (see the buildings invariant),
+  which is the posts working, so the check keeps it off them (`postAfter =
+  Infinity`).
 - **A room is furnished to three pieces, or as near as it fits.** A 10 m
   shop with a stairwell was an empty concrete box: the shaft and the floor
   in front of it (`shaft.blocks`) took the blank walls that shelving and
@@ -438,6 +438,36 @@ These each cost real debugging time. Changing them needs a reason.
   the road — and fails with the planner off (0 of 4 frags), with the
   doorways not aimed at (1 of 4), with posts off, with three posts allowed,
   with the push off, and with hostile frags hurting hostiles.
+  **Up a stairwell the posts are the stair's** (`_stairPostsFor`): on the
+  shop floor, 2.5-7 m in front of the stair's door, with a sight line into
+  it, two a building as ever, and the third hostile climbs. It used to hand
+  out the street doors' posts, which watch nothing a player on a roof can
+  come out of, and to aim frags in at those doors too; neither happens
+  while the player is up. Four things make it work. In a 10 m shop the
+  stair door opens toward a wall under 3 m off, so the first search
+  straight out from it found no post in 5 of 13 shops; the search is a ring
+  in front of the door. A stair post is reached by the route field,
+  because up a stair it leads to the stair's foot, which is beside the post
+  — walked straight at, both stuck outside the shop. A hostile on any post
+  faces the door it covers (`wx`, `wz`) while it cannot see the player, or
+  it stands looking at a roof. And on its post the watchdog leaves it alone,
+  like a lieutenant leaving: with the player out of sight it reads as
+  wedged, and was moved 19 m off its post. A stair post is kept when the
+  player comes back down into the shop, which is the ambush the post is
+  for; a street-door post is not kept while the player is up. `on a roof,
+  two hostiles cover the stair door and are waiting when you come down`
+  fails with each of those five put back. Its player stands at the far end
+  of the roof: at the bulkhead door the player sees down the shaft into the
+  shop, and the watchdog never moves a hostile the player can see, so the
+  watchdog break first *passed*. **A frag does not reach a roof over about
+  10 m, and that is the arm, not the planner.** A frag falls at 19 m/s² and
+  a hostile throws at 21 m/s at most; reaching a 12 m deck from the street
+  takes 22-23. Measured from a ring of street spots 8-22 m out, every
+  roof on seed 1 at 10 m or under had a throw that lands (38 of 249 tries
+  at 8.4 m), and every roof over 11 m had at most two. Steeper angles and
+  aiming past the player across the deck were both tried, and neither found
+  more: the steep throws meet the wall still climbing, and a frag that lands
+  past you rolls on away from you. Four storeys is out of a hand's reach.
 - **The armoury reads in one place, and is paid in scrip.** `EFFECT` in
   `armoury.js` is what each tier does, and the systems read it where they
   do the thing — `Weapons.magSize` and the aimed spread in `fire`, damage in
@@ -1820,7 +1850,14 @@ What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
 
-The pass after that took two more off it: a juggernaut up the stairs and
+The pass after that closed the frags at a roof and the stair door, both
+in the buildings invariant. The frags were a question, and the answer was
+the arm: roofs over about 10 m are out of a hand throw's reach, and two
+ways of reaching them anyway were tried and taken back out. The stair door
+is a post on the shop floor, and it is what the posts were always for —
+the door the player will come out of.
+
+The pass before it took two more off the list: a juggernaut up the stairs and
 litter on the shop floors, both in the invariants above. The juggernaut
 needed nothing new, only the stoop asked about at the foot of a stair, and
 looking for why a stooped one fitted turned up every hostile stooping on
@@ -2970,14 +3007,7 @@ Suggested next work, in the order I would do it:
    scrip) are first guesses against about 1,500 points a wave early on.
    Whether a run can afford the plate carrier before wave 4, and whether
    anyone buys optics, is a play question.
-4. **Frags at a roof.** The planner already aims at the player wherever
-   they stand, but a throw from the street onto a stair roof has to clear a
-   parapet 8-15 m up, and whether it ever finds one has not been measured.
-   A hostile at the foot of the stairs could cover the door instead of
-   climbing, the way posts cover a shop. Today a ranged hostile after a
-   player on a roof is handed a post outside the *shop* under it, which
-   watches a doorway the player is not behind.
-5. **Upper floors you walk through**, if play asks for them. A stairwell
+4. **Upper floors you walk through**, if play asks for them. A stairwell
    climbs past every floor of its building and opens on none of them. A
    floor off a landing is a room with a `base` and a deck under it, which
    the readers now handle; the route field still is not, but the stair

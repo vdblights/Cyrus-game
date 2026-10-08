@@ -219,6 +219,8 @@ the stairs and waits below.
 They use the buildings against you, too. Go into a shop and up to two of the
 riflemen take posts outside, each with a sight line into a doorway, and hold
 them while the rest come in after you — so the door you leave by is covered.
+Go up onto the roof and two of them wait in the shop below instead, covering
+the stair door you will come back down through.
 A hostile that has lost sight of you, or knows you are inside, throws a frag:
 from the second wave on, a raider, a breaker or a juggernaut carries one, and
 it only lets go of a throw it has flown first through the same bounce the

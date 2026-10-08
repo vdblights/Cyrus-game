@@ -4582,6 +4582,95 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
   return { stairs: r.stairs, edges: r.edges, party: r.party, shots: r.shots.length, climbs: `${r.climbs}/${r.rooms}`, follow: r.follow };
 });
 
+check('on a roof, two hostiles cover the stair door and are waiting when you come down', async (page) => {
+  // Up a stairwell, a ranged hostile used to be handed a post outside the
+  // shop's street doors, watching a doorway the player was not behind, and
+  // frags were aimed in at those doors too. While the player is up, a post
+  // is on the shop floor covering the stair's own door (`_stairPostsFor`),
+  // reached by the route field, which leads to the stair's foot; a hostile
+  // on it faces the door while the player is out of sight, the watchdog
+  // leaves it there, and it keeps the post when the player comes back down
+  // into the shop. Two a building, as ever: the third climbs.
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world, p = g.player;
+    g.startRun();
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    let relocs = 0;
+    const relocate = g.relocateEnemy.bind(g);
+    g.relocateEnemy = (e) => { relocs++; return relocate(e); };
+    const out = { stairs: [], relocs: 0, down: null };
+    // two 10 m shops, whose stair door opens toward a wall, and two wide ones
+    const pick = [];
+    for (const s of w.stairs) {
+      const rm = w.rooms.find((q) => q.stair === s), small = rm.maxX - rm.minX < 12 && rm.maxZ - rm.minZ < 12;
+      if (pick.filter((q) => q.small === small).length < 2) pick.push({ s, rm, small });
+    }
+    let last = null;
+    for (const { s, rm, small } of pick) {
+      for (const e of g.enemies) { e.group.visible = false; g._recycle(e); }
+      g.enemies.length = 0;
+      // at the far end of the roof from the bulkhead: from its door the player
+      // looks down the shaft into the shop, and the watchdog never moves a
+      // hostile the player can see, which would hide the one that does
+      const ex = s.path[s.path.length - 1], R = s.roof, d = rm.doors[0];
+      const exit = {
+        x: Math.abs(ex.x - R.minX) > Math.abs(ex.x - R.maxX) ? R.minX + 1.5 : R.maxX - 1.5,
+        z: Math.abs(ex.z - R.minZ) > Math.abs(ex.z - R.maxZ) ? R.minZ + 1.5 : R.maxZ - 1.5,
+      };
+      const hold = () => { p.feetY = s.deck; p.onGround = true; p.velocity.set(0, 0, 0); p.position.set(exit.x, s.deck + p.eyeHeight, exit.z); p.health = 100; };
+      p.reset(exit.x, exit.z); hold();
+      const es = [5, 6.5, 8].map((k, i) => {
+        const e = g.spawnEnemy('raider');
+        const x = d.x + d.nx * k + (i - 1) * 1.2, z = d.z + d.nz * k;
+        e.pos.set(x, w.groundHeight(x, z, 0.12, 0.6), z);
+        e.group.position.copy(e.pos);
+        e.markWatchdog(p); e.alert(g.time, 0); e.frags = 0;
+        return e;
+      });
+      for (let f = 0; f < 30 * 30; f++) { g.time += 1 / 30; hold(); for (const e of es) e.nextFire = Infinity; g.step(1 / 30); }
+      const held = es.filter((e) => e.post && e.post.stair === s).map((e) => {
+        const q = e.post, yaw = e.group.rotation.y;
+        const face = (-Math.sin(yaw) * (q.wx - e.pos.x) - Math.cos(yaw) * (q.wz - e.pos.z)) / Math.hypot(q.wx - e.pos.x, q.wz - e.pos.z);
+        const inside = e.pos.x > rm.minX && e.pos.x < rm.maxX && e.pos.z > rm.minZ && e.pos.z < rm.maxZ;
+        return { off: +Math.hypot(q.x - e.pos.x, q.z - e.pos.z).toFixed(2), face: +face.toFixed(2), inside };
+      });
+      const climbed = es.filter((e) => !e.post && e.pos.y > 3).length;
+      out.stairs.push({ small, held, climbed, outside: es.filter((e) => e.post && !e.post.stair).length });
+      last = { s, es };
+    }
+    out.relocs = relocs;
+    // and down again, out of the stair door onto the shop floor
+    const { s, es } = last, foot = s.path[0];
+    p.reset(foot.x, foot.z);
+    for (let f = 0; f < 30; f++) { g.time += 1 / 30; p.health = 100; for (const e of es) e.nextFire = Infinity; g.step(1 / 30); }
+    const P = p.position;
+    out.down = es.filter((e) => e.post && e.post.stair === s).map((e) => ({
+      off: +Math.hypot(e.post.x - e.pos.x, e.post.z - e.pos.z).toFixed(2),
+      sees: w.lineOfSight(e.pos.x, e.pos.y + 1.5, e.pos.z, P.x, P.y, P.z),
+    }));
+    return out;
+  });
+  // Measured on seed 1: all 13 stairwells give two holders on the shop
+  // floor facing the stair door (1.0) and the third up on the roof, with
+  // no relocations. Broken: with the stair's posts off, two hold street
+  // doors; walked straight at instead of by the field, both are stuck
+  // 2-3.6 m off their posts outside the shop; not turned to the door, 0.04
+  // and 0.59; with the watchdog let loose on a post, one is moved 19 m off
+  // it; and with the posts dropped on the way down, nobody is there.
+  expect(r.stairs.length === 4, `only ${r.stairs.length} stairwells sampled`);
+  for (const st of r.stairs) {
+    expect(st.outside === 0, `${st.outside} hostiles hold a street door while the player is up the stair`);
+    expect(st.held.length === 2 && st.held.every((h) => h.inside && h.off < 1.2),
+      `the stair door is not held: ${JSON.stringify(st)}`);
+    expect(st.held.every((h) => h.face > 0.9), `a holder is not watching the stair door: ${JSON.stringify(st.held)}`);
+    expect(st.climbed === 1, `${st.climbed} hostiles climbed, where the one without a post should: ${JSON.stringify(st)}`);
+  }
+  expect(r.relocs === 0, `${r.relocs} hostiles were relocated off their posts`);
+  expect(r.down.length === 2 && r.down.every((h) => h.off < 1.2 && h.sees),
+    `coming down, the stair door was not covered: ${JSON.stringify(r.down)}`);
+  return r;
+});
+
 check('a juggernaut stoops up a stairwell after you, and a warlord stays down', async (page) => {
   // A flight's headroom is a lap less the slab, at most the 2.5 m doors, and
   // a juggernaut is 2.57 m of body, so none was ever sent up a stair. It
