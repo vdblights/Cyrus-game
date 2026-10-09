@@ -5777,10 +5777,19 @@ check('a seed still lays out the city it did', async (page) => {
   // after boot identical with the walls built either way. Before it:
   // 4915 '1ee92ae6' (4557 'c62209d3'), 3390 'ddfed437' (2932 'eb0a4c59'),
   // 4794 '9f142bd4' (4312 '4476e7f7').
+  //
+  // And the rubble in a shop's doorway is cleared, as a perch's is: a heap
+  // takes a body's weight where it touches it now (`HEAP_REACH`), and from
+  // the top of one in a doorway your head is in the floor over the shop.
+  // 7, 6 and 6 heaps on the three seeds — 19, 21 and 19 heap colliders and
+  // one solid each — and every other collider, the perches and the mark
+  // after boot identical (each pays the bake the UUID it no longer costs
+  // there). Before it: 5361/1649 'b0d92d20', 3660/1323 '3dc368da',
+  // 4854/1712 'a5ab07a8'.
   const want = {
-    1: { boxes: 5361, solids: 1649, perches: 12, fp: 'b0d92d20', placed: 5003, fpPlaced: '6edef181' },
-    7: { boxes: 3660, solids: 1323, perches: 11, fp: '3dc368da', placed: 3202, fpPlaced: 'dc28bfb4' },
-    20260101: { boxes: 4854, solids: 1712, perches: 10, fp: 'a5ab07a8', placed: 4372, fpPlaced: 'f8b6d04b' },
+    1: { boxes: 5342, solids: 1642, perches: 12, fp: '8afdfa64', placed: 5003, fpPlaced: '6edef181' },
+    7: { boxes: 3639, solids: 1317, perches: 11, fp: '3f753593', placed: 3202, fpPlaced: 'dc28bfb4' },
+    20260101: { boxes: 4835, solids: 1706, perches: 10, fp: 'dd322493', placed: 4372, fpPlaced: 'f8b6d04b' },
   };
   // (bare rooms: 2497/1540/12 b323ced2 (2139 e5d0438f), 1933/1268/11
   // 9d1c7f32 (1475 de4ab94c), 2526/1617/10 e1cfa671 (2044 9123bce6))

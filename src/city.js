@@ -2334,6 +2334,26 @@ export function buildCity(scene, painted = null) {
     const i = world.solids.indexOf(m);
     if (i >= 0) world.solids.splice(i, 1);
   }
+  // And a shop's doorway, from the pavement to just inside: a heap there is
+  // one a body climbs, now that rubble takes your weight, and from its top
+  // your head is in the floor over the shop — on seed 1 one shop could not
+  // be walked into. It was a mesh the bake would have cloned, so it pays the
+  // UUID it no longer costs there, and the spawns are where they were.
+  const doorways = world.rooms.flatMap((room) => room.doors.map((d) => {
+    const a = d.width / 2 + 0.5;
+    const xs = [d.x + d.nx * 3, d.x - d.nx * 1.5], zs = [d.z + d.nz * 3, d.z - d.nz * 1.5];
+    return d.nx ? [Math.min(...xs), d.z - a, Math.max(...xs), d.z + a] : [d.x - a, Math.min(...zs), d.x + a, Math.max(...zs)];
+  }));
+  for (let k = heaps.length - 1; k >= 0; k--) {
+    const m = heaps[k];
+    const b = m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld);
+    if (!doorways.some(([x0, z0, x1, z1]) => b.max.x > x0 && b.min.x < x1 && b.max.z > z0 && b.min.z < z1)) continue;
+    m.removeFromParent();
+    heaps.splice(k, 1);
+    const i = world.solids.indexOf(m);
+    if (i >= 0) world.solids.splice(i, 1);
+    spend(UUID_COST);
+  }
 
   // The same for a fire escape, which is decoration — built on the facade
   // before any perch existed, and in neither collision list, because nothing

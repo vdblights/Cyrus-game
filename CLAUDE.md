@@ -682,7 +682,11 @@ These each cost real debugging time. Changing them needs a reason.
   you on it, and only rubble — a kerb or a roof edge still needs the floor
   under your feet. Walking each heap's summit from four sides: 116 of 151
   reached against 46. What is left is the leaning slabs, whose tiers rise
-  0.6 m apiece over the street: a wall, walked round. Baking the steep
+  0.6 m apiece over the street: a wall, walked round. A heap that takes
+  your weight in a shop's doorway puts your head in the floor over it, and
+  one shop on seed 1 could not be walked into; rubble in a doorway's
+  approach is cleared the way a perch's is (7, 6 and 6 heaps on the pinned
+  seeds), and pays the bake the UUID it no longer costs there. Baking the steep
   tiers as walls was tried first and taken out: it cut 1.3-1.9% of the
   sector into pockets, and 0.6% even with no shoulder round them.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
@@ -828,14 +832,20 @@ These each cost real debugging time. Changing them needs a reason.
   real openings now, cut where the paint puts them (`ruinWall` in
   `city.js`, which reproduces `wallUV` per piece so the paint and the hole
   agree). Each wall is its piers, the wall under each sill and a lintel
-  over each window (`addCeiling`), every piece a collider, so a window is a
+  over each window, every piece a collider, so a window is a
   hole to sight and to a round from either side and the pier beside it is
   not — 166 openings on seed 1, recorded in `world.ruinWindows`. A column
   of openings that another wall crosses within a metre is left solid, or
   it opened onto the end of that wall (8 blind windows at corners). The
   walls are built in a `reserve` and the rolls and `spend` of the walls
   before them stay interleaved as they were, so the perches and the stream
-  are unmoved; the layout check records the colliders swapped.
+  are unmoved; the layout check records the colliders swapped. A lintel
+  is a deck (`addDeck`), not a ceiling: the wall's top is open sky and the
+  one box it used to be was somewhere to stand, and with ceilings `what
+  stands on a perch holds you up` found the top over every window drawn
+  and not stood on. Its faces across the thickness are unwrapped at the
+  tile's own scale, not `boxGeo`'s bay snap: 3.6x over a 0.7 m jamb, four
+  to a window, put a ruin's facade batch at 1.8x its declared tile.
   The sun is read from `directionalLights[0]`, which is the sun for the same
   reason the cascade patch depends on it — see the next item.
 - **The sun's shadow lookup reads two maps, and it depends on light order.**
