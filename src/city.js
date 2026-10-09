@@ -1004,6 +1004,9 @@ function bakeStatic(group, world) {
 
   const meshes = [];
   group.traverse((o) => { if (o.isMesh && o.visible) meshes.push(o); });
+  // what it was handed, for anything asking whether a material went missing
+  // in the merge rather than was never used
+  group.userData.bakedFrom = new Set(meshes.map((m) => m.material));
 
   // the merge is also the one moment every surface is in world space at once,
   // which is what the tint and the ambient darkening need

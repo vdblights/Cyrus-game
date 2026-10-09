@@ -1370,7 +1370,7 @@ export class Enemy {
       }
       if (this.floorStep === 'back') {
         if (toDoor > 0.6) {
-          this._floorWay(out, f.door.x, f.door.z, s, f, world);
+          if (!this._floorWay(out, f.door.x, f.door.z, s, f, world)) out.set(f.door.x - this.pos.x, 0, f.door.z - this.pos.z).normalize();
           return 'out';
         }
         this.floorStep = 'in';
@@ -1436,16 +1436,25 @@ export class Enemy {
    * stands on a floor is furniture, which the avoidance walks round.
    */
   _floorWay(out, tx, tz, s, f, world) {
-    const y = f.y + 0.5, x = this.pos.x, z = this.pos.z;
+    const x = this.pos.x, z = this.pos.z, q = s.shaft, pad = this.radius + 0.05;
+    // whether a straight walk misses the shaft: furniture is not asked about,
+    // because a table between you and the player is for the avoidance to go
+    // round, and asking sent the first version off to a corner of the shaft
     const clear = (ax, az, bx, bz) => {
-      const dx = bx - ax, dz = bz - az, d = Math.hypot(dx, dz) || 1, ox = -dz / d * 0.3, oz = dx / d * 0.3;
-      return world.lineOfSight(ax, y, az, bx, y, bz)
-        && world.lineOfSight(ax + ox, y, az + oz, bx + ox, y, bz + oz)
-        && world.lineOfSight(ax - ox, y, az - oz, bx - ox, y, bz - oz);
+      let t0 = 0, t1 = 1;
+      const dx = bx - ax, dz = bz - az;
+      for (const [p, d, lo, hi] of [[ax, dx, q.minX - pad, q.maxX + pad], [az, dz, q.minZ - pad, q.maxZ + pad]]) {
+        if (Math.abs(d) < 1e-9) { if (p < lo || p > hi) return true; continue; }
+        let a = (lo - p) / d, b = (hi - p) / d;
+        if (a > b) { const t = a; a = b; b = t; }
+        t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+        if (t0 > t1) return true;
+      }
+      return false;
     };
     let gx = tx, gz = tz;
     if (!clear(x, z, tx, tz)) {
-      const q = s.shaft, m = 0.9;
+      const m = this.radius + 0.45;                 // a corner a body can stand at, clear of the pad
       let best = Infinity;
       for (const [cx, cz] of [[q.minX - m, q.minZ - m], [q.maxX + m, q.minZ - m], [q.minX - m, q.maxZ + m], [q.maxX + m, q.maxZ + m]]) {
         if (world.blocked(cx, cz, 0.4, f.y + 0.4) || Math.hypot(cx - x, cz - z) < 0.4 || !clear(x, z, cx, cz)) continue;
@@ -1711,8 +1720,9 @@ export class Enemy {
     if (moveDir.lengthSq() > 1e-4 && !climbing && !inShaft) {
       moveDir.normalize();
       const probe = 1.8 + this.radius;
-      // on a floor the shaft is not a way round, though its door is open
-      const shaft = this.onFloor ? this.stair.shaft : null, rr = this.radius;
+      // out on a floor the shaft is not a way round, though its door is open
+      // — unless the door is where it is going
+      const shaft = this.onFloor && this.floorStep === 'on' ? this.stair.shaft : null, rr = this.radius;
       const clear = (x, z) => {
         const px = this.pos.x + x * probe, pz = this.pos.z + z * probe;
         if (shaft && px > shaft.minX - rr && px < shaft.maxX + rr && pz > shaft.minZ - rr && pz < shaft.maxZ + rr) return false;
