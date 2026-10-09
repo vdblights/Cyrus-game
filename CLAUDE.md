@@ -417,7 +417,12 @@ These each cost real debugging time. Changing them needs a reason.
   of. The facade block goes: a facade texture's painted windows and the
   shader's invented rooms cannot line up with real openings, so these
   buildings are a concrete frame instead, which also says from the street
-  that you can go in. A face onto the building next door is blind, and so is
+  that you can go in. The walls between the slabs wear their facade's own
+  style with no windows painted on it (`TEX.infill`, `infillMat`): brick
+  stays brick and render stays render, so the 13 buildings are not one grey
+  on the skyline, and the slabs stay concrete, a band at every floor. The
+  infill materials are `unbilled` (see the bake invariant), so they cost
+  the spawn stream nothing. A face onto the building next door is blind, and so is
   the stretch of wall the shaft stands against. Six things are
   load-bearing. **Every piece of wall is a ceiling box, never a deck**:
   nobody stands on a sill and nobody climbs out of a window. **A first
@@ -663,18 +668,23 @@ These each cost real debugging time. Changing them needs a reason.
   kerb: every tier rises less than a step, so a hostile climbs a heap
   rather than walking round it, and baking them as walls cut 1.9% of seed
   1's walkable sector off into pockets — `the route field reaches the whole
-  sector` caught it at 98.1% connected. **That premise is only half true.**
-  Each tier rises less than a step, but a body is stopped at its radius
-  (0.43 m) by anything a step above its feet and lifted only by what is
-  under its middle (0.12 m), so the tier under has to stand 0.31 m proud of
-  the one above or the pair is one tall step. Measured on seed 1 over 358
-  heap tiers, from the outline grown by that margin: a median effective rise
-  of 0.62 m, 228 tiers over a step, 96 over 0.9 m — a fallen slab's tiers
-  nest within centimetres. So the field routes bodies into heaps they cannot
-  climb; a hostile is turned by its avoidance or moved by the watchdog, and
-  a holdout, which has neither, stood against one until the clock ran out.
-  Baking the steep tiers as walls is the obvious fix and was not taken here:
-  it is most of the heaps, which is the 1.9% of pockets again.
+  sector` caught it at 98.1% connected. **That premise was only half true
+  until a heap took your weight where you touch it.** Each tier rises less
+  than a step, but a body is stopped at its radius (0.43 m) by anything a
+  step above its feet and was lifted only by what is under its middle
+  (0.12 m), so the tier under had to stand 0.31 m proud of the one above or
+  the pair was one tall step: on seed 1, a median effective rise of 0.62 m
+  over 358 tiers. The field routed bodies into heaps they could not climb,
+  and a holdout, with no avoidance and no watchdog, stood against one until
+  the clock ran out. `groundHeight` now asks a heap tier with
+  `HEAP_REACH` (0.45 m, a body's width) where it asks everything else with
+  the radius it was given: you scramble onto loose rubble with any part of
+  you on it, and only rubble — a kerb or a roof edge still needs the floor
+  under your feet. Walking each heap's summit from four sides: 116 of 151
+  reached against 46. What is left is the leaning slabs, whose tiers rise
+  0.6 m apiece over the street: a wall, walked round. Baking the steep
+  tiers as walls was tried first and taken out: it cut 1.3-1.9% of the
+  sector into pockets, and 0.6% even with no shoulder round them.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -812,9 +822,20 @@ These each cost real debugging time. Changing them needs a reason.
   a third of the frame looking down onto one. Nothing about it is geometry,
   which is the point and the limit: the shadow map, the occlusion pass and
   `hitscan` all still see a flat wall, so a bullet stops 22 cm short of the
-  glass, the same as it did at a painted window. And the room behind a
-  broken pane is invented, so it is wrong in exactly one place, a ruin's
-  0.7 m shell wall, where the real space behind it is the open courtyard.
+  glass, the same as it did at a painted window. The room behind a broken
+  pane is invented, which was wrong in a ruin's 0.7 m shell wall, where the
+  real space behind it is the open courtyard; a ruin's walls are built round
+  real openings now, cut where the paint puts them (`ruinWall` in
+  `city.js`, which reproduces `wallUV` per piece so the paint and the hole
+  agree). Each wall is its piers, the wall under each sill and a lintel
+  over each window (`addCeiling`), every piece a collider, so a window is a
+  hole to sight and to a round from either side and the pier beside it is
+  not — 166 openings on seed 1, recorded in `world.ruinWindows`. A column
+  of openings that another wall crosses within a metre is left solid, or
+  it opened onto the end of that wall (8 blind windows at corners). The
+  walls are built in a `reserve` and the rolls and `spend` of the walls
+  before them stay interleaved as they were, so the perches and the stream
+  are unmoved; the layout check records the colliders swapped.
   The sun is read from `directionalLights[0]`, which is the sun for the same
   reason the cascade patch depends on it — see the next item.
 - **The sun's shadow lookup reads two maps, and it depends on light order.**
@@ -909,7 +930,17 @@ These each cost real debugging time. Changing them needs a reason.
   draws. The batches are built inside a `reserve` and pay `spend` for one
   geometry and one mesh per *material*, which is what the bake cost before
   it split, so the stream that picks spawns afterwards is unchanged —
-  measured as the same mark after the bake, 27 batches or 148. The ground is the sharpest case: the one you see is subdivided to
+  measured as the same mark after the bake, 27 batches or 148. **The clones
+  are billed too.** Each mesh merged cloned its geometry, a UUID of the
+  stream, so every mesh in the city — however it was built, and inside
+  whatever `reserve` — moved every spawn: a ruin wall built as eight pieces
+  rather than one moved the mark. The clones are made in a `reserve` and the
+  bill is one UUID a mesh, which is exactly what they cost, less two kinds
+  that never used to exist: a mesh minted inside `decor` (marked
+  `userData.decor` as it is built, because decoration's mesh count varies
+  with the code — litter alone went 100 → 102 meshes) and anything flagged
+  `unbilled` (a floor's infill walls, which are one mesh more a floor, and
+  their materials). Whatever is drawn, the mark after boot is the same. The ground is the sharpest case: the one you see is subdivided to
   about 2.5 m so it can carry baked shading, and the one you shoot is the same
   plane at two triangles, because three has no BVH and a raycast walks every
   triangle inside the bounding sphere — the ground's covers the sector.
@@ -1516,22 +1547,20 @@ These each cost real debugging time. Changing them needs a reason.
   Cut loose, it comes down by the stair walk (`_follow` calls
   `_stairWalk`): back to the door, onto the landing, down the points, into
   the street, out of the building within 11 s on all 32 floors of seed 1.
-  The street was the hard part. A holdout has no watchdog, and it used to
-  have no avoidance: walking straight at you over the last 8 m it stood
-  against every wreck between you, 16 of 16 on seed 1. It shares the
-  hostiles' now (`_avoid`, extracted), with one difference, `keep`: it
-  searches every angle round the side it chose before any round the other.
-  Along a wreck's long face the probe grazes it, the nearest open angle
-  swapped sides every frame, and a holdout stood shuffling at the door. The
-  hostiles keep the nearest-angle order, so nothing about them moved. Two
-  more were written and taken out because nothing needed them once those
-  were in: a "same floor as the player" gate on following, and a probe at
-  the feet for a step too high, which helped one heap and turned a holdout
-  away from another it would have slid past. Shop rescues, all 21 rooms
-  under three draws: 62 of 63 before, 63 after. Floor rescues under the
-  same three: 95 of 96, and the one short stopped against a steep heap in
-  the street after the building — see the rubble invariant — which is why
-  the check allows two. While the player is
+  The street was the hard part. A holdout has no watchdog and no
+  avoidance: walking straight at you over the last 8 m it stood against
+  every wreck between you, 16 of 16 on seed 1. It walks straight now only
+  when it can see you *and* the route field's grid is clear the whole way
+  (`nav.clearLine`); otherwise it takes the field, which goes round a
+  wreck. A sight line alone was the bug twice over: through a wreck's
+  windows, and through a ruin's, where the straight walk and the field
+  took turns and it shuffled at the sill. The hostiles' avoidance, shared
+  with it for a pass, was taken back out once that rule was in, because
+  nothing needed it — and with it a "same floor as the player" gate and a
+  probe at the feet for a step too high. Shop rescues, all 21 rooms under
+  three draws: 63 of 63. Floor rescues under the same three: 96 of 96, now
+  that rubble takes a body's weight, and the check asks for every one.
+  While the player is
   on a floor, the hostiles' cover posts are the shop's stair door
   (`roomAt` reads a floor as its stair's shop), which is the floor's only
   way down, so a floor's landing needs no posts of its own.
@@ -1991,6 +2020,26 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The pass after the window perches took three items off the list at once:
+rubble you can climb, a floored building in its own style, and a ruin's
+windows as real holes. Each is in an invariant above (rubble, floors,
+windows). Two things from it are worth keeping. **The bake was billing
+the spawn stream by mesh count**, which nobody had noticed because no pass
+had changed how many meshes a builder makes without changing the layout
+too: the ruin walls moved the mark after boot, and it took a walk of
+`Math.random.mark()` through `buildCity` to find the clones in
+`bakeStatic` and then decoration's own mesh counts behind them (the bake
+invariant has the fix). And **a sight line is not a walk**: the holdout's
+straight-at-you rule read through a wreck's glass and then a ruin's
+windows, and asking the route field's grid for a clear line was the whole
+fix — the avoidance added for it the pass before came back out once that
+was in, because nothing needed it. Breaks, each confirmed to fail: rubble
+held only under the middle (46 of 151 summits), the infill walls left
+concrete (13 of 13 buildings), a ruin wall left one collider (332 of 332
+looks blind) or one raycast mesh (332 of 332 rounds stopped), corners not
+left solid (8 blind), and the holdout walking straight on sight alone (0
+of 16 wrecks passed).
 
 The floors pass came out of one line from play: more floors of the
 buildings should be accessible. Upper floors had sat on the list as
@@ -3150,31 +3199,18 @@ Suggested next work, in the order I would do it:
    length for an operation. Whether a holdout can be walked out at wave 9
    with a wave on the street, and whether anyone reaches the convoy, are
    play questions.
-2. **Let a ruin's windows see into the ruin.** A broken pane in a roofless
-   shell wall opens onto an invented room 2.6-5 m deep, where the real space
-   behind it is the courtyard. Ruin walls share the facade materials. Giving
-   the ruins their own copies that `discard` the opening instead would make
-   it a real hole, because a box's far faces are back-facing and culled —
-   the courtyard would show through. The shadow map would still see a solid
-   wall, and so would `hitscan`, which is the bigger question: a hole you can
-   see through and not shoot through reads as a bug.
-3. **Tune the armoury's prices against play.** The costs (500-4,000
+2. **Tune the armoury's prices against play.** The costs (500-4,000
    scrip) are first guesses against about 1,500 points a wave early on.
    Whether a run can afford the plate carrier before wave 4, and whether
    anyone buys optics, is a play question.
-4. **Make rubble something a body can climb, or a wall to the route
-   field.** Most heap tiers are a 0.6 m step at a body's reach (the rubble
-   invariant), so the field leads hostiles and holdouts into heaps they
-   stand against. Two ways: register heaps so each tier stands 0.31 m proud
-   of the one above where the shape allows, and bake what is left over a
-   step as a wall; or bake only the sheerest (96 tiers over 0.9 m on seed
-   1). Either has to keep `the route field reaches the whole sector` at
-   0.995, and moves every hostile's route, so the scripted run's noise floor
-   applies.
-5. **A floored building's look.** The concrete frame reads as a building
-   you can go into, which is the point, but all 13 are the same grey;
-   giving the frame a facade style's colour, or a band of the facade's
-   texture between the floors, would keep the skyline varied.
+3. **A leaning slab as a ramp, if play wants one.** A fallen slab in a
+   rubble lot is the one heap left that a body cannot climb: its tiers
+   nest within centimetres and rise 0.6 m apiece. It is a slope, so it
+   could be a floor with a `surface`, the way a dropped kerb is, rather
+   than a stack of tiers — the slab's own plane, and nothing between it
+   and the ground under it walkable. Whether anyone wants to run up one is
+   a play question; until then the route field reads it as open and a
+   hostile is turned by its avoidance.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403

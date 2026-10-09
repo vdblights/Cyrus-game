@@ -218,8 +218,9 @@ the stairs and waits below.
 
 Those buildings are floors all the way up, too: every lap of the stair
 lands at one, through a door in the stairwell's wall. They are gutted
-concrete frames — you can tell them from the street — with real windows
-all round: you see out of them and shoot out of them, and whoever is in the
+frames — concrete floors with brick, render or stone between them, in the
+building's own style, so you can tell them from the street — with real
+windows all round: you see out of them and shoot out of them, and whoever is in the
 street does the same back. A floor has a crate or a table to take cover
 behind, glass under its windows, and the hostiles follow you onto it,
 round the stairwell, and back down after you when you go.
@@ -694,8 +695,11 @@ A few notes on the implementation:
 - **What you can see, you can bump into.** Every heap of rubble and every
   fallen slab carries colliders cut to its own shape — a stack of tiers
   shallower than a step, each fitted to the heap's cross-section at that
-  height — so a mound stops you at its foot and you can scramble up it, and
-  it stops a bullet. Containers, wrecks, barriers, drums and lamps stand
+  height — so a mound stops you at its foot and you can scramble up it with
+  any part of you on it, and it stops a bullet. Only a fallen slab, leaning
+  at a wall's pitch, is too steep to climb. A gutted ruin's windows are real
+  holes in its walls: you see through them into the courtyard and shoot
+  through them, and so does whoever is in there. Containers, wrecks, barriers, drums and lamps stand
   clear of one another, inside the sector, and on the floor under them —
   a barrier on the pavement stands on the pavement — and the plaza's dry
   fountain is a basin you can climb into, round a plinth that stops you.
