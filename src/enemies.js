@@ -2031,11 +2031,11 @@ export class Enemy {
    * Turn `moveDir` aside from what is in the way a stride or two ahead —
    * the last few metres, which the route field is too coarse to see. Probe
    * the heading; if it is blocked, fan outwards and take the first clear
-   * direction, round whichever side was chosen for this obstacle. `near`
-   * also asks this far ahead for anything over a step: the probe is a
-   * stride or two out, and steps over a knob of rubble at the feet.
+   * direction, round whichever side was chosen for this obstacle. `keep`
+   * searches every angle on that side before any on the other, rather than
+   * the nearest angle on either.
    */
-  _avoid(moveDir, world, dt, near = 0) {
+  _avoid(moveDir, world, dt, keep = false) {
     moveDir.normalize();
     const probe = 1.8 + this.radius;
     // out on a floor the shaft is not a way round, though its door is open
@@ -2044,7 +2044,6 @@ export class Enemy {
     const clear = (x, z) => {
       const px = this.pos.x + x * probe, pz = this.pos.z + z * probe;
       if (shaft && px > shaft.minX - rr && px < shaft.maxX + rr && pz > shaft.minZ - rr && pz < shaft.maxZ + rr) return false;
-      if (near && world.blocked(this.pos.x + x * near, this.pos.z + z * near, 0.15, this.pos.y + 0.5)) return false;
       return !world.blocked(px, pz, this.radius, this.pos.y + 0.9);
     };
     const rot = (a, out) => {
@@ -2076,12 +2075,13 @@ export class Enemy {
         this.avoidTimer = COMMIT;
       }
       let found = false;
-      for (const a of [0.5, 1.0, 1.5, 2.0, 2.5]) {
-        for (const side of [this.avoidDir, -this.avoidDir]) {
-          const cand = rot(a * side, V4);
-          if (clear(cand.x, cand.z)) { moveDir.copy(cand); found = true; break; }
-        }
-        if (found) break;
+      const angles = [0.5, 1.0, 1.5, 2.0, 2.5];
+      const order = keep
+        ? [this.avoidDir, -this.avoidDir].flatMap((side) => angles.map((a) => a * side))
+        : angles.flatMap((a) => [a * this.avoidDir, -a * this.avoidDir]);
+      for (const a of order) {
+        const cand = rot(a, V4);
+        if (clear(cand.x, cand.z)) { moveDir.copy(cand); found = true; break; }
       }
       if (!found) moveDir.set(-moveDir.x, 0, -moveDir.z);   // boxed in: back out
     } else {
@@ -2100,41 +2100,32 @@ export class Enemy {
     const P = player.position;
     const dx = P.x - this.pos.x, dz = P.z - this.pos.z, dist = Math.hypot(dx, dz);
     const move = V2.set(0, 0, 0);
-    // a floor apart is not caught up, however close it is across
-    const level = Math.abs(player.feetY - this.pos.y) < 1.2;
-    if (this.following && (dist > CAST.near || !level)) {
+    if (this.following && dist > CAST.near) {
       // Up or down a stairwell, or off a floor of one, by the hostiles' own
       // walk of it — the route field is a map of the street.
       const stairs = this._stairWalk(move, player, V4.set(dx / (dist || 1), 0, dz / (dist || 1)), world);
       if (!stairs) {
         // By the route field, all the way: a line of sight out of a shop runs
-        // through a window as often as a door, and a holdout with no avoidance
-        // walks straight into the wall under it. Straight at you only for the
+        // through a window as often as a door, and straight at you from
+        // there is into the wall under it. Straight at you only for the
         // last few metres, or where the field has no answer.
         const nav = this.game.nav;
         const close = dist < CAST.far && world.lineOfSight(this.pos.x, this.pos.y + 1.5, this.pos.z, P.x, P.y, P.z);
         if (close || !nav || !this._route(nav, move)) move.set(dx / (dist || 1), 0, dz / (dist || 1));
       }
       // Round what the field does not see, as a hostile goes round it: a car
-      // between you. And once it has stood pressed against something for a
-      // moment, round a step too high at its feet as well — a heap of
-      // rubble, which the field leaves open because a hostile climbs one,
-      // and a steep one it walked into and stayed against. Asked sooner, it
-      // turned a holdout away from a heap it would have slid along and past;
-      // and kept up a while, or it walked straight back into the heap.
-      this.wary = this.pressed > 0.4 ? 1.5 : Math.max(0, (this.wary || 0) - dt);
-      const near = this.wary > 0 ? this.radius + 0.3 : 0;
-      if (stairs !== 'in' && stairs !== 'with' && move.lengthSq() > 1e-4) this._avoid(move, world, dt, near);
+      // between you, and a heap of rubble, which the field leaves open
+      // because a hostile climbs one, and a steep one a holdout stood against.
+      // Round the side it chose: along the face of a wreck the probe grazed
+      // it, the nearest open angle swapped sides every frame, and a holdout
+      // stood shuffling against the door.
+      if (stairs !== 'in' && stairs !== 'with' && move.lengthSq() > 1e-4) this._avoid(move, world, dt, true);
     }
     const speed = this.type.speed * (dist > CAST.far ? 1.2 : dist < CAST.near + 1.5 ? 0.55 : 1);
     this.vel.lerp(V3.copy(move).multiplyScalar(speed), Math.min(1, dt * 6));
-    const fromX = this.pos.x, fromZ = this.pos.z;
     this.pos.addScaledVector(this.vel, dt);
     world.resolve(this.pos, this.radius, this.pos.y, 0.55, bodyHeight(this));
     world.clampToBounds(this.pos, this.radius);
-    // walking, and getting under a fifth of the way it is walking
-    const wants = move.lengthSq() > 1e-4, got = Math.hypot(this.pos.x - fromX, this.pos.z - fromZ);
-    this.pressed = wants && got < speed * dt * 0.2 ? (this.pressed || 0) + dt : 0;
     const support = world.groundHeight(this.pos.x, this.pos.z, SUPPORT_RADIUS, this.pos.y + 0.55);
     if (support > this.pos.y) this.pos.y = Math.min(support, this.pos.y + dt * 6);
     else if (support < this.pos.y) this.pos.y = Math.max(support, this.pos.y - dt * 14);

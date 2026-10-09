@@ -371,10 +371,11 @@ export class ObjectiveSystem {
 
   /**
    * A floor up a stairwell, away from its door: further to go and a stair
-   * to find, and a walk back down with them. A holdout has no avoidance, so
-   * a spot is only taken if the walk to the landing door — the way a body
-   * crosses a floor, round the shaft by its corners (`Enemy._floorWay`) —
-   * runs clear of the furniture all the way.
+   * to find, and a walk back down with them. A spot is only taken if the
+   * walk from it to the landing door — the way a body crosses a floor,
+   * round the shaft by its corners (`Enemy._floorWay`) — runs clear of the
+   * furniture all the way: a crate stack between the two held a holdout on
+   * its floor for the whole escort.
    */
   floorSite(def) {
     const g = this.game, w = g.world;

@@ -1491,21 +1491,29 @@ These each cost real debugging time. Changing them needs a reason.
   Every other rescue (`rescues` in `objectives.js`, so the first is a shop)
   puts the holdout on a floor (`floorSite`), sited only where the walk to
   the landing door the hostiles' way (`Enemy._floorWay`, run in
-  `_walksOut`) stays clear of furniture; the handler says to find the stair;
+  `_walksOut`) stays clear of furniture — without it a crate stack held one
+  on its floor for the whole escort; the handler says to find the stair;
   it counts only from within 1.2 m of the floor's height, because floors
   can be 2.9 m apart and the shop's 3 m let the floor below cut it loose.
   Cut loose, it comes down by the stair walk (`_follow` calls
   `_stairWalk`): back to the door, onto the landing, down the points, into
   the street, out of the building within 11 s on all 32 floors of seed 1.
   The street was the hard part. A holdout has no watchdog, and it used to
-  have no avoidance; it now shares the hostiles' (`_avoid`, extracted), and
-  once it has been pressed against something for 0.4 s (`pressed`, `wary`)
-  it also asks a foot's width just past its body for anything over a step,
-  which turns it off a steep heap of rubble — see the rubble invariant.
-  Asked all the time, that probe turned one away from a heap it would have
-  slid along and past. Shop rescues, all 21 rooms under three draws: 62 of
-  63 before, 63 after. Floor rescues: 93 of 96, and the three that miss
-  are a steep heap in the street, after the building. While the player is
+  have no avoidance: walking straight at you over the last 8 m it stood
+  against every wreck between you, 16 of 16 on seed 1. It shares the
+  hostiles' now (`_avoid`, extracted), with one difference, `keep`: it
+  searches every angle round the side it chose before any round the other.
+  Along a wreck's long face the probe grazes it, the nearest open angle
+  swapped sides every frame, and a holdout stood shuffling at the door. The
+  hostiles keep the nearest-angle order, so nothing about them moved. Two
+  more were written and taken out because nothing needed them once those
+  were in: a "same floor as the player" gate on following, and a probe at
+  the feet for a step too high, which helped one heap and turned a holdout
+  away from another it would have slid past. Shop rescues, all 21 rooms
+  under three draws: 62 of 63 before. Floor rescues on seed 1 reach the
+  pickup from all 32 floors in the check's draw; under other draws a few
+  stop against a steep heap in the street — see the rubble invariant —
+  which is why the check allows two. While the player is
   on a floor, the hostiles' cover posts are the shop's stair door
   (`roomAt` reads a floor as its stair's shop), which is the floor's only
   way down, so a floor's landing needs no posts of its own.

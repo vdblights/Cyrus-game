@@ -4919,7 +4919,8 @@ check('a marksman holds a window over the street, and a holdout is found upstair
   // and it holds the window as it holds a roof. Every other rescue puts the
   // holdout up a building (`floorSite` in `objectives.js`), counted only from
   // its own floor, and once cut loose it comes off the floor and down the
-  // stair by the hostiles' own walk (`_stairWalk` from `_follow`).
+  // stair by the hostiles' own walk (`_stairWalk` from `_follow`), and round
+  // what stands in the street by their avoidance (`_avoid`).
   const r = await page.evaluate(() => {
     const g = window.__game, w = g.world, p = g.player, O = g.objectives;
     g.startRun();
@@ -4992,6 +4993,37 @@ check('a marksman holds a window over the street, and a holdout is found upstair
     for (let i = 0; i < 200; i++) if (g.windowPerches.includes(g.findPerch())) atWindow++;
     out.picks = { atWindow, expect: Math.round(200 * winOk / Math.max(1, allOk)) };
 
+    // A holdout walks round what is in its way, as a hostile does: one
+    // following from beside every wreck, the player five metres past it,
+    // inside the range it walks straight at you over. With no avoidance it
+    // stood against all sixteen on seed 1.
+    const open = (x, z) => {
+      const fy = w.groundHeight(x, z, 0.12, 0.6);
+      return fy < 0.5 && !w.blocked(x, z, 0.6, fy + 0.3) && Math.abs(x) < w.bounds - 3 && Math.abs(z) < w.bounds - 3;
+    };
+    out.cars = { staged: 0, past: 0, stuck: [] };
+    for (const b of w.boxes) {
+      if (b.heap || b.floor || b.base || b.top < 1.3 || b.top > 1.7 || b.hx === undefined) continue;
+      const long = Math.max(b.hx, b.hz), short = Math.min(b.hx, b.hz);
+      if (Math.abs(long - 2.2) > 0.3 || Math.abs(short - 0.95) > 0.2) continue;
+      const lx = b.hx < b.hz ? 1 : 0, lz = 1 - lx;
+      for (const sgn of [1, -1]) {
+        const ux = (b.cos * lx + b.sin * lz) * sgn, uz = (-b.sin * lx + b.cos * lz) * sgn;
+        const hx = b.cx - ux * (short + 0.6), hz = b.cz - uz * (short + 0.6), px = b.cx + ux * (short + 5), pz = b.cz + uz * (short + 5);
+        if (!open(hx, hz) || !open(px, pz)) continue;
+        clear();
+        p.reset(px, pz); p.maxHealth = p.health = 1e6;
+        const h = g.spawnEnemy('holdout');
+        h.pos.set(hx, w.groundHeight(hx, hz, 0.12, 0.6), hz); h.group.position.copy(h.pos); h.following = true;
+        window.__step(8);
+        out.cars.staged++;
+        const d = Math.hypot(h.pos.x - px, h.pos.z - pz);
+        if (d < 4) out.cars.past++; else out.cars.stuck.push([Math.round(hx), Math.round(hz), +d.toFixed(1)]);
+        break;
+      }
+    }
+    clear();
+
     // the rescues alternate: a shop, then a floor, and the handler says so
     O.reset();
     const first = O.start('rescue');
@@ -5053,6 +5085,8 @@ check('a marksman holds a window over the street, and a holdout is found upstair
   expect(fired.length === r.windows, `a marksman fired out of ${fired.length} of ${r.windows} windows: ${JSON.stringify(r.hold)}`);
   expect(r.picks.atWindow >= r.picks.expect * 0.6 && r.picks.expect > 0,
     `findPerch chose a window ${r.picks.atWindow} times in 200, against about ${r.picks.expect}`);
+  expect(r.cars.staged >= 8 && r.cars.past === r.cars.staged,
+    `a holdout got past ${r.cars.past} of ${r.cars.staged} wrecks: ${JSON.stringify(r.cars.stuck.slice(0, 4))}`);
   expect(!r.firstUp && r.secondUp, `the first rescue upstairs ${r.firstUp}, the second ${r.secondUp}`);
   expect(/stair/i.test(r.said), `the handler did not say the holdout is up a stair: ${r.said}`);
   const n = r.rescue.length;
@@ -5069,7 +5103,7 @@ check('a marksman holds a window over the street, and a holdout is found upstair
   // rubble invariant). Every one seen so far was one of those.
   const done = loose.filter((x) => x.done);
   expect(done.length >= n - 2, `a holdout reached the pickup from ${done.length} of ${n} floors: ${JSON.stringify(loose.filter((x) => !x.done))}`);
-  return { rescued: `${done.length}/${n}`, outBy: Math.max(...out.map((x) => x.out)), stalls: loose.filter((x) => !x.done).map((x) => x.at),
+  return { rescued: `${done.length}/${n}`, cars: `${r.cars.past}/${r.cars.staged}`, outBy: Math.max(...out.map((x) => x.out)), stalls: loose.filter((x) => !x.done).map((x) => x.at),
     windows: `${r.windows}/${r.stairs}`, picks: r.picks, view: r.view.join(' ') };
 });
 
