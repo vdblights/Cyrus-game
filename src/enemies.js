@@ -1351,10 +1351,6 @@ export class Enemy {
       const f = this.onFloor;
       const theirs = here && here.stair === s && here.floor === f;
       if (!theirs && (this.floorStep === 'out' || this.floorStep === 'on')) this.floorStep = 'back';
-      // back inside the shaft from the floor: to the landing, and out again
-      const q = s.shaft;
-      if ((this.floorStep === 'on' || this.floorStep === 'back')
-          && this.pos.x > q.minX && this.pos.x < q.maxX && this.pos.z > q.minZ && this.pos.z < q.maxZ) this.floorStep = 'in';
       const toDoor = Math.hypot(f.door.x - this.pos.x, f.door.z - this.pos.z);
       if (this.floorStep === 'out') {
         if (toDoor > 0.6) {
@@ -1365,12 +1361,12 @@ export class Enemy {
         this.markWatchdog(player);
       }
       if (this.floorStep === 'on') {
-        if (!this._floorWay(out, player.position.x, player.position.z, s, f, world)) out.copy(toPlayer);
+        this._floorWay(out, player.position.x, player.position.z, s, f, world);
         return 'out';
       }
       if (this.floorStep === 'back') {
         if (toDoor > 0.6) {
-          if (!this._floorWay(out, f.door.x, f.door.z, s, f, world)) out.set(f.door.x - this.pos.x, 0, f.door.z - this.pos.z).normalize();
+          this._floorWay(out, f.door.x, f.door.z, s, f, world);
           return 'out';
         }
         this.floorStep = 'in';
@@ -1431,9 +1427,11 @@ export class Enemy {
    * and has nothing to say up here, and on a wide floor the shaft stands
    * between its own door and most of the room: straight at the point, a
    * hostile's avoidance gave up against it, stood there out of sight, and
-   * the watchdog moved it away. So if the way is not clear at knee height,
-   * it goes by the corner of the shaft that gets it there soonest. What else
-   * stands on a floor is furniture, which the avoidance walks round.
+   * the watchdog moved it away — a juggernaut most of all, walking back to
+   * the door after the player had gone down. So if a straight walk crosses
+   * the shaft, it goes by the corner of the shaft that gets it there
+   * soonest. What else stands on a floor is furniture, which the avoidance
+   * walks round.
    */
   _floorWay(out, tx, tz, s, f, world) {
     const x = this.pos.x, z = this.pos.z, q = s.shaft, pad = this.radius + 0.05;
@@ -1461,12 +1459,11 @@ export class Enemy {
         const cost = Math.hypot(cx - x, cz - z) + Math.hypot(tx - cx, tz - cz) + (clear(cx, cz, tx, tz) ? 0 : 6);
         if (cost < best) { best = cost; gx = cx; gz = cz; }
       }
-      if (best === Infinity) return false;
+      // no corner helps: straight at it, and the avoidance has the rest
+      if (best === Infinity) { gx = tx; gz = tz; }
     }
     out.set(gx - x, 0, gz - z);
-    if (out.lengthSq() < 1e-6) return false;
-    out.normalize();
-    return true;
+    if (out.lengthSq() > 1e-6) out.normalize();
   }
 
   /**

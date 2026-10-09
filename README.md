@@ -216,6 +216,14 @@ the street takes it instead, and one on the roof with a shot down holds it.
 A juggernaut comes up stooped under the flights; a warlord is too big for
 the stairs and waits below.
 
+Those buildings are floors all the way up, too: every lap of the stair
+lands at one, through a door in the stairwell's wall. They are gutted
+concrete frames — you can tell them from the street — with real windows
+all round: you see out of them and shoot out of them, and whoever is in the
+street does the same back. A floor has a crate or a table to take cover
+behind, glass under its windows, and the hostiles follow you onto it,
+round the stairwell, and back down after you when you go.
+
 They use the buildings against you, too. Go into a shop and up to two of the
 riflemen take posts outside, each with a sight line into a doorway, and hold
 them while the rest come in after you — so the door you leave by is covered.

@@ -4806,6 +4806,62 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
       }
       out.follow.push({ kind, wide: wide(s), upAt, near: +near.toFixed(2), offFloor, downAt, relocs: relocs - before });
     }
+    // and back off every floor: a juggernaut out on the floor, where the
+    // straight way to its door crosses the shaft, and the player gone down
+    // to the street — the widest body, and the one the shaft caught. It is
+    // started behind the shaft because that is where one that has held its
+    // range on the floor ends up; started beside the player, the way to the
+    // door was clear and the check passed without the route round it.
+    const crosses = (q, ax, az, bx, bz, pad) => {
+      let t0 = 0, t1 = 1;
+      for (const [p0, d, lo, hi] of [[ax, bx - ax, q.minX - pad, q.maxX + pad], [az, bz - az, q.minZ - pad, q.maxZ + pad]]) {
+        if (Math.abs(d) < 1e-9) { if (p0 < lo || p0 > hi) return false; continue; }
+        let a = (lo - p0) / d, b = (hi - p0) / d;
+        if (a > b) { const t = a; a = b; b = t; }
+        t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+        if (t0 > t1) return false;
+      }
+      return true;
+    };
+    out.back = { floors: 0, home: 0, relocs: 0, behind: 0, stuck: [] };
+    for (const s of w.stairs) for (const f of s.floors) {
+      const room = w.rooms.find((rm) => rm.stair === s), d = room.doors[0], m = middle(s, f);
+      if (!m) continue;
+      const R = s.roof, q = s.shaft;
+      let start = null;
+      for (let i = 0; i < 64 && !start; i++) {
+        const sx = R.minX + 1.2 + (R.maxX - R.minX - 2.4) * ((i % 8) + 0.5) / 8;
+        const sz = R.minZ + 1.2 + (R.maxZ - R.minZ - 2.4) * (Math.floor(i / 8) + 0.5) / 8;
+        if (sx > q.minX - 1.2 && sx < q.maxX + 1.2 && sz > q.minZ - 1.2 && sz < q.maxZ + 1.2) continue;
+        if (w.blocked(sx, sz, 0.8, f.y + 0.9) || !crosses(q, sx, sz, f.door.x, f.door.z, 0.7)) continue;
+        start = { x: sx, z: sz };
+      }
+      if (start) out.back.behind++;
+      start = start || { x: m.x + 1.2, z: m.z };
+      for (const e of g.enemies) { e.group.visible = false; g._recycle(e); }
+      g.enemies.length = 0;
+      const before = relocs;
+      p.reset(m.x, m.z); p.feetY = f.y; p.position.y = f.y + p.eyeHeight;
+      const e = g.spawnEnemy('brute');
+      const ex = start.x, ez = start.z;
+      e.pos.set(ex, f.y, ez); e.group.position.copy(e.pos);
+      e.stair = s; e.onFloor = f; e.floorStep = 'on'; e.stairFrom = e.stairTo = f.at;
+      e.markWatchdog(p); e.alert(g.time, 0);
+      e.nextFire = Infinity; e.frags = 0; e.postAfter = Infinity;
+      const qx = d.x + d.nx * 6, qz = d.z + d.nz * 6;
+      p.reset(qx, qz);
+      const fy = p.feetY;
+      let home = false;
+      for (let fr = 0; fr < 30 * 30 && !home; fr++) {
+        p.feetY = fy; p.position.set(qx, fy + p.eyeHeight, qz); p.health = 100;
+        g.time += 1 / 30; e.nextFire = Infinity; g.step(1 / 30);
+        if (e.pos.y < 0.6 && !e.stair) home = true;
+      }
+      out.back.floors++;
+      if (home && relocs === before) out.back.home++;
+      else out.back.stuck.push({ y: +f.y.toFixed(1), home, relocs: relocs - before, at: [+e.pos.x.toFixed(1), +e.pos.y.toFixed(1), +e.pos.z.toFixed(1)], step: e.floorStep });
+      out.back.relocs += relocs - before;
+    }
     g.relocateEnemy = relocate;
     // a drop from a hostile killed on a floor lands on it, and only there is it taken
     {
@@ -4848,9 +4904,12 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
     expect(fo.relocs === 0, `a ${fo.kind} was relocated: ${JSON.stringify(fo)}`);
     if (fo.kind === 'scavenger') expect(fo.near < 2, `a scavenger stopped ${fo.near} m short of the player: ${JSON.stringify(fo)}`);
   }
+  expect(r.back.behind >= 10, `only ${r.back.behind} floors had somewhere behind the shaft to start from`);
+  expect(r.back.floors >= 20 && r.back.home === r.back.floors,
+    `a juggernaut got back off ${r.back.home} of ${r.back.floors} floors: ${JSON.stringify(r.back.stuck.slice(0, 3))}`);
   expect(Math.abs(r.drop.at) < 0.05, `a drop landed ${r.drop.at} m off the floor it fell on`);
   expect(!r.drop.takenBelow && r.drop.takenOn, `a drop on a floor: taken from below ${r.drop.takenBelow}, taken beside it ${r.drop.takenOn}`);
-  return { floors: r.floors, windows: r.windows, walked: `${r.walked}/${r.walks}`, follow: r.follow, drop: r.drop };
+  return { back: `${r.back.home}/${r.back.floors}, ${r.back.behind} behind the shaft`, drop: r.drop, floors: r.floors, windows: r.windows, walked: `${r.walked}/${r.walks}`, follow: r.follow };
 });
 
 check('a juggernaut stoops up a stairwell after you, and a warlord stays down', async (page) => {
@@ -5356,11 +5415,24 @@ check('a seed still lays out the city it did', async (page) => {
   // the mark after boot identical. Before it: 2466/1462/12 a58d0856 (2108 63d74243),
   // 1915/1215/11 cf6519ea (1457 b4700b44), 2474/1469/10 7f188ef1 (1992
   // 99ee3366).
+  //
+  // And for the floors: every building with a stairwell has a floor at
+  // every lap of it between the shop and the roof (`upperFloors`), its
+  // facade block gone and its walls piers, sills and lintels round real
+  // windows, built inside the tower's reserve by hash. Compared collider
+  // by collider on all three seeds: 65, 35 and 60 colliders gone (the deck
+  // from the shop's ceiling to the roof, cut round the shaft, and the shaft
+  // lining's door end) and 2,483, 1,492 and 2,328 new, every one of either
+  // inside a stairwell building's footprint or its cap's 30 cm overhang;
+  // the perches and the mark after boot identical. Before it: the line
+  // below as it stood for the bare rooms.
   const want = {
-    1: { boxes: 2497, solids: 1540, perches: 12, fp: 'b323ced2', placed: 2139, fpPlaced: 'e5d0438f' },
-    7: { boxes: 1933, solids: 1268, perches: 11, fp: '9d1c7f32', placed: 1475, fpPlaced: 'de4ab94c' },
-    20260101: { boxes: 2526, solids: 1617, perches: 10, fp: 'e1cfa671', placed: 2044, fpPlaced: '9123bce6' },
+    1: { boxes: 4915, solids: 1617, perches: 12, fp: '1ee92ae6', placed: 4557, fpPlaced: 'c62209d3' },
+    7: { boxes: 3390, solids: 1307, perches: 11, fp: 'ddfed437', placed: 2932, fpPlaced: 'eb0a4c59' },
+    20260101: { boxes: 4794, solids: 1683, perches: 10, fp: '9f142bd4', placed: 4312, fpPlaced: '4476e7f7' },
   };
+  // (bare rooms: 2497/1540/12 b323ced2 (2139 e5d0438f), 1933/1268/11
+  // 9d1c7f32 (1475 de4ab94c), 2526/1617/10 e1cfa671 (2044 9123bce6))
 
   const got = {};
   for (const seed of Object.keys(want)) {

@@ -51,7 +51,7 @@ builds, never to play.
 | File | Owns |
 | --- | --- |
 | `src/main.js` | `Game`: loop, scene, lighting, waves, hit resolution, blasts |
-| `src/world.js` | Box collision (square, turned, a ceiling overhead or a deck over a ceiling), ground height, line of sight, sphere bounce, the grid that indexes them, which stairwell a body is up |
+| `src/world.js` | Box collision (square, turned, a ceiling overhead or a deck over a ceiling), ground height, line of sight, sphere bounce, the grid that indexes them, which stairwell or floor a body is up |
 | `src/city.js` | Procedural generation; returns `{ world, fireBarrels, perches }` |
 | `src/player.js` | `Input` and `Player`: look, movement, footing, health |
 | `src/weapons.js` | Weapon defs, view models, firing, recoil, melee |
@@ -405,6 +405,74 @@ These each cost real debugging time. Changing them needs a reason.
   walk off (no scavenger up), and with the landing fix below reverted. A
   party wall cut to parapet height fails it only by there being no party
   walls to find, which is weak: the check knows one by its height.
+- **A building with a stairwell is floors, one a lap, and the windows are
+  real.** Every lap of a stairwell lands at a floor of its building
+  (`upperFloors` in `city.js`) between the shop and the roof: on seed 1, 32
+  floors in 13 buildings, 2.41-3.47 m of headroom. A floor is a deck slab
+  round the shaft (the first one the shop's ceiling too), a dark finish
+  over it, a ceiling that is the next floor's slab or the roof's, and walls
+  of piers on the bay lines with a sill and a lintel between each pair —
+  442 openings on seed 1, every one open to sight and to a round both ways,
+  because a building you can stand in has to have holes you can see out
+  of. The facade block goes: a facade texture's painted windows and the
+  shader's invented rooms cannot line up with real openings, so these
+  buildings are a concrete frame instead, which also says from the street
+  that you can go in. A face onto the building next door is blind, and so is
+  the stretch of wall the shaft stands against. Six things are
+  load-bearing. **Every piece of wall is a ceiling box, never a deck**:
+  nobody stands on a sill and nobody climbs out of a window. **A first
+  landing at or under the shop's ceiling opens on nothing**
+  (`F < under + 0.15`): one building on seed 1 put its first landing at
+  2.99 m, under a 3.03 m ceiling, and the slab came out upside down with 4
+  cm of headroom; the slab runs on to the next floor instead. **The
+  shaft's lining has a door off every floor's landing** at lane A, and the
+  lining under each door is a deck, its threshold. **The cap is a band and
+  a roof slab** (`ROOF`, 0.3 m), not the 0.8 m slab it was, or the top floor
+  had as little as 2.1 m. **Decoration that would cross a window is built
+  and dropped** (`SINK`): the pilasters, the band and the downpipe still
+  mint their objects, so every later decoration draws what it did. And
+  **every reader that asks "on which floor" asks `World.stairAt`**, which
+  answers a floor between the shaft check and the shop: the player's floor
+  for the hostiles, a drop's floor for `maybeDrop` (a drop on a floor
+  lands there and is only taken by someone on it, within 2 m of height —
+  it used to be the street's), and the indoor bake and the litter read
+  `world.floors` as they read `world.rooms`. **Hostiles follow onto a
+  floor as a branch off the stair walk** (`_stairWalk`, `onFloor`,
+  `floorStep`): at the landing a floor's door is off, out through the door
+  ('out'), across the floor after the player with the avoidance on ('on'),
+  and when the player leaves it, back to the door ('back') and onto the
+  landing ('in'). The route field is a map of the street, so across a floor
+  a hostile goes round the shaft by its corners when a straight walk
+  crosses it (`_floorWay`), and out on the floor its avoidance treats the
+  shaft as blocked though its door is open — or it took the doorway as the
+  way round, walked back into the shaft and stood there. Two more were
+  written and taken out because nothing needed them once those two were
+  in: a recovery that walked a hostile found in the shaft back to its
+  landing, and a fallback for when no corner helped. Each of the two kept
+  bites: without the route, a juggernaut walking back off a floor from
+  behind the shaft is stuck and relocated on 1 of 32 floors; without the
+  shaft in the avoidance, a raider is. Probed over all 32 floors, a
+  scavenger, a raider and a juggernaut each reached every one and came
+  back down, unrelocated. `a building with a stairwell has floors` climbs
+  every stair, walks onto every floor, looks and shoots out of every
+  window and into every pier beside one, follows onto floors with three
+  archetypes, walks a juggernaut back off every floor from behind its
+  shaft, and drops a pickup on a floor; it fails with `stairAt` blind to
+  floors and with no door in the lining (32 of 32 floors not walked onto),
+  with every window blind, with the walls out of the raycast list (442 of
+  442 piers let a round through), with the route or the avoidance rule
+  taken out, with drops landing on the street (3.54 m off) and with
+  pickups taken from below. It first started the juggernaut beside the
+  player, where the way to the door was clear, and passed with the route
+  taken out; it starts behind the shaft now, which is where one that has
+  held its range ends up. What it cost, twelve hostiles on seed 1 under
+  software rendering against `main`: high 2,130-2,160 → 2,180-2,290 ms a
+  frame, triangles 859k → 1,009k, calls 467 → 459; low within noise; the
+  game step in a fight unchanged (0.1 ms median) for twice the boxes
+  (2,497 → 4,915). Two checks moved because a facade worn only by these
+  buildings is now worn by nothing on seed 1: the bake records what it was
+  handed (`bakedFrom`), and the material and window checks ask about what
+  is worn.
 - **A hostile uses a building by reading it, not by being scripted into
   it.** Three behaviours, all keyed off where the player is: `Game.roomAt`
   (the room under the player, or the room of the stair they are up — the
@@ -1695,7 +1763,11 @@ machine pushed one of the suite's boots past the harness's 60 s wait, and
 the whole run died eighteen checks in. Four shards started together on this
 machine all missed that wait on their very first boot and ran nothing;
 two, the second started a minute and a half after the first, ran the
-whole suite. Work on a second change in a `git
+whole suite. And do not edit `tests/run.js` between starting one shard
+and the next: each shard reads the file when it starts and deals itself
+every other check by index, so one more check in the second shard's copy
+shifted which checks it dealt itself, and some were in neither shard —
+the layout check among them, which would have failed. Work on a second change in a `git
 worktree` (it serves its own `src/`, with `node_modules` symlinked in), and
 give a look script its own longer wait for the menu.
 **`buildCity`'s helpers are nested `function`s declared after its
@@ -1849,6 +1921,19 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The floors pass came out of one line from play: more floors of the
+buildings should be accessible. Upper floors had sat on the list as
+"if play asks for them", and play asked. It is the invariant above: every
+stairwell building's laps are floors, the building a concrete frame with
+real windows, hostiles following onto a floor as a branch off the stair
+walk. Two things worth keeping. Every fix to the hostiles was found by
+probing all 32 floors with three archetypes rather than a sample, and
+every one was then taken out alone and in pairs over all 32 again, which is
+what showed two of the four were redundant. And a check that stages a
+hostile has to stage it where the game puts one: the juggernaut's walk back
+off a floor passed the check without the fix until it started behind the
+shaft.
 
 The pass after that closed the frags at a roof and the stair door, both
 in the buildings invariant. The frags were a question, and the answer was
@@ -3007,11 +3092,15 @@ Suggested next work, in the order I would do it:
    scrip) are first guesses against about 1,500 points a wave early on.
    Whether a run can afford the plate carrier before wave 4, and whether
    anyone buys optics, is a play question.
-4. **Upper floors you walk through**, if play asks for them. A stairwell
-   climbs past every floor of its building and opens on none of them. A
-   floor off a landing is a room with a `base` and a deck under it, which
-   the readers now handle; the route field still is not, but the stair
-   points already are, so a floor would be a branch off the walk.
+4. **Spawn on the floors, and hold them.** Nothing starts a wave up a
+   building, and a marksman's perch is still a roof or a terrace; a floor
+   with windows onto a junction is a better one, and a floor is where a
+   holdout would be found. The stair posts cover a shop's stair door; a
+   floor's door off its landing could be covered the same way.
+5. **A floored building's look.** The concrete frame reads as a building
+   you can go into, which is the point, but all 13 are the same grey;
+   giving the frame a facade style's colour, or a band of the facade's
+   texture between the floors, would keep the skyline varied.
 
 One piece of housekeeping that cannot be done from here: the merged branch
 `claude/project-memory` still exists on the remote. Deleting it returns 403
