@@ -2615,8 +2615,12 @@ export function buildCity(scene, painted = null) {
       }
       pieces.push([a0, a1, y, hh]);
     }
-    // the whole wall's unwrap, asked of each piece's vertices where they are
-    const span = (len, snap) => Math.max(1, Math.round(len / snap)) * (snap / TILE.facade);
+    // the whole wall's unwrap, asked of each piece's vertices where they are —
+    // but across its thickness at the tile's own scale: `boxGeo` snaps that to
+    // a whole bay, 3.6x over a 0.7 m end cap nobody saw, and every window has
+    // four faces across the thickness now
+    const span = (len, snap) => len === T ? T / TILE.facade
+      : Math.max(1, Math.round(len / snap)) * (snap / TILE.facade);
     const su = { x: span(dgt, snapU), y: span(wgt, snapU), z: span(wgt, snapU) };
     const sv = { x: span(hh, snapV), y: span(dgt, snapU), z: span(hh, snapV) };
     const geos = [];
@@ -2637,10 +2641,11 @@ export function buildCity(scene, painted = null) {
         uv.setXY(i, (u + 0.5) * su[axis] + offsetU, (v + 0.5) * sv[axis] + offsetV);
       }
       geos.push(geo);
-      // its collider: on the ground, or over a window and off it
+      // its collider: on the ground, or over a window and off it — a deck,
+      // because the wall's top is open sky and was always somewhere to stand
       const qx0 = px + (alongX ? a0 : -T / 2), qx1 = px + (alongX ? a1 : T / 2);
       const qz0 = pz + (alongX ? -T / 2 : a0), qz1 = pz + (alongX ? T / 2 : a1);
-      if (y0 > 0.001) w.addCeiling(qx0, qz0, qx1, qz1, y1, y0);
+      if (y0 > 0.001) w.addDeck(qx0, qz0, qx1, qz1, y1, y0);
       else w.addBox(qx0, qz0, qx1, qz1, y1);
     }
     const m = new THREE.Mesh(mergeIntoOne(geos), mat);
