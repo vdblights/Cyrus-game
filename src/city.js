@@ -218,6 +218,12 @@ const STOREY = TILE.facade / FACADE_FLOORS;
  */
 const GROUND = STOREY;
 const SLAB = 0.3;
+/** Somewhere to put decoration that is built and not shown (see `buildTower`). */
+const SINK = { add() {} };
+/** A floor's outer wall, and how thick the roof slab over the top floor is. */
+const WALL_T = 0.35, ROOF = 0.3;
+/** A window in a floor's wall: how high its sill is, and the pier between two. */
+const SILL = 0.95, PIER = 0.9;
 
 /**
  * A stairwell from an open ground floor to the roof (`stairwell`): two lanes
@@ -456,11 +462,14 @@ function indoorField(world) {
       const c = s.inner;
       if (y < s.hut - 0.01 && x > c.minX - 0.01 && x < c.maxX + 0.01 && z > c.minZ - 0.01 && z < c.maxZ + 0.01) return 0.72;
     }
-    for (const c of world.rooms) {
-      if (y > c.ceiling + 0.01) continue;
-      const d = Math.min(x - c.minX, c.maxX - x, z - c.minZ, c.maxZ - z);
-      if (d <= 0.02) continue;
-      return 0.38 + 0.5 * Math.exp(-d / 1.6);
+    // a shop, or a floor over one, by how far in from its outer faces
+    for (const list of [world.rooms, world.floors]) {
+      for (const c of list) {
+        if (y > c.ceiling + 0.01 || y < c.floor - 0.4) continue;
+        const d = Math.min(x - c.minX, c.maxX - x, z - c.minZ, c.maxZ - z);
+        if (d <= 0.02) continue;
+        return 0.38 + 0.5 * Math.exp(-d / 1.6);
+      }
     }
     return 1;
   };
@@ -1495,7 +1504,7 @@ function shopLitter(group, world, litterMat, shardMat, chipMats) {
     && z > room.minZ + T + pad && z < room.maxZ - T - pad
     && Math.abs(world.groundHeight(x, z, 0.02, room.floor + 0.5) - room.floor) < 0.005
     && !world.blocked(x, z, pad, room.floor + 0.1);
-  for (const room of world.rooms) {
+  for (const room of [...world.rooms, ...world.floors]) {
     const geos = new Map();
     const add = (mat, geo) => { let a = geos.get(mat); if (!a) geos.set(mat, a = []); a.push(geo); };
     // what was laid, for anything that wants to know a shop is not bare
@@ -2462,10 +2471,13 @@ export function buildCity(scene, painted = null) {
       // A roof you can reach keeps none of what is decoration up there: a
       // bulkhead or a tank you walk through, or a fire escape a jump off the
       // parapet that you fall through.
+      // A building with floors has windows on its own lines, which ribs, a
+      // band and a downpipe would run across: they are still built, so the
+      // decoration after them draws what it always did, and then dropped.
       if (!open) basePlinth(g, x, z, bw, bd, conc, tint);
-      facadeRelief(g, x, z, bw, bd, h, conc, tint);
+      facadeRelief(stair ? SINK : g, x, z, bw, bd, h, conc, tint);
       if (!stair) roofFurniture(g, x, z, bw, bd, h, conc, metal);
-      streetFurniture(g, x, z, bw, bd, h, metal, cx, cz);
+      streetFurniture(g, x, z, bw, bd, h, metal, cx, cz, stair ? SINK : g);
       if (!stair) fireEscape(g, x, z, bw, bd, h, metal, cx, cz);
     }
   }
@@ -2981,23 +2993,12 @@ export function buildCity(scene, painted = null) {
     const shaft = h <= STAIR.top ? placeShaft(x, z, bw, bd, T, faces, r) : null;
     const footprint = { minX: x - bw / 2, maxX: x + bw / 2, minZ: z - bd / 2, maxZ: z + bd / 2 };
 
-    // The floors above. Over most ground floors, a ceiling and nothing else;
-    // with a stairwell through them, a roof you can stand on, round the hole
-    // the shaft leaves — and the deck is the top of the cap you can see.
-    if (shaft) {
-      for (const q of around(footprint, shaft.outer)) w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, h + 0.8, under);
-    } else {
+    // The floors above. Over most ground floors, a ceiling and nothing else,
+    // and a slab under it that a bullet stops at. With a stairwell through
+    // them they are floors you walk on, which `upperFloors` builds once the
+    // stair has said where its landings are.
+    if (!shaft) {
       w.addCeiling(footprint.minX, footprint.minZ, footprint.maxX, footprint.maxZ, h, under);
-    }
-
-    // the slab under the floors above: something a bullet stops at, and the
-    // ceiling box above it is what a body or a sight line meets
-    if (shaft) {
-      for (const q of around(footprint, shaft.outer)) {
-        w.solids.push(part(q.maxX - q.minX, SLAB, q.maxZ - q.minZ, (q.minX + q.maxX) / 2, under,
-          (q.minZ + q.maxZ) / 2, conc, false, TILE.concrete, { cells: 3 }));
-      }
-    } else {
       w.solids.push(part(bw, SLAB, bd, x, under, z, conc, false, TILE.concrete, { cells: 6 }));
     }
     // a floor finish over the pavement, flush with it, with vertices across
@@ -3263,35 +3264,54 @@ export function buildCity(scene, painted = null) {
     // the spine between the lanes, a rail's height over the top flight
     block(s.rect(LD, LD + FL, LANE, LANE + SPINE), 0, D + 1.0, conc);
 
-    // The lining, floor to bulkhead roof. The near end has the two doors: the
-    // one off the shop at lane A, the one onto the roof at lane B, over the
-    // top of the last flight.
+    // A floor at every lap's landing below the roof (`upperFloors`): its
+    // slab's top is the landing, its ceiling the next floor's slab or the
+    // roof's, and its door is off the landing at lane A, over the shop's.
+    const levels = [];
+    for (let k = 1; k < n / 2; k++) {
+      const F = H(2 * k), last = k === n / 2 - 1;
+      // a first landing at or under the shop's ceiling has no floor to open
+      // onto; the slab runs on up to the next
+      if (F < under + 0.15) continue;
+      const C = last ? D - ROOF : H(2 * k + 2) - THICK;
+      levels.push({ k, F, C, wall: last ? h : C, door: Math.min(DOOR, C - F - 0.05), at: 0 });
+    }
+
+    // The lining, floor to bulkhead roof. The near end has the doors: the
+    // one off the shop and one onto every floor at lane A, and the one onto
+    // the roof at lane B, over the top of the last flight. Under each floor's
+    // door the lining is its threshold, so it is a deck.
     const top = D + HUT;
     block(s.rect(-WALL, Lin + WALL, -WALL, 0), 0, top, conc);
     block(s.rect(-WALL, Lin + WALL, Win, Win + WALL), 0, top, conc);
     block(s.rect(Lin, Lin + WALL, 0, Win), 0, top, conc);
-    block(s.rect(-WALL, 0, 0, LANE), KERB + DOOR, top, conc);
+    let from = KERB + DOOR;
+    for (const L of levels) {
+      block(s.rect(-WALL, 0, 0, LANE), from, L.F, conc, true);
+      from = L.F + L.door;
+    }
+    block(s.rect(-WALL, 0, 0, LANE), from, top, conc);
     block(s.rect(-WALL, 0, LANE, Win), 0, D, conc);
     block(s.rect(-WALL, 0, LANE, Win), D + DOOR, top, conc);
     block(s.outer, top, top + 0.25, conc);
 
-    // The hole, through everything over the shop that had no inside: the
-    // block loses its top and bottom faces (the slab and the cap cover both
-    // everywhere else), and the cap is rebuilt round the shaft. The cap is a
-    // raycast target now, because it is what you stand on.
-    const geo = body.geometry, idx = geo.index.array, keep = [];
-    for (const gr of geo.groups) {
-      if (gr.materialIndex === 2 || gr.materialIndex === 3) continue;
-      for (let j = gr.start; j < gr.start + gr.count; j++) keep.push(idx[j]);
-    }
-    geo.setIndex(keep);
-    geo.clearGroups();
+    // The building it climbs through is floors now, not a block: the facade
+    // goes, and the walls are `upperFloors`'s. The cap is a band over the
+    // walls and a roof slab inside them, which is the top floor's ceiling and
+    // what you stand on, cut round the shaft; it is a raycast target.
+    g.remove(body);
+    w.solids.splice(w.solids.indexOf(body), 1);
     const capRect = { minX: x - bw / 2 - 0.3, maxX: x + bw / 2 + 0.3, minZ: z - bd / 2 - 0.3, maxZ: z + bd / 2 + 0.3 };
-    const capGeo = mergeIntoOne(around(capRect, s.outer).map((q) => geoAt(q, h, D, TILE.concrete)))
-      .translate(-cap.position.x, -cap.position.y, -cap.position.z);
+    const inner = { minX: footprint.minX + WALL_T, maxX: footprint.maxX - WALL_T, minZ: footprint.minZ + WALL_T, maxZ: footprint.maxZ - WALL_T };
+    const capGeo = mergeIntoOne([
+      ...around(capRect, inner).map((q) => geoAt(q, h, D, TILE.concrete)),
+      ...around(inner, s.outer).map((q) => geoAt(q, D - ROOF, D, TILE.concrete)),
+    ]).translate(-cap.position.x, -cap.position.y, -cap.position.z);
     cap.geometry.dispose();
     cap.geometry = capGeo;
     w.solids.push(cap);
+    for (const q of around(footprint, inner)) w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, D, h);
+    for (const q of around(inner, s.outer)) w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, D, D - ROOF);
 
     // the parapet, on the cap's overhang
     const PT = 0.3;
@@ -3329,7 +3349,11 @@ export function buildCity(scene, painted = null) {
       if (i % 2) path.push(pt(Lin - LD / 2, vA, H(i)), pt(Lin - LD / 2, vB, H(i)));
       else {
         path.push(pt(LD / 2, vB, H(i)));
-        if (i < n) path.push(pt(LD / 2, vA, H(i)));
+        if (i < n) {
+          path.push(pt(LD / 2, vA, H(i)));
+          const L = levels.find((q) => q.k === i / 2);
+          if (L) L.at = path.length - 1;                  // the floor's door is off this point
+        }
       }
     }
     path.push(pt(-1.6, vB, D));
@@ -3339,9 +3363,175 @@ export function buildCity(scene, painted = null) {
       // what a body may stand under: a lap less the slab, and the doors
       clear: Math.min(2 * FR - THICK, DOOR),
       path,
+      floors: [],
     };
+    upperFloors(g, w, s, stair, levels, x, z, bw, bd, under, footprint, inner, party, conc, metal, tint, pt, vA);
     w.stairs.push(stair);
     return stair;
+  }
+
+  /**
+   * The floors of a stairwell's building: one at every lap's landing between
+   * the shop and the roof, which you walk onto through a door in the
+   * shaft's lining.
+   *
+   * The building was a block — a facade texture on a box, with a window
+   * traced in its shader and an invented room behind each — and a building
+   * whose floors you can stand on needs walls with holes in. So it is built
+   * the way a concrete frame is: a slab at every floor, its edge showing on
+   * the outside, and between two slabs a wall of piers on the window-bay
+   * lines with a sill and a lintel between each pair, the opening real — you
+   * see out of it and you shoot out of it, and so does whoever is in the
+   * street. A face onto the building next door is blind, and so is the
+   * stretch of wall the shaft stands against. Every piece of wall is a
+   * ceiling box, never a deck: nobody stands on a sill, and nobody climbs
+   * out of a window. The slabs are decks round the shaft.
+   *
+   * Each floor gets a dark finish, the way the shop does, and three or four
+   * pieces of furniture away from the walls, the shaft and its door. It is
+   * all minted inside the tower's `reserve` and placed by `hash2`, so the
+   * building costs the stream what it did, and every collider is inside its
+   * footprint. One mesh a floor for the walls and slab, so a bullet tests
+   * one object per floor and not a hundred.
+   */
+  function upperFloors(g, w, s, stair, levels, x, z, bw, bd, under, footprint, inner, party, conc, metal, tint, pt, vA) {
+    const { LANE, WALL } = STAIR;
+    const T = WALL_T, o = s.outer;
+    const [ax, az] = s.at(0, 0), [bx, bz] = s.at(1, 0);
+    const ux = bx - ax, uz = bz - az;                 // along the shaft, away from its door
+    const geoAt = (q, lo, hi, tile = TILE.concrete, opts = {}) => boxGeo(q.maxX - q.minX, hi - lo, q.maxZ - q.minZ, tile, opts)
+      .translate((q.minX + q.maxX) / 2, (lo + hi) / 2, (q.minZ + q.maxZ) / 2);
+    const faces = [
+      { along: 'x', s: -1, len: bw, at: z - bd / 2 + T / 2, party: party.zm },
+      { along: 'x', s: 1, len: bw, at: z + bd / 2 - T / 2, party: party.zp },
+      { along: 'z', s: -1, len: bd - T * 2, at: x - bw / 2 + T / 2, party: party.xm },
+      { along: 'z', s: 1, len: bd - T * 2, at: x + bw / 2 - T / 2, party: party.xp },
+    ];
+    for (const f of faces) {
+      // the stretch of this face the shaft stands against, if any
+      const touches = f.along === 'x' ? o.minZ < f.at + T && o.maxZ > f.at - T : o.minX < f.at + T && o.maxX > f.at - T;
+      f.shaft = !touches ? null : f.along === 'x' ? [o.minX - x - 0.3, o.maxX - x + 0.3] : [o.minZ - z - 0.3, o.maxZ - z + 0.3];
+    }
+    const add = (geo, mat, solid) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.castShadow = m.receiveShadow = true;
+      m.userData.tint = tint;
+      g.add(m);
+      if (solid) w.solids.push(m);
+      return m;
+    };
+    for (const L of levels) {
+      const geos = [];
+      const rec = { minX: footprint.minX, maxX: footprint.maxX, minZ: footprint.minZ, maxZ: footprint.maxZ,
+        floor: L.F, ceiling: L.C, doors: [], windows: [] };
+      // the slab it stands on — over the shop, the shop's ceiling too
+      const base = L === levels[0] ? under : L.F - SLAB;
+      for (const q of around(footprint, o)) {
+        geos.push(geoAt(q, base, L.F, TILE.concrete, { cells: 3 }));
+        w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, L.F, base);
+      }
+      // the walls, pier and sill and lintel, with the openings left open
+      const top = L.wall, head = Math.min(L.F + 2.3, top - 0.25);
+      const glazed = head - (L.F + SILL) >= 0.8;
+      const piece = (f, a, b, lo, hi) => {
+        if (b - a < 0.02 || hi - lo < 0.02) return;
+        const q = f.along === 'x' ? { minX: x + a, maxX: x + b, minZ: f.at - T / 2, maxZ: f.at + T / 2 }
+          : { minX: f.at - T / 2, maxX: f.at + T / 2, minZ: z + a, maxZ: z + b };
+        geos.push(geoAt(q, lo, hi));
+        w.addCeiling(q.minX, q.minZ, q.maxX, q.maxZ, hi, lo);
+      };
+      for (const f of faces) {
+        const half = f.len / 2, bays = Math.max(1, Math.round(f.len / BAY)), span = f.len / bays;
+        for (let i = 0; i <= bays; i++) {
+          const c = -half + span * i;
+          piece(f, Math.max(-half, c - PIER / 2), Math.min(half, c + PIER / 2), L.F, top);
+        }
+        for (let i = 0; i < bays; i++) {
+          const a = -half + span * i + PIER / 2, b = a + span - PIER;
+          if (f.party || !glazed || b - a < 0.7 || (f.shaft && a < f.shaft[1] && b > f.shaft[0])) {
+            piece(f, a, b, L.F, top);
+            continue;
+          }
+          piece(f, a, b, L.F, L.F + SILL);
+          piece(f, a, b, head, top);
+          const m = (a + b) / 2;
+          rec.windows.push(f.along === 'x' ? { x: x + m, z: f.at, nx: 0, nz: f.s, width: b - a, sill: L.F + SILL, head }
+            : { x: f.at, z: z + m, nx: f.s, nz: 0, width: b - a, sill: L.F + SILL, head });
+        }
+      }
+      add(mergeIntoOne(geos), conc, true);
+      // a finish over the slab, flush with it, with vertices for the bake
+      add(mergeIntoOne(around(inner, o).map((q) => geoAt(q, L.F, L.F + FINISH, TILE.concrete, { cells: 4 }))), darkConcrete, false);
+
+      // the door off the landing, its outward normal into the shaft, as a
+      // room's doorways face out of the room
+      const dm = pt(-WALL / 2, vA, L.F);
+      rec.doors.push({ x: dm.x, z: dm.z, nx: ux, nz: uz, width: LANE });
+      furnishFloor(g, w, s, L, inner, pt(-1.6, vA, L.F), x, z, metal, tint);
+      w.floors.push(rec);
+      const fl = { k: L.k, y: L.F, ceiling: L.C, at: L.at, door: pt(-1.6, vA, L.F) };
+      Object.defineProperty(fl, 'stair', { value: stair, enumerable: false });
+      Object.defineProperty(rec, 'stair', { value: stair, enumerable: false });
+      stair.floors.push(fl);
+    }
+  }
+
+  /**
+   * Three or four pieces on a floor: a table, a stack of crates, a lone
+   * crate — out in the room, a metre and more off the walls so nothing
+   * stands under a window, clear of the shaft and the door onto the
+   * landing, and a metre from each other. A crate is somewhere to stand, so
+   * it is a deck; a table's top and legs are what a bullet meets, and a box
+   * the size of it is what a body does.
+   */
+  function furnishFloor(g, w, s, L, inner, door, x, z, metal, tint) {
+    const r = (k) => hash2(Math.round(x * 3), Math.round(z * 3), 400 + L.k * 37 + k);
+    const o = s.outer, F = L.F;
+    const grow = (q, d) => ({ minX: q.minX - d, maxX: q.maxX + d, minZ: q.minZ - d, maxZ: q.maxZ + d });
+    const busy = [grow(o, 1.2), grow({ minX: door.x, maxX: door.x, minZ: door.z, maxZ: door.z }, 2.2)];
+    const hits = (q, b) => q.minX < b.maxX && q.maxX > b.minX && q.minZ < b.maxZ && q.maxZ > b.minZ;
+    const byMat = new Map();
+    const put = (mat, geo) => { let a = byMat.get(mat); if (!a) byMat.set(mat, a = []); a.push(geo); };
+    const box = (gw, gh, gd, px, py, pz, tile) => boxGeo(gw, gh, gd, tile).translate(px, py + gh / 2, pz);
+    const want = 3 + (r(0) < 0.5 ? 1 : 0);
+    const placed = [];
+    for (let t = 0; t < 16 && placed.length < want; t++) {
+      const roll = r(10 + t), kind = roll < 0.35 ? 'table' : roll < 0.7 ? 'stack' : 'crate';
+      const turn = r(20 + t) < 0.5;
+      const lw = kind === 'table' ? 1.6 : kind === 'stack' ? 1.5 : 0.72, ld = kind === 'table' ? 0.8 : 0.75;
+      const ew = turn ? ld : lw, ed = turn ? lw : ld;
+      const roomX = inner.maxX - inner.minX - 2.2 - ew, roomZ = inner.maxZ - inner.minZ - 2.2 - ed;
+      if (roomX < 0 || roomZ < 0) continue;
+      const px = inner.minX + 1.1 + ew / 2 + r(30 + t) * roomX, pz = inner.minZ + 1.1 + ed / 2 + r(40 + t) * roomZ;
+      const q = { minX: px - ew / 2, maxX: px + ew / 2, minZ: pz - ed / 2, maxZ: pz + ed / 2 };
+      if (busy.some((b) => hits(q, b)) || placed.some((b) => hits(q, grow(b, 1.0)))) continue;
+      placed.push(q);
+      if (kind === 'table') {
+        put(metal, box(ew, 0.06, ed, px, F + 0.72, pz, TILE.metal));
+        for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+          put(metal, box(0.06, 0.72, 0.06, px + sx * (ew / 2 - 0.08), F, pz + sz * (ed / 2 - 0.08), TILE.metal));
+        }
+        w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, F + 0.78, F);
+      } else if (kind === 'stack') {
+        const rust = rustFor(px, pz);
+        const ax = turn ? 0 : 0.38, az = turn ? 0.38 : 0;
+        put(rust, box(0.72, 0.72, 0.72, px - ax, F, pz - az, TILE.rust));
+        put(rust, box(0.72, 0.72, 0.72, px + ax, F, pz + az, TILE.rust));
+        put(rust, box(0.62, 0.62, 0.62, px - ax, F + 0.72, pz - az, TILE.rust));
+        w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, F + 0.72, F);
+        w.addDeck(px - ax - 0.31, pz - az - 0.31, px - ax + 0.31, pz - az + 0.31, F + 1.34, F + 0.72);
+      } else {
+        put(rustFor(px, pz), box(0.72, 0.72, 0.72, px, F, pz, TILE.rust));
+        w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, F + 0.72, F);
+      }
+    }
+    for (const [mat, geos] of byMat) {
+      const m = new THREE.Mesh(mergeIntoOne(geos), mat);
+      m.castShadow = m.receiveShadow = true;
+      m.userData.tint = tint;
+      g.add(m);
+      w.solids.push(m);
+    }
   }
 
   /** A base course, so a tower meets the pavement on something. */
@@ -3424,7 +3614,7 @@ export function buildCity(scene, painted = null) {
    * bottom eight metres, which is the only part of a building you ever stand
    * close to — and the only part a silhouette change cannot reach.
    */
-  function streetFurniture(gr, x, z, bw, bd, h, metal, cx, cz) {
+  function streetFurniture(gr, x, z, bw, bd, h, metal, cx, cz, faces = gr) {
     decor(() => {
       const r = (s) => hash2(Math.round(x), Math.round(z), s);
 
@@ -3454,10 +3644,10 @@ export function buildCity(scene, painted = null) {
         const pipe = new THREE.Mesh(cylGeo(0.1, 0.1, len, TILE.metal, 6), metal);
         pipe.position.set(x + sx * (bw / 2 + 0.14), 0.4 + len / 2, z + sz * (bd / 2 - 0.35));
         pipe.castShadow = true;
-        gr.add(pipe);
+        faces.add(pipe);
         const shoe = new THREE.Mesh(boxGeo(0.26, 0.5, 0.26, TILE.metal), metal);
         shoe.position.set(pipe.position.x, 0.4, pipe.position.z);
-        gr.add(shoe);
+        faces.add(shoe);
       }
     });
   }

@@ -1135,6 +1135,8 @@ export class Enemy {
     this.noProgress = 0;
     this.mantle = null;
     this.stair = null;        // the stairwell it is up, if any (`_stairWalk`)
+    this.onFloor = null;      // one of its building's floors it has gone onto, and how far
+    this.floorStep = null;
     this.stairFrom = 0;       // the point of its walk it last reached
     this.stairTo = 0;         // and the one it is walking to
     this.flee = null;         // a lieutenant's route off the map ({ nav, exit })
@@ -1321,7 +1323,10 @@ export class Enemy {
     const here = this.game.playerStair;
     if (this.stair) {
       const r = this.stair.roof;
-      if (this.pos.x < r.minX - 2 || this.pos.x > r.maxX + 2 || this.pos.z < r.minZ - 2 || this.pos.z > r.maxZ + 2) this.stair = null;
+      if (this.pos.x < r.minX - 2 || this.pos.x > r.maxX + 2 || this.pos.z < r.minZ - 2 || this.pos.z > r.maxZ + 2) {
+        this.stair = null;
+        this.onFloor = null;
+      }
     }
     if (!this.stair) {
       if (!here || !fitsStair(this, here.stair)) return false;
@@ -1339,6 +1344,47 @@ export class Enemy {
       this.stairTo = 0;
     }
     const s = this.stair, path = s.path, last = path.length - 1;
+    // A floor of the building is a branch off the walk at the landing its
+    // door is off: out through the door and across the floor after them,
+    // and when they leave it, back to the door and onto the landing.
+    if (this.onFloor) {
+      const f = this.onFloor;
+      const theirs = here && here.stair === s && here.floor === f;
+      if (!theirs && (this.floorStep === 'out' || this.floorStep === 'on')) this.floorStep = 'back';
+      // back inside the shaft from the floor: to the landing, and out again
+      const q = s.shaft;
+      if ((this.floorStep === 'on' || this.floorStep === 'back')
+          && this.pos.x > q.minX && this.pos.x < q.maxX && this.pos.z > q.minZ && this.pos.z < q.maxZ) this.floorStep = 'in';
+      const toDoor = Math.hypot(f.door.x - this.pos.x, f.door.z - this.pos.z);
+      if (this.floorStep === 'out') {
+        if (toDoor > 0.6) {
+          out.set(f.door.x - this.pos.x, 0, f.door.z - this.pos.z).normalize();
+          return 'in';
+        }
+        this.floorStep = 'on';
+        this.markWatchdog(player);
+      }
+      if (this.floorStep === 'on') {
+        if (!this._floorWay(out, player.position.x, player.position.z, s, f, world)) out.copy(toPlayer);
+        return 'out';
+      }
+      if (this.floorStep === 'back') {
+        if (toDoor > 0.6) {
+          this._floorWay(out, f.door.x, f.door.z, s, f, world);
+          return 'out';
+        }
+        this.floorStep = 'in';
+        this.markWatchdog(player);
+      }
+      const at = path[f.at];
+      if (Math.hypot(at.x - this.pos.x, at.z - this.pos.z) > 0.45) {
+        out.set(at.x - this.pos.x, 0, at.z - this.pos.z).normalize();
+        return 'in';
+      }
+      this.onFloor = null;
+      this.stairFrom = this.stairTo = f.at;
+      this.markWatchdog(player);
+    }
     const want = here && here.stair === s ? here.idx : 0;
     // turned round mid-flight: walk back to the point just left
     if ((want > this.stairFrom && this.stairTo < this.stairFrom) || (want < this.stairFrom && this.stairTo > this.stairFrom)) {
@@ -1357,6 +1403,14 @@ export class Enemy {
     }
     if (this.stairFrom === this.stairTo) {
       if (this.stairFrom === want) {
+        const f = here && here.stair === s ? here.floor : null;
+        if (f && f.at === want) {                              // off this landing onto their floor
+          this.onFloor = f;
+          this.floorStep = 'out';
+          this.markWatchdog(player);
+          out.set(f.door.x - this.pos.x, 0, f.door.z - this.pos.z).normalize();
+          return 'in';
+        }
         if (want === 0) { this.stair = null; return false; }   // back in the street
         if (want === last) return false;                        // on the roof with them
         out.copy(toPlayer);
@@ -1370,6 +1424,40 @@ export class Enemy {
     // out on the roof, heading for the bulkhead with the hut perhaps between
     if (this.stairFrom === last && Math.hypot(to.x - this.pos.x, to.z - this.pos.z) > 2.5) return 'out';
     return 'in';
+  }
+
+  /**
+   * Across a floor to a point on it. The route field is a map of the street
+   * and has nothing to say up here, and on a wide floor the shaft stands
+   * between its own door and most of the room: straight at the point, a
+   * hostile's avoidance gave up against it, stood there out of sight, and
+   * the watchdog moved it away. So if the way is not clear at knee height,
+   * it goes by the corner of the shaft that gets it there soonest. What else
+   * stands on a floor is furniture, which the avoidance walks round.
+   */
+  _floorWay(out, tx, tz, s, f, world) {
+    const y = f.y + 0.5, x = this.pos.x, z = this.pos.z;
+    const clear = (ax, az, bx, bz) => {
+      const dx = bx - ax, dz = bz - az, d = Math.hypot(dx, dz) || 1, ox = -dz / d * 0.3, oz = dx / d * 0.3;
+      return world.lineOfSight(ax, y, az, bx, y, bz)
+        && world.lineOfSight(ax + ox, y, az + oz, bx + ox, y, bz + oz)
+        && world.lineOfSight(ax - ox, y, az - oz, bx - ox, y, bz - oz);
+    };
+    let gx = tx, gz = tz;
+    if (!clear(x, z, tx, tz)) {
+      const q = s.shaft, m = 0.9;
+      let best = Infinity;
+      for (const [cx, cz] of [[q.minX - m, q.minZ - m], [q.maxX + m, q.minZ - m], [q.minX - m, q.maxZ + m], [q.maxX + m, q.maxZ + m]]) {
+        if (world.blocked(cx, cz, 0.4, f.y + 0.4) || Math.hypot(cx - x, cz - z) < 0.4 || !clear(x, z, cx, cz)) continue;
+        const cost = Math.hypot(cx - x, cz - z) + Math.hypot(tx - cx, tz - cz) + (clear(cx, cz, tx, tz) ? 0 : 6);
+        if (cost < best) { best = cost; gx = cx; gz = cz; }
+      }
+      if (best === Infinity) return false;
+    }
+    out.set(gx - x, 0, gz - z);
+    if (out.lengthSq() < 1e-6) return false;
+    out.normalize();
+    return true;
   }
 
   /**
@@ -1623,7 +1711,13 @@ export class Enemy {
     if (moveDir.lengthSq() > 1e-4 && !climbing && !inShaft) {
       moveDir.normalize();
       const probe = 1.8 + this.radius;
-      const clear = (x, z) => !world.blocked(this.pos.x + x * probe, this.pos.z + z * probe, this.radius, this.pos.y + 0.9);
+      // on a floor the shaft is not a way round, though its door is open
+      const shaft = this.onFloor ? this.stair.shaft : null, rr = this.radius;
+      const clear = (x, z) => {
+        const px = this.pos.x + x * probe, pz = this.pos.z + z * probe;
+        if (shaft && px > shaft.minX - rr && px < shaft.maxX + rr && pz > shaft.minZ - rr && pz < shaft.maxZ + rr) return false;
+        return !world.blocked(px, pz, this.radius, this.pos.y + 0.9);
+      };
       const rot = (a, out) => {
         const cos = Math.cos(a), sin = Math.sin(a);
         return out.set(moveDir.x * cos - moveDir.z * sin, 0, moveDir.x * sin + moveDir.z * cos);

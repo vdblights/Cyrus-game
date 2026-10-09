@@ -1304,6 +1304,7 @@ class Game {
     enemy.vel.set(0, 0, 0);
     enemy.mantle = null;
     enemy.stair = null;
+    enemy.onFloor = null;
     enemy.post = null;
     enemy.group.position.copy(enemy.pos);
     // the watchdog now has to judge the next window from where it landed, not
@@ -1643,10 +1644,12 @@ class Game {
     if (!kind) return;
 
     // It floats over the floor under where the hostile fell: the pavement or
-    // a ruin's courtyard, not the street beneath them. Never a roof, though —
-    // a marksman's drop has always landed at street level under its perch,
-    // and that is half of what makes killing one pay.
-    const floor = this.world.groundHeight(pos.x, pos.z, SUPPORT_RADIUS, 0.5);
+    // a ruin's courtyard, not the street beneath them, or the floor of the
+    // building it was killed on. Never a roof, though — a marksman's drop has
+    // always landed at street level under its perch, and that is half of
+    // what makes killing one pay.
+    const up = this.world.stairAt(pos.x, pos.y, pos.z);
+    const floor = this.world.groundHeight(pos.x, pos.z, SUPPORT_RADIUS, up && up.floor ? up.floor.y + 0.5 : 0.5);
     // A clone shares the geometry and the materials; only the nodes are new,
     // and each spends draws of the stream on UUIDs. So it is minted in a
     // `reserve` and pays what a drop of this kind always cost, and a drop can
@@ -1672,7 +1675,9 @@ class Game {
 
       const dx = p.mesh.position.x - this.player.position.x;
       const dz = p.mesh.position.z - this.player.position.z;
-      if (dx * dx + dz * dz < 2.0) {
+      // and on the same floor: a drop on a floor of a building is not taken
+      // from the street under it
+      if (dx * dx + dz * dz < 2.0 && Math.abs(p.floor - this.player.feetY) < 2.0) {
         let taken = false;
         if (p.kind === 'ammo') {
           taken = this.weapons.addAmmo(0.30, true);
