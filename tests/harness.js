@@ -73,6 +73,8 @@ export async function waitForBoot(page, { freeze = true, seed } = {}) {
 /** Helpers injected into every page: placement that is verified clear, etc. */
 export async function installHelpers(page) {
   await page.addInitScript(() => {
+    // the game draws its high tier for the suite, though this browser has no GPU
+    window.__ashfallSuite = true;
     /**
      * Frames the page got to draw while the game was booting: from the moment
      * `window.__game` exists, which is the first stage of boot, to the menu.

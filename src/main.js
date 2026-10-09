@@ -58,6 +58,18 @@ const AUTO_FPS = 55;
 /** …and never drawing at less than this fraction of the tier's resolution. */
 const AUTO_MIN_SCALE = 0.7;
 /**
+ * A browser drawing without a graphics card — the GPU's own name says so
+ * (`PerfMeter.software`), or a frame takes a quarter of a second — starts
+ * on low at `scale` of its resolution, and `auto` may keep giving resolution
+ * back down to `min`. Every pixel is the CPU's there: low at 55% draws in a
+ * third of the time it takes at full size (550 → 152 ms, seed 1 under
+ * SwiftShader), and under 40% the frame is mostly the vertices and stops
+ * paying. `gap` is how long a frame may take and still count as one: at
+ * the quarter second a GPU machine is held to, every frame on these
+ * machines read as a pause and `auto` never moved at all.
+ */
+const NO_GPU = { scale: 0.7, min: 0.4, gap: 2, slow: 250 };
+/**
  * The frame a starting tier must draw an empty street in, in ms. A dozen
  * hostiles is about a third more work than the empty street the boot stage
  * can measure, so a tier that only just holds 60 there (16.7 ms) is short of
@@ -110,6 +122,8 @@ class Game {
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
     this.perf = new PerfMeter(this.renderer);
+    // the headless suite draws in software and was written against the high tier
+    this.suite = !!window.__ashfallSuite;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.autoClear = false;
@@ -640,7 +654,7 @@ class Game {
   autoCalibrate() {
     if (this.settings.quality !== 'auto') return;
     const now = performance.now() / 1000;
-    if (!this.autoStart || now - this.autoLast > 0.25) {
+    if (!this.autoStart || now - this.autoLast > (this.cpuDrawn ? NO_GPU.gap : 0.25)) {
       this.autoStart = this.autoLast = now;
       this.autoFrames = 0;
       return;
@@ -661,8 +675,8 @@ class Game {
       this.autoTier = order[at + 1];
       this.applyQuality();
       this.hud.toast('GRAPHICS: ' + this.autoTier.toUpperCase() + ` (${Math.round(fps)} FPS)`);
-    } else if (this.renderScale > AUTO_MIN_SCALE + 1e-3) {
-      this.renderScale = Math.max(AUTO_MIN_SCALE, this.renderScale - 0.15);
+    } else if (this.renderScale > (this.cpuDrawn ? NO_GPU.min : AUTO_MIN_SCALE) + 1e-3) {
+      this.renderScale = Math.max(this.cpuDrawn ? NO_GPU.min : AUTO_MIN_SCALE, this.renderScale - 0.15);
       this.applyPixelRatio();
       this.hud.toast(`GRAPHICS: RESOLUTION ${Math.round(this.renderScale * 100)}% (${Math.round(fps)} FPS)`);
     } else if (at < order.length - 1) {
@@ -688,12 +702,34 @@ class Game {
    * runs before the shader stages, so the programs built there are the
    * ones this tier draws with and nothing compiles at first contact.
    *
-   * A frame of a quarter of a second or more is not a frame rate, it is a
-   * machine this cannot measure — software rendering, the suite — and the
-   * tier is left where it was, exactly as `autoCalibrate` treats a gap.
+   * A browser drawing without a graphics card is not measured at all: its
+   * own GPU name says so, and it starts on low at part of its resolution
+   * (`NO_GPU`). It used to be read as a machine too slow to measure and left
+   * on high, where a frame is seconds, and `autoCalibrate` read each of
+   * those frames as a pause and never stepped down either — reported from a
+   * work machine with acceleration off as very slow where it had run well.
+   * A tier whose frames take a quarter of a second fails like any other, so
+   * a machine slow in a way its name does not admit reaches low the same
+   * way. The suite draws in software too, and keeps the high tier every
+   * check was written against (`suite`, set by the harness).
    */
   chooseStartingTier() {
     if (this.settings.quality !== 'auto') return;
+    this.cpuDrawn = false;
+    if (this.suite) {
+      this.autoTier = 'high';
+      this.startingTier = { tier: 'high', measured: false };
+      this.applyQuality();
+      return;
+    }
+    if (this.perf.software) {
+      this.cpuDrawn = true;
+      this.autoTier = 'low';
+      this.renderScale = NO_GPU.scale;
+      this.startingTier = { tier: 'low', measured: false, cpu: true };
+      this.applyQuality();
+      return;
+    }
     const gl = this.renderer.getContext(), px = new Uint8Array(4);
     // one pixel read back is the only honest wait for the GPU here
     const frame = () => {
@@ -712,13 +748,19 @@ class Game {
       // measured (one could be a late upload on a real GPU). Waiting for
       // three more as well cost every boot under software rendering several
       // seconds, and that is what took the suite past CI's time limit.
-      if (frame() >= 250 && frame() >= 250) { chosen = null; break; }
+      if (frame() >= NO_GPU.slow && frame() >= NO_GPU.slow) {
+        if (tier !== 'low') continue;
+        this.cpuDrawn = true;
+        this.renderScale = NO_GPU.scale;
+        chosen = tier;
+        break;
+      }
       const times = [frame(), frame(), frame()].sort((a, b) => a - b);
       const median = times[1];
       if (median <= START_BUDGET_MS || tier === 'low') { chosen = tier; break; }
     }
-    this.autoTier = chosen || 'high';
-    this.startingTier = { tier: this.autoTier, measured: chosen !== null };
+    this.autoTier = chosen;
+    this.startingTier = { tier: chosen, measured: !this.cpuDrawn, cpu: this.cpuDrawn };
     this.applyQuality();
   }
 
@@ -815,7 +857,7 @@ class Game {
     // because nothing in the game can make up for it
     const note = document.getElementById('gpu-note');
     if (note && this.perf.software) {
-      note.textContent = 'Your browser is drawing without the graphics card — turn on hardware acceleration, or the game will run slowly.';
+      note.textContent = 'Your browser is drawing without the graphics card, so the game has dropped to its lowest settings — turn on hardware acceleration for the full picture.';
       note.classList.remove('hidden');
     }
     this.showRecords();

@@ -602,7 +602,10 @@ and the worst one, how much of it the CPU took, the tier and resolution in
 use, draw calls, whether the mouse is captured, and the name of the GPU the
 browser is drawing with. If that last line says SwiftShader, llvmpipe or
 Basic Render, the browser is not using your graphics card at all — turn on
-hardware acceleration in its settings. The menu says so too.
+hardware acceleration in its settings. The menu says so too. Until you do,
+`auto` starts such a browser on low at 70% of its resolution and goes down
+to 40% if it has to, which is what keeps it playable with every pixel drawn
+by the CPU.
 
 A slow frame no longer slows the game down. Below 20 frames a second the
 simulation used to take one 50 ms step per frame whatever the frame took, so

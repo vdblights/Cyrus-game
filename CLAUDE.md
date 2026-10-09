@@ -1324,13 +1324,31 @@ These each cost real debugging time. Changing them needs a reason.
   third a fight costs on top; it was 16.7, which started machines on a tier
   they could hold only until the first hostile. And once resolution is
   spent in a fight and it is still short, it drops a tier anyway: one stall
-  while shaders rebuild beats a wave at 40 fps. One rule keeps it honest: a frame over 250 ms is not a
-  measurement — it is software rendering, or a tab in the background — and
-  then it changes nothing and starts on high, which is also why the suite
-  never sees it pick anything else. `auto starts at the tier this machine
-  can hold` fakes the clock and fails when the function always says high,
-  and with the old 16.7 ms budget; `auto quality keeps watching` fails with
-  the bar at 45 and with the in-fight tier drop taken out.
+  while shaders rebuild beats a wave at 40 fps. **A browser with no
+  graphics card starts on low at 70% resolution and may go to 40%**
+  (`NO_GPU`, `cpuDrawn`). This used to read a frame over 250 ms as "not a
+  measurement" and start on high, and `autoCalibrate` read every such frame
+  as a pause and never moved — so on a work machine with acceleration off
+  the game sat on high at seconds a frame, reported from play as very slow
+  where it had run well. Booted without the suite's flag under SwiftShader:
+  `main` on high at 0.4 fps, its clock crawling (2.3 s of play in 30), and
+  now low, 70% then 40% within nine seconds of play, at 8.1 fps in real
+  time. The GPU's own name decides it without timing anything
+  (`PerfMeter.software`); a tier whose frames take a quarter second fails
+  like any tier over budget, so a machine slow in a way its name does not
+  admit reaches low the same way; and on such a machine a frame may take 2 s
+  and still count. Low is all pixels there down to about 55% (550 → 152 ms a
+  frame) and mostly vertices under 40%, where a shorter far plane saved 10-
+  20% and would have cut the sky, so it was left. The suite draws in
+  software too and was written against the high tier, so the harness sets
+  `window.__ashfallSuite` and the game, seeing it (`suite`), starts on high
+  without timing a frame. `auto starts at the tier this machine can hold`
+  fakes the clock and fails when the function always says high, with the
+  old 16.7 ms budget, with slow frames left on high, with the GPU's name
+  ignored (it times nine frames it did not need to), and with the suite's
+  flag ignored; `auto quality keeps watching` fails with the bar at 45, with
+  the in-fight tier drop taken out, and — at 3 fps drawn on the CPU — with
+  the quarter-second gap or the usual 70% floor put back.
 - **The post chain reads the scene through `sane()`, and bloom is why.**
   One pixel that is not a finite number — a NaN from a normalise of zero, an
   overflow in a half-float target — is invisible as one pixel. The bloom
@@ -1869,7 +1887,8 @@ can happen to anything that samples by index.
 Shadow mapping dominates — roughly 8x the rest of the scene combined. Quality
 tiers (`applyQuality`) drop it first; `auto` watches wall-clock FPS for the
 whole run and gives back resolution in a fight, a tier between waves, over
-any three seconds under 45 (see the invariant).
+any three seconds under 55 (see the invariant), and on a browser with no
+graphics card starts on low at part of its resolution.
 
 Draw calls used to be the other half of the bill. Measured mid-run on seed
 20260813, the world pass was 567 calls for 9,978 triangles — about 18
