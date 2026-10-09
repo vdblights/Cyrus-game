@@ -58,6 +58,12 @@ export class World {
      * from the floor outside its door to the roof outside the bulkhead's.
      */
     this.stairs = [];
+    /**
+     * The floors of a stairwell's building between its ground floor and its
+     * roof, one a lap of the stair: footprint, floor and ceiling heights,
+     * the door off the stair's landing and every window, as a room has.
+     */
+    this.floors = [];
     this.bounds = 100;
   }
 
@@ -196,10 +202,12 @@ export class World {
    * Which stairwell a body is up, and how far along its walk: on its roof
    * (the last point of the walk), in its shaft above the floor (the nearest
    * point, with height counted three times over, because the flights are
-   * stacked a lap apart and the nearest point across is the wrong lap), or
-   * neither — null, which is everywhere else, the shop under it included.
+   * stacked a lap apart and the nearest point across is the wrong lap), on
+   * one of its building's floors (the landing that floor's door is off, and
+   * the floor), or neither — null, which is everywhere else, the shop under
+   * it included.
    *
-   * @returns {{stair: object, idx: number}|null}
+   * @returns {{stair: object, idx: number, floor?: object}|null}
    */
   stairAt(x, y, z) {
     for (const s of this.stairs) {
@@ -207,7 +215,14 @@ export class World {
       if (x < r.minX - 0.4 || x > r.maxX + 0.4 || z < r.minZ - 0.4 || z > r.maxZ + 0.4) continue;
       if (y > s.deck - 0.6) return { stair: s, idx: s.path.length - 1 };
       const q = s.shaft;
-      if (y < s.floor + 0.3 || x < q.minX || x > q.maxX || z < q.minZ || z > q.maxZ) continue;
+      const inShaft = x >= q.minX && x <= q.maxX && z >= q.minZ && z <= q.maxZ;
+      if (!inShaft && s.floors) {
+        for (let k = s.floors.length - 1; k >= 0; k--) {
+          const f = s.floors[k];
+          if (y > f.y - 0.6) return { stair: s, idx: f.at, floor: f };
+        }
+      }
+      if (y < s.floor + 0.3 || !inShaft) continue;
       let idx = 1, best = Infinity;
       for (let i = 1; i < s.path.length - 1; i++) {
         const p = s.path[i];

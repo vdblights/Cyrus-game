@@ -135,6 +135,7 @@ export const RADIO = {
     },
     rescue: {
       start: ['Holdout pinned in a shop, {d} metres. Cut them loose and walk them out.', 'Another voice on the relay. Shop, {d} metres. Go get them.'],
+      upstairs: ['Holdout gone to ground upstairs, {d} metres. Find the stair, cut them loose, bring them down.', 'Voice on the relay from a floor up, {d} metres. Stairwell is your way in.'],
       stage: ['You have them. Pickup is marked, {d} metres. Stay close, they cannot take much.'],
       done: ['They are on the bird. One more name off the list.', 'Holdout is out. Good work, WREN.'],
       lost: ['We lost them. Keep going, WREN.'],

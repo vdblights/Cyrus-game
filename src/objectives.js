@@ -4,6 +4,7 @@ import { audio } from './audio.js';
 import { reserve } from './rng.js';
 import { NavGrid } from './nav.js';
 import { objectiveFor } from './story.js';
+import { Enemy } from './enemies.js';
 
 /**
  * Objectives: a reason to leave the plaza.
@@ -217,6 +218,7 @@ export class ObjectiveSystem {
   reset() {
     if (this.active) this.release(this.active, false);
     this.active = null;
+    this.rescues = 0;
     this.group.visible = false;
     for (const p of Object.values(this.props)) p.visible = false;
   }
@@ -248,6 +250,7 @@ export class ObjectiveSystem {
       stage: 'go', label: null, note: null, fill: null,
       exit: site.exit || null, target: null,
       instead,                          // what was asked for, when this is the beacon in its place
+      upstairs: !!site.floor,           // on a floor of a building, up its stair
     };
     const a = this.active;
 
@@ -273,7 +276,11 @@ export class ObjectiveSystem {
   siteFor(kind, def) {
     if (kind === 'relay') return this.roofSite(def);
     if (kind === 'sabotage') return this.dumpSite(def) || this.findSite(def);
-    if (kind === 'rescue') return this.shopSite(def);
+    if (kind === 'rescue') {
+      // every other holdout has gone to ground upstairs, where there is one
+      const up = (this.rescues = (this.rescues || 0) + 1) % 2 === 0;
+      return (up && this.floorSite(def)) || this.shopSite(def);
+    }
     if (kind === 'hunt') return this.routeSite(def);
     return this.findSite(def);
   }
@@ -362,6 +369,48 @@ export class ObjectiveSystem {
     return null;
   }
 
+  /**
+   * A floor up a stairwell, away from its door: further to go and a stair
+   * to find, and a walk back down with them. A spot is only taken if the
+   * walk from it to the landing door — the way a body crosses a floor,
+   * round the shaft by its corners (`Enemy._floorWay`) — runs clear of the
+   * furniture all the way: a crate stack between the two held a holdout on
+   * its floor for the whole escort.
+   */
+  floorSite(def) {
+    const g = this.game, w = g.world;
+    const floors = w.floors.filter((f) => f.stair);
+    const rec = this._inBand(floors, def, (r) => ({ x: (r.minX + r.maxX) / 2, z: (r.minZ + r.maxZ) / 2 }));
+    if (!rec) return null;
+    const s = rec.stair, F = rec.floor;
+    const floor = s.floors.find((f) => Math.abs(f.y - F) < 0.01);
+    if (!floor) return null;
+    const cx = (rec.minX + rec.maxX) / 2, cz = (rec.minZ + rec.maxZ) / 2, d = rec.doors[0], q = s.shaft;
+    for (const t of [0.35, 0.2, 0.5, 0.1, 0.42]) {
+      for (const side of [0, 0.25, -0.25]) {
+        const x = cx - d.nx * (rec.maxX - rec.minX) * t + d.nz * (rec.maxX - rec.minX) * side;
+        const z = cz - d.nz * (rec.maxZ - rec.minZ) * t + d.nx * (rec.maxZ - rec.minZ) * side;
+        if (x > q.minX - 1.2 && x < q.maxX + 1.2 && z > q.minZ - 1.2 && z < q.maxZ + 1.2) continue;
+        if (Math.abs(w.groundHeight(x, z, SUPPORT_RADIUS, F + 0.5) - F) > 0.05) continue;
+        if (w.blocked(x, z, 0.6, F + 0.9) || !this._walksOut(x, z, s, floor)) continue;
+        return { x, y: F, z, room: rec, floor };
+      }
+    }
+    return null;
+  }
+
+  /** Whether a body walking a floor the hostiles' way reaches its door unblocked. */
+  _walksOut(x, z, s, floor) {
+    const w = this.game.world, body = { pos: { x, z }, radius: 0.45 };
+    for (let i = 0; i < 240; i++) {
+      if (Math.hypot(floor.door.x - body.pos.x, floor.door.z - body.pos.z) < 0.6) return true;
+      Enemy.prototype._floorWay.call(body, V1, floor.door.x, floor.door.z, s, floor, w);
+      body.pos.x += V1.x * 0.2; body.pos.z += V1.z * 0.2;
+      if (w.blocked(body.pos.x, body.pos.z, body.radius, floor.y + 0.9)) return false;
+    }
+    return false;
+  }
+
   /** Where a lieutenant comes in, and the far side of the sector he is making for. */
   routeSite(def) {
     const from = this.findSite(def);
@@ -408,14 +457,21 @@ export class ObjectiveSystem {
   /** A holdout where they went to ground, waiting to be cut loose. */
   spawnHoldout(a, site) {
     const h = this.game.spawnEnemy('holdout');
-    this.place(h, site.x, site.z);
+    this.place(h, site.x, site.z, site.y);
     h.following = false;
+    // up a floor, it is already on the stair's floor branch, and comes down
+    // it the way a hostile does when the player leaves the floor
+    if (site.floor) {
+      h.stair = site.floor.stair;
+      h.onFloor = site.floor;
+      h.floorStep = 'on';
+    }
     a.target = h;
   }
 
-  place(e, x, z) {
+  place(e, x, z, y = 0) {
     const w = this.game.world;
-    e.pos.set(x, w.groundHeight(x, z, SUPPORT_RADIUS, 0.6), z);
+    e.pos.set(x, w.groundHeight(x, z, SUPPORT_RADIUS, y + 0.6), z);
     e.group.position.copy(e.pos);
     e.markWatchdog(this.game.player);
   }
@@ -444,8 +500,8 @@ export class ObjectiveSystem {
 
     a.dist = Math.hypot(p.x - a.x, p.z - a.z);
     // the height test is what stops a rooftop directly above the site from
-    // counting as standing on it
-    a.inside = a.dist < a.def.radius && Math.abs(g.player.feetY - a.y) < 3 && !g.player.dead;
+    // counting as standing on it; up a building, the floor under it is closer
+    a.inside = a.dist < a.def.radius && Math.abs(g.player.feetY - a.y) < (a.upstairs ? 1.2 : 3) && !g.player.dead;
 
     if (a.inside) {
       a.progress = Math.min(a.def.channel, a.progress + dt);

@@ -32,6 +32,16 @@ const INSERTION = { x: -17, z: 24 };
 /** What each objective pays, times the wave it is finished on. */
 const OBJECTIVE_PAY = { cache: 300, hold: 500, extraction: 750, relay: 600, sabotage: 600, hunt: 700, rescue: 800, convoy: 1500 };
 
+/**
+ * A marksman at a window: how far back from the glass it stands, its eye
+ * over the floor, the fan of street it is judged on (radians off the way
+ * the window faces, metres out), and how much of that fan it has to see.
+ */
+const WINDOW_PERCH = {
+  back: 0.95, eye: 1.5, least: 6,
+  rays: { turn: [-0.5, -0.25, 0, 0.25, 0.5], out: [12, 20, 30, 42, 55] },
+};
+
 /** Every material slot that can hold a texture boot should upload. */
 const TEXTURE_SLOTS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap',
   'aoMap', 'alphaMap', 'bumpMap', 'lightMap'];
@@ -204,6 +214,9 @@ class Game {
         // typed arrays only, so it costs the seeded stream nothing — see
         // nav.js.
         this.nav = new NavGrid(this.world);
+        // A marksman's other perch: a floor's window over the street. Read
+        // off the floors as built, drawing nothing, so it costs no seed.
+        this.windowPerches = this.findWindowPerches();
         this.loading.survey(this.world, this.perches, INSERTION);
       }],
       ['Loading the debris', 1, () => {
@@ -1201,23 +1214,65 @@ class Game {
   coverPost(e) {
     const room = this.playerRoom;
     if (!room) return null;
-    if (e.post && e.post.room === room) return e.post;
-    // one already in with them, or nearly, keeps on coming
+    // Up its stairwell or on its roof, the doors that matter are the stair's:
+    // a post in the shop covering the door they will come down through. A
+    // post on the stair is kept when they come back down into the shop,
+    // which is the point of it; a post on a street door is not kept while
+    // they are up, because it watches nothing they can come out of.
+    const up = this.playerStair && this.playerStair.stair.room === room ? this.playerStair.stair : null;
+    if (e.post && e.post.room === room && (!up || e.post.stair)) return e.post;
     const x = e.pos.x, z = e.pos.z, at = this.player.position;
-    if ((x > room.minX && x < room.maxX && z > room.minZ && z < room.maxZ) || Math.hypot(x - at.x, z - at.z) < 10) return null;
-    if (!room.posts) room.posts = this._postsFor(room);
+    // one already in with them, or nearly, keeps on coming — unless they are
+    // up the stair, where in the shop is where the post is
+    if (!up && ((x > room.minX && x < room.maxX && z > room.minZ && z < room.maxZ) || Math.hypot(x - at.x, z - at.z) < 10)) return null;
+    const posts = up ? (up.posts || (up.posts = this._stairPostsFor(up, room))) : (room.posts || (room.posts = this._postsFor(room)));
     const taken = new Set();
     for (const o of this.enemies) if (o !== e && o.alive && o.post && o.post.room === room) taken.add(o.post);
     if (taken.size >= 2) return null;
-    // only one it can walk straight to: a post across the block is reached
-    // by the route field, which leads to the player and so in at the door
-    let best = null, bd = 30;
-    for (const p of room.posts) {
+    // Only a post it can walk straight to: a post across the block is
+    // reached by the route field, which leads to the player and so in at
+    // the door. A stair post is the exception — up a stair, the field leads
+    // to the stair's foot, and the post is beside it.
+    let best = null, bd = up ? 60 : 30;
+    for (const p of posts) {
       if (taken.has(p)) continue;
       const d = Math.hypot(p.x - e.pos.x, p.z - e.pos.z);
-      if (d < bd && this.nav.clearLine(e.pos.x, e.pos.z, p.x, p.z)) { bd = d; best = p; }
+      if (d < bd && (up || this.nav.clearLine(e.pos.x, e.pos.z, p.x, p.z))) { bd = d; best = p; }
     }
     return best;
+  }
+
+  /**
+   * Places on a shop's floor covering the door of its stairwell: 2.5 to 7 m
+   * from it, anywhere in front of it — in a 10 m shop the door opens toward
+   * a wall less than 3 m off, so straight out from it is out of the room —
+   * clear of the shaft and the furniture, with a standing sight line into
+   * the door.
+   */
+  _stairPostsFor(stair, room) {
+    const w = this.world, out = [];
+    const a = stair.path[0], b = stair.path[1];
+    const nl = Math.hypot(a.x - b.x, a.z - b.z), nx = (a.x - b.x) / nl, nz = (a.z - b.z) / nl;
+    // the door is in the shaft's wall, a third of the way from the lobby out
+    const dx = b.x + (a.x - b.x) * 0.32, dz = b.z + (a.z - b.z) * 0.32;
+    const q = stair.shaft;
+    for (const reach of [2.5, 4, 5.5, 7]) {
+      for (let k = 0; k < 16; k++) {
+        const t = (k / 16) * Math.PI * 2, ox = Math.cos(t), oz = Math.sin(t);
+        if (ox * nx + oz * nz < 0.15) continue;                 // in front of the door
+        const x = dx + ox * reach, z = dz + oz * reach;
+        if (x < room.minX + 0.8 || x > room.maxX - 0.8 || z < room.minZ + 0.8 || z > room.maxZ - 0.8) continue;
+        if (x > q.minX - 0.4 && x < q.maxX + 0.4 && z > q.minZ - 0.4 && z < q.maxZ + 0.4) continue;
+        const floor = w.groundHeight(x, z, SUPPORT_RADIUS, room.floor + 0.5);
+        if (Math.abs(floor - room.floor) > 0.05 || w.blocked(x, z, 0.6, floor + 0.9) || this.nav.solidAt(x, z)) continue;
+        if (!w.lineOfSight(x, floor + 1.5, z, b.x, room.floor + 1.2, b.z)) continue;
+        const post = { x, z, wx: dx, wz: dz };
+        Object.defineProperty(post, 'room', { value: room, enumerable: false });
+        Object.defineProperty(post, 'stair', { value: stair, enumerable: false });
+        out.push(post);
+      }
+    }
+    return out;
   }
 
   _postsFor(room) {
@@ -1232,7 +1287,7 @@ class Game {
           if (floor > 0.5 || w.blocked(x, z, 0.7, floor + 0.9) || w.occupied(x, z, 0.6, floor + 0.6)) continue;
           if (this.nav.solidAt(x, z)) continue;
           if (!w.lineOfSight(x, floor + 1.5, z, ix, room.floor + 1.2, iz)) continue;
-          const post = { door: d, x, z };
+          const post = { door: d, x, z, wx: d.x, wz: d.z };
           Object.defineProperty(post, 'room', { value: room, enumerable: false });
           out.push(post);
         }
@@ -1262,6 +1317,7 @@ class Game {
     enemy.vel.set(0, 0, 0);
     enemy.mantle = null;
     enemy.stair = null;
+    enemy.onFloor = null;
     enemy.post = null;
     enemy.group.position.copy(enemy.pos);
     // the watchdog now has to judge the next window from where it landed, not
@@ -1280,9 +1336,10 @@ class Game {
    * the damage the sector deals up by about half again on its own.
    */
   findPerch(overlooking = false) {
-    if (!this.perches.length) return null;
+    const all = this.windowPerches?.length ? [...this.perches, ...this.windowPerches] : this.perches;
+    if (!all.length) return null;
     const p = this.player.position;
-    const candidates = this.perches.filter((q) => {
+    const candidates = all.filter((q) => {
       const d = Math.hypot(q.x - p.x, q.z - p.z);
       if (d < 16 || d > 95) return false;      // within its detection range
       return !this.enemies.some((e) => e.alive && Math.hypot(e.pos.x - q.x, e.pos.z - q.z) < 3);
@@ -1297,6 +1354,56 @@ class Game {
       : [];
     const from = withView.length ? withView : candidates;
     return from[(Math.random() * from.length) | 0];
+  }
+
+  /**
+   * One window a building, on any of its floors, for a marksman to stand
+   * back from: the one that sees most of the street — sample points out to
+   * 50 m along and either side of the way it faces. A window onto a
+   * junction sees down two streets, so it wins without being told to.
+   * Each stands a metre in from the glass (`WINDOW_PERCH.back`), on floor
+   * with nothing in the way and headroom for a body, and is a perch like
+   * any other: the hostile on it holds it.
+   */
+  findWindowPerches() {
+    const w = this.world, out = [];
+    const byStair = new Map();
+    for (const f of w.floors) {
+      if (!f.stair) continue;
+      let a = byStair.get(f.stair);
+      if (!a) byStair.set(f.stair, a = []);
+      a.push(f);
+    }
+    const { back, eye, rays, least } = WINDOW_PERCH;
+    for (const floors of byStair.values()) {
+      let best = null;
+      for (const f of floors) {
+        for (const win of f.windows) {
+          const x = win.x - win.nx * back, z = win.z - win.nz * back;
+          const floor = w.groundHeight(x, z, SUPPORT_RADIUS, f.floor + 0.5);
+          if (Math.abs(floor - f.floor) > 0.05 || w.blocked(x, z, 0.5, floor + 0.9)) continue;
+          if (w.ceilingAbove(x, z, 0.5, floor + 0.9) < floor + 2.2) continue;
+          const ey = floor + eye;
+          let seen = 0;
+          for (const a of rays.turn) {
+            const c = Math.cos(a), s = Math.sin(a);
+            const dx = win.nx * c - win.nz * s, dz = win.nz * c + win.nx * s;
+            for (const d of rays.out) {
+              const tx = win.x + dx * d, tz = win.z + dz * d;
+              if (Math.abs(tx) > w.bounds - 1 || Math.abs(tz) > w.bounds - 1) continue;
+              const ty = w.groundHeight(tx, tz, SUPPORT_RADIUS, 0.6) + 1.0;
+              if (w.lineOfSight(x, ey, z, tx, ty, tz)) seen++;
+            }
+          }
+          // the higher floor of two that see the same
+          if (seen >= least && (!best || seen > best.seen || (seen === best.seen && floor > best.y))) {
+            best = { x, y: floor, z, seen, wx: win.x, wz: win.z };
+          }
+        }
+      }
+      if (best) out.push(best);
+    }
+    return out;
   }
 
   spawnEnemy(typeKey, elite = false) {
@@ -1331,7 +1438,11 @@ class Game {
   onObjectiveStart(obj) {
     const lines = RADIO.objective[obj.kind];
     // a beacon put up in place of something the city had nowhere for says so
-    if (lines) this.say(obj.instead && lines.instead ? lines.instead : lines.start, this.objectivesSecured + this.wave, obj.dist);
+    // and a holdout up a building says which way in
+    if (lines) {
+      const say = obj.instead && lines.instead ? lines.instead : obj.upstairs && lines.upstairs ? lines.upstairs : lines.start;
+      this.say(say, this.objectivesSecured + this.wave, obj.dist);
+    }
   }
 
   /** It has moved on a stage: a charge armed, a holdout cut loose. */
@@ -1601,10 +1712,12 @@ class Game {
     if (!kind) return;
 
     // It floats over the floor under where the hostile fell: the pavement or
-    // a ruin's courtyard, not the street beneath them. Never a roof, though —
-    // a marksman's drop has always landed at street level under its perch,
-    // and that is half of what makes killing one pay.
-    const floor = this.world.groundHeight(pos.x, pos.z, SUPPORT_RADIUS, 0.5);
+    // a ruin's courtyard, not the street beneath them, or the floor of the
+    // building it was killed on. Never a roof, though — a marksman's drop has
+    // always landed at street level under its perch, and that is half of
+    // what makes killing one pay.
+    const up = this.world.stairAt(pos.x, pos.y, pos.z);
+    const floor = this.world.groundHeight(pos.x, pos.z, SUPPORT_RADIUS, up && up.floor ? up.floor.y + 0.5 : 0.5);
     // A clone shares the geometry and the materials; only the nodes are new,
     // and each spends draws of the stream on UUIDs. So it is minted in a
     // `reserve` and pays what a drop of this kind always cost, and a drop can
@@ -1630,7 +1743,9 @@ class Game {
 
       const dx = p.mesh.position.x - this.player.position.x;
       const dz = p.mesh.position.z - this.player.position.z;
-      if (dx * dx + dz * dz < 2.0) {
+      // and on the same floor: a drop on a floor of a building is not taken
+      // from the street under it
+      if (dx * dx + dz * dz < 2.0 && Math.abs(p.floor - this.player.feetY) < 2.0) {
         let taken = false;
         if (p.kind === 'ammo') {
           taken = this.weapons.addAmmo(0.30, true);

@@ -198,6 +198,9 @@ aisles of shelving, a counter, tables, crates. It is cover from a marksman on a
 roof, whose sight line the floors cut, and a fight at close range through
 doorways and windows; a jump indoors stops at the ceiling, and so does a
 grenade. Hostiles follow you in, a warlord stooping under the ceiling to do it.
+The floors are what a looted shop leaves: paper drifted along the walls and
+blown in at the doors, plaster down from the ceiling, and glass under every
+window.
 
 Most of the lower ones go further: a stairwell in a back corner of the shop,
 switchback flights of concrete steps climbing lap over lap to a bulkhead on
@@ -210,11 +213,22 @@ route field is built from the stair's door, every hostile that can fit under
 the flights walks there and climbs after you, and they come back down the
 same way when you leave. A ranged hostile with a clear shot at the roof from
 the street takes it instead, and one on the roof with a shot down holds it.
-Juggernauts are too tall for the stairs and wait below.
+A juggernaut comes up stooped under the flights; a warlord is too big for
+the stairs and waits below.
+
+Those buildings are floors all the way up, too: every lap of the stair
+lands at one, through a door in the stairwell's wall. They are gutted
+concrete frames — you can tell them from the street — with real windows
+all round: you see out of them and shoot out of them, and whoever is in the
+street does the same back. A floor has a crate or a table to take cover
+behind, glass under its windows, and the hostiles follow you onto it,
+round the stairwell, and back down after you when you go.
 
 They use the buildings against you, too. Go into a shop and up to two of the
 riflemen take posts outside, each with a sight line into a doorway, and hold
 them while the rest come in after you — so the door you leave by is covered.
+Go up onto the roof and two of them wait in the shop below instead, covering
+the stair door you will come back down through.
 A hostile that has lost sight of you, or knows you are inside, throws a frag:
 from the second wave on, a raider, a breaker or a juggernaut carries one, and
 it only lets go of a throw it has flown first through the same bounce the
@@ -232,7 +246,9 @@ through the doorway of a shop you are hiding in, instead of sliding along the
 wall between you. With a clear view it comes straight at you, as it always
 did.
 
-A marksman claims a rooftop or terrace and stays there while it can see you.
+A marksman claims a rooftop, a terrace or a window on a floor of a building
+— the one in each building with the longest view of the street — and stays
+there while it can see you.
 Before each shot it paints you with an aiming laser for about a second — that
 red line is your warning to break line of sight. Warlords are outsized, carry
 roughly 1100 HP, wear a gold band, and get their own health bar at the top of
@@ -335,7 +351,9 @@ The newer four each ask something different of you:
   there first.
 - **A holdout** follows you once cut loose, by the same routes the hostiles
   use. They are not a target and your rounds pass them, but anything near
-  wears them down, and a blast hurts them like anyone else.
+  wears them down, and a blast hurts them like anyone else. Every other one
+  has gone to ground up a building: find the stairwell, cut them loose on
+  their floor, and they come down the stair behind you.
 
 Progress bleeds back if you are driven off rather than resetting,
 so being pushed out costs ground without wiping the job, and a beacon

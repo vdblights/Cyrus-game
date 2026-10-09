@@ -98,6 +98,7 @@ const PERCH_PATIENCE = 15;
 const THROW = { cook: 0.6, reach: 3.2, minRange: 6, maxRange: 26, blind: 2.5, every: 14, gap: 7, retry: 1.5,
   angles: [0.12, 0.22, 0.35, 0.55, 0.8, 1.05], fastest: 21, step: 1 / 30 };
 const TH_P = new THREE.Vector3(), TH_V = new THREE.Vector3(), TH_D = new THREE.Vector3();
+const V_WATCH = new THREE.Vector3();
 const FUSE_LEFT = FUSE - THROW.cook;
 
 /**
@@ -159,7 +160,20 @@ const CROUCH = { drop: 0.36, thigh: 1.1, knee: -1.9, lean: 0.22 };
  * what has it down before a lintel rather than under it: in a doorway the
  * head leans in under the slab's edge before the feet are under it.
  */
-const STOOP = { top: 1.9, margin: 0.06, leg: 0.86, max: 0.5, lean: 0.3 };
+const STOOP = { top: 1.9, margin: 0.06, leg: 0.86, max: 0.5, lean: 0.3, hip: 0.9 };
+
+/** The crown of a body stooped as far as it goes, in metres. */
+const stoopedHeight = (e) => (STOOP.top - STOOP.max + STOOP.margin) * e.group.scale.x;
+
+/** Whether a body goes up a stairwell: stooped, under a flight's headroom. */
+const fitsStair = (e, stair) => stoopedHeight(e) <= stair.clear;
+
+/**
+ * The height a body collides at. Its archetype's, so an elite follows you
+ * into a shop; on a stair, its stooped crown, or a flight overhead is a
+ * wall and the shaft's door a lintel it cannot pass.
+ */
+const bodyHeight = (e) => (e.stair ? Math.min(1.9 * e.type.scale, stoopedHeight(e)) : 1.9 * e.type.scale);
 
 /**
  * Hostile archetypes. `preferred` is the range the AI tries to hold; melee
@@ -1121,6 +1135,8 @@ export class Enemy {
     this.noProgress = 0;
     this.mantle = null;
     this.stair = null;        // the stairwell it is up, if any (`_stairWalk`)
+    this.onFloor = null;      // one of its building's floors it has gone onto, and how far
+    this.floorStep = null;
     this.stairFrom = 0;       // the point of its walk it last reached
     this.stairTo = 0;         // and the one it is walking to
     this.flee = null;         // a lieutenant's route off the map ({ nav, exit })
@@ -1292,8 +1308,10 @@ export class Enemy {
    * of points — through the door, up each flight, across each landing and
    * out of the bulkhead — one at a time. It turns round mid-flight when the
    * player does, comes back down the same way when the player leaves, and
-   * forgets the stair at its foot. A body too tall for the headroom under a
-   * flight is never sent up one.
+   * forgets the stair at its foot. A body sent up stoops under each flight
+   * (`_headroom`) and collides at its stooped height while it is on one, so
+   * the question at the foot is whether it fits stooped under the headroom
+   * of a flight. A juggernaut does, and every elite but a warlord.
    *
    * @returns {false|'out'|'in'|'with'} false when there is no stair in it;
    *   'out' when walking open ground or a roof toward one, where avoidance
@@ -1305,10 +1323,13 @@ export class Enemy {
     const here = this.game.playerStair;
     if (this.stair) {
       const r = this.stair.roof;
-      if (this.pos.x < r.minX - 2 || this.pos.x > r.maxX + 2 || this.pos.z < r.minZ - 2 || this.pos.z > r.maxZ + 2) this.stair = null;
+      if (this.pos.x < r.minX - 2 || this.pos.x > r.maxX + 2 || this.pos.z < r.minZ - 2 || this.pos.z > r.maxZ + 2) {
+        this.stair = null;
+        this.onFloor = null;
+      }
     }
     if (!this.stair) {
-      if (!here || 1.9 * this.group.scale.x > here.stair.clear) return false;
+      if (!here || !fitsStair(this, here.stair)) return false;
       const foot = here.stair.path[0];
       const d = Math.hypot(foot.x - this.pos.x, foot.z - this.pos.z);
       if (d > 0.7 || Math.abs(this.pos.y - foot.y) > 0.6) {
@@ -1323,6 +1344,43 @@ export class Enemy {
       this.stairTo = 0;
     }
     const s = this.stair, path = s.path, last = path.length - 1;
+    // A floor of the building is a branch off the walk at the landing its
+    // door is off: out through the door and across the floor after them,
+    // and when they leave it, back to the door and onto the landing.
+    if (this.onFloor) {
+      const f = this.onFloor;
+      const theirs = here && here.stair === s && here.floor === f;
+      if (!theirs && (this.floorStep === 'out' || this.floorStep === 'on')) this.floorStep = 'back';
+      const toDoor = Math.hypot(f.door.x - this.pos.x, f.door.z - this.pos.z);
+      if (this.floorStep === 'out') {
+        if (toDoor > 0.6) {
+          out.set(f.door.x - this.pos.x, 0, f.door.z - this.pos.z).normalize();
+          return 'in';
+        }
+        this.floorStep = 'on';
+        this.markWatchdog(player);
+      }
+      if (this.floorStep === 'on') {
+        this._floorWay(out, player.position.x, player.position.z, s, f, world);
+        return 'out';
+      }
+      if (this.floorStep === 'back') {
+        if (toDoor > 0.6) {
+          this._floorWay(out, f.door.x, f.door.z, s, f, world);
+          return 'out';
+        }
+        this.floorStep = 'in';
+        this.markWatchdog(player);
+      }
+      const at = path[f.at];
+      if (Math.hypot(at.x - this.pos.x, at.z - this.pos.z) > 0.45) {
+        out.set(at.x - this.pos.x, 0, at.z - this.pos.z).normalize();
+        return 'in';
+      }
+      this.onFloor = null;
+      this.stairFrom = this.stairTo = f.at;
+      this.markWatchdog(player);
+    }
     const want = here && here.stair === s ? here.idx : 0;
     // turned round mid-flight: walk back to the point just left
     if ((want > this.stairFrom && this.stairTo < this.stairFrom) || (want < this.stairFrom && this.stairTo > this.stairFrom)) {
@@ -1341,6 +1399,14 @@ export class Enemy {
     }
     if (this.stairFrom === this.stairTo) {
       if (this.stairFrom === want) {
+        const f = here && here.stair === s ? here.floor : null;
+        if (f && f.at === want) {                              // off this landing onto their floor
+          this.onFloor = f;
+          this.floorStep = 'out';
+          this.markWatchdog(player);
+          out.set(f.door.x - this.pos.x, 0, f.door.z - this.pos.z).normalize();
+          return 'in';
+        }
         if (want === 0) { this.stair = null; return false; }   // back in the street
         if (want === last) return false;                        // on the roof with them
         out.copy(toPlayer);
@@ -1354,6 +1420,50 @@ export class Enemy {
     // out on the roof, heading for the bulkhead with the hut perhaps between
     if (this.stairFrom === last && Math.hypot(to.x - this.pos.x, to.z - this.pos.z) > 2.5) return 'out';
     return 'in';
+  }
+
+  /**
+   * Across a floor to a point on it. The route field is a map of the street
+   * and has nothing to say up here, and on a wide floor the shaft stands
+   * between its own door and most of the room: straight at the point, a
+   * hostile's avoidance gave up against it, stood there out of sight, and
+   * the watchdog moved it away — a juggernaut most of all, walking back to
+   * the door after the player had gone down. So if a straight walk crosses
+   * the shaft, it goes by the corner of the shaft that gets it there
+   * soonest. What else stands on a floor is furniture, which the avoidance
+   * walks round.
+   */
+  _floorWay(out, tx, tz, s, f, world) {
+    const x = this.pos.x, z = this.pos.z, q = s.shaft, pad = this.radius + 0.05;
+    // whether a straight walk misses the shaft: furniture is not asked about,
+    // because a table between you and the player is for the avoidance to go
+    // round, and asking sent the first version off to a corner of the shaft
+    const clear = (ax, az, bx, bz) => {
+      let t0 = 0, t1 = 1;
+      const dx = bx - ax, dz = bz - az;
+      for (const [p, d, lo, hi] of [[ax, dx, q.minX - pad, q.maxX + pad], [az, dz, q.minZ - pad, q.maxZ + pad]]) {
+        if (Math.abs(d) < 1e-9) { if (p < lo || p > hi) return true; continue; }
+        let a = (lo - p) / d, b = (hi - p) / d;
+        if (a > b) { const t = a; a = b; b = t; }
+        t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+        if (t0 > t1) return true;
+      }
+      return false;
+    };
+    let gx = tx, gz = tz;
+    if (!clear(x, z, tx, tz)) {
+      const m = this.radius + 0.45;                 // a corner a body can stand at, clear of the pad
+      let best = Infinity;
+      for (const [cx, cz] of [[q.minX - m, q.minZ - m], [q.maxX + m, q.minZ - m], [q.minX - m, q.maxZ + m], [q.maxX + m, q.maxZ + m]]) {
+        if (world.blocked(cx, cz, 0.4, f.y + 0.4) || Math.hypot(cx - x, cz - z) < 0.4 || !clear(x, z, cx, cz)) continue;
+        const cost = Math.hypot(cx - x, cz - z) + Math.hypot(tx - cx, tz - cz) + (clear(cx, cz, tx, tz) ? 0 : 6);
+        if (cost < best) { best = cost; gx = cx; gz = cz; }
+      }
+      // no corner helps: straight at it, and the avoidance has the rest
+      if (best === Infinity) { gx = tx; gz = tz; }
+    }
+    out.set(gx - x, 0, gz - z);
+    if (out.lengthSq() > 1e-6) out.normalize();
   }
 
   /**
@@ -1371,7 +1481,9 @@ export class Enemy {
     const P = player.position;
     const targets = [[P.x, player.feetY + 0.2, P.z]];
     const room = this.game.playerRoom;
-    if (room) for (const d of room.doors) targets.push([d.x - d.nx * 1.5, room.floor + 0.2, d.z - d.nz * 1.5]);
+    // in at a doorway — not while they are up the stair, where the shop's
+    // doors are nowhere near them
+    if (room && !this.game.playerStair) for (const d of room.doors) targets.push([d.x - d.nx * 1.5, room.floor + 0.2, d.z - d.nz * 1.5]);
     let best = Infinity;
     const out = TH_D;
     for (const [tx, ty, tz] of targets) {
@@ -1534,9 +1646,14 @@ export class Enemy {
       const wantBack = !t.melee && !holdPerch && dist < t.preferred * 0.6;
 
       if (post) {
-        // to the post and then still on it, watching the door
+        // to the post and then still on it, watching the door — by the route
+        // field to a stair post it cannot see, which leads to the stair's foot
         const px = post.x - this.pos.x, pz = post.z - this.pos.z, pd = Math.hypot(px, pz);
-        if (pd > 0.8) moveDir.set(px / pd, 0, pz / pd);
+        if (pd > 0.8) {
+          if (!post.stair || !nav || nav.clearLine(this.pos.x, this.pos.z, post.x, post.z)
+              || !nav.heading(this.pos.x, this.pos.z, moveDir)) moveDir.set(px / pd, 0, pz / pd);
+          else this.routed = true;
+        }
       } else if (stairs && (inShaft || !sees || t.melee || wantCloser || pushing)) {
         // Up after them, or down after them: a hostile in the street with a
         // clear shot at a roof still takes it, and one on a roof with a shot
@@ -1597,51 +1714,7 @@ export class Enemy {
     // wreck in the street, another hostile's corner, the kerb of the very
     // building being rounded. Probe the heading; if it is blocked, fan
     // outwards and take the first clear direction.
-    if (moveDir.lengthSq() > 1e-4 && !climbing && !inShaft) {
-      moveDir.normalize();
-      const probe = 1.8 + this.radius;
-      const clear = (x, z) => !world.blocked(this.pos.x + x * probe, this.pos.z + z * probe, this.radius, this.pos.y + 0.9);
-      const rot = (a, out) => {
-        const cos = Math.cos(a), sin = Math.sin(a);
-        return out.set(moveDir.x * cos - moveDir.z * sin, 0, moveDir.x * sin + moveDir.z * cos);
-      };
-
-      if (!clear(moveDir.x, moveDir.z)) {
-        // Which way round, decided once and then kept. `avoidDir` of zero
-        // means uncommitted, and it goes back to zero the moment the way
-        // ahead opens up, so each new obstacle is judged on its own.
-        this.avoidTimer -= dt;
-        if (this.avoidDir === 0 || this.avoidTimer <= 0) {
-          // Take the side with more room rather than flipping a coin. Only a
-          // tie is settled at random, which keeps two hostiles meeting the
-          // same corner from filing round it in single file.
-          const room = (side) => {
-            let n = 0;
-            for (const a of [0.6, 1.2, 1.8]) {
-              const cand = rot(a * side, V4);
-              if (clear(cand.x, cand.z)) n++;
-            }
-            return n;
-          };
-          const right = room(1), left = room(-1);
-          this.avoidDir = right === left
-            ? (this.avoidDir || (Math.random() < 0.5 ? 1 : -1))
-            : (right > left ? 1 : -1);
-          this.avoidTimer = COMMIT;
-        }
-        let found = false;
-        for (const a of [0.5, 1.0, 1.5, 2.0, 2.5]) {
-          for (const side of [this.avoidDir, -this.avoidDir]) {
-            const cand = rot(a * side, V4);
-            if (clear(cand.x, cand.z)) { moveDir.copy(cand); found = true; break; }
-          }
-          if (found) break;
-        }
-        if (!found) moveDir.set(-moveDir.x, 0, -moveDir.z);   // boxed in: back out
-      } else {
-        this.avoidDir = 0;
-      }
-    }
+    if (moveDir.lengthSq() > 1e-4 && !climbing && !inShaft) this._avoid(moveDir, world, dt);
 
     // ---- edges -----------------------------------------------------------
     // Up on something with you, it holds the deck. A melee hostile at its
@@ -1665,10 +1738,12 @@ export class Enemy {
     // to walk into view, so give them far longer before the watchdog moves
     // them — but not forever, or a wave could stall on a roof.
     // Nor is anything walking somewhere other than at you on purpose: a
-    // lieutenant leaving, his escort beside him, a hostile going for a charge.
+    // lieutenant leaving, his escort beside him, a hostile going for a charge
+    // — or standing still on purpose, on a post covering a door.
     this.stuckTimer += dt;
     const checkEvery = onPerch && !parked ? 12 : 4;
-    if (this.flee || escorting || lured) {
+    const onPost = post && Math.hypot(post.x - this.pos.x, post.z - this.pos.z) < 1.5;
+    if (this.flee || escorting || lured || onPost) {
       if (this.stuckTimer > checkEvery) { this._snapshotWindow(player); this.trail.length = 0; this.noProgress = 0; }
     } else if (this.stuckTimer > checkEvery) {
       const elapsed = this.stuckTimer;
@@ -1727,7 +1802,7 @@ export class Enemy {
     const speed = this.type.speed * (this.alerted || escorting ? 1 : 0.45) * (pushing ? PUSH.haste : 1) * (this.flee ? CAST.pace : 1);
     this.vel.lerp(V3.copy(moveDir).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
-    world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
+    world.resolve(this.pos, this.radius, this.pos.y, 0.55, bodyHeight(this));
     world.clampToBounds(this.pos, this.radius);
 
     // Follow the surface underfoot: stairs and platforms carry hostiles too,
@@ -1759,7 +1834,10 @@ export class Enemy {
     // — or, in a stairwell with the player out of sight, the way it is going
     const travel = this.vel.lengthSq() > 0.05 ? V3.copy(this.vel).normalize() : null;
     // — or, leaving or going for a charge with the player out of sight, that way
-    const faceTarget = this.alerted && !((inShaft || this.flee || lured) && !sees) ? toPlayer : travel;
+    // — or, holding a post with the player out of sight, the door it covers
+    const watch = post && !sees && Math.hypot(post.x - this.pos.x, post.z - this.pos.z) < 1.5
+      ? V_WATCH.set(post.wx - this.pos.x, 0, post.wz - this.pos.z) : null;
+    const faceTarget = watch || (this.alerted && !((inShaft || this.flee || lured) && !sees) ? toPlayer : travel);
     if (faceTarget) {
       // the body is built facing -z, so its yaw points -z along the target
       const want = Math.atan2(-faceTarget.x, -faceTarget.z);
@@ -1950,6 +2028,68 @@ export class Enemy {
    */
   /** Start a climb toward `dir` if there is a lip within an arm's length. */
   /**
+   * Turn `moveDir` aside from what is in the way a stride or two ahead —
+   * the last few metres, which the route field is too coarse to see. Probe
+   * the heading; if it is blocked, fan outwards and take the first clear
+   * direction, round whichever side was chosen for this obstacle. `keep`
+   * searches every angle on that side before any on the other, rather than
+   * the nearest angle on either.
+   */
+  _avoid(moveDir, world, dt, keep = false) {
+    moveDir.normalize();
+    const probe = 1.8 + this.radius;
+    // out on a floor the shaft is not a way round, though its door is open
+    // — unless the door is where it is going
+    const shaft = this.onFloor && this.floorStep === 'on' ? this.stair.shaft : null, rr = this.radius;
+    const clear = (x, z) => {
+      const px = this.pos.x + x * probe, pz = this.pos.z + z * probe;
+      if (shaft && px > shaft.minX - rr && px < shaft.maxX + rr && pz > shaft.minZ - rr && pz < shaft.maxZ + rr) return false;
+      return !world.blocked(px, pz, this.radius, this.pos.y + 0.9);
+    };
+    const rot = (a, out) => {
+      const cos = Math.cos(a), sin = Math.sin(a);
+      return out.set(moveDir.x * cos - moveDir.z * sin, 0, moveDir.x * sin + moveDir.z * cos);
+    };
+
+    if (!clear(moveDir.x, moveDir.z)) {
+      // Which way round, decided once and then kept. `avoidDir` of zero
+      // means uncommitted, and it goes back to zero the moment the way
+      // ahead opens up, so each new obstacle is judged on its own.
+      this.avoidTimer -= dt;
+      if (this.avoidDir === 0 || this.avoidTimer <= 0) {
+        // Take the side with more room rather than flipping a coin. Only a
+        // tie is settled at random, which keeps two hostiles meeting the
+        // same corner from filing round it in single file.
+        const room = (side) => {
+          let n = 0;
+          for (const a of [0.6, 1.2, 1.8]) {
+            const cand = rot(a * side, V4);
+            if (clear(cand.x, cand.z)) n++;
+          }
+          return n;
+        };
+        const right = room(1), left = room(-1);
+        this.avoidDir = right === left
+          ? (this.avoidDir || (Math.random() < 0.5 ? 1 : -1))
+          : (right > left ? 1 : -1);
+        this.avoidTimer = COMMIT;
+      }
+      let found = false;
+      const angles = [0.5, 1.0, 1.5, 2.0, 2.5];
+      const order = keep
+        ? [this.avoidDir, -this.avoidDir].flatMap((side) => angles.map((a) => a * side))
+        : angles.flatMap((a) => [a * this.avoidDir, -a * this.avoidDir]);
+      for (const a of order) {
+        const cand = rot(a, V4);
+        if (clear(cand.x, cand.z)) { moveDir.copy(cand); found = true; break; }
+      }
+      if (!found) moveDir.set(-moveDir.x, 0, -moveDir.z);   // boxed in: back out
+    } else {
+      this.avoidDir = 0;
+    }
+  }
+
+  /**
    * A holdout: waits where it went to ground until cut loose, then follows
    * the player — by the route field when they are out of sight, straight at
    * them when not — standing off a couple of metres and hurrying when left
@@ -1961,18 +2101,30 @@ export class Enemy {
     const dx = P.x - this.pos.x, dz = P.z - this.pos.z, dist = Math.hypot(dx, dz);
     const move = V2.set(0, 0, 0);
     if (this.following && dist > CAST.near) {
-      // By the route field, all the way: a line of sight out of a shop runs
-      // through a window as often as a door, and a holdout with no avoidance
-      // walks straight into the wall under it. Straight at you only for the
-      // last few metres, or where the field has no answer.
-      const nav = this.game.nav;
-      const close = dist < CAST.far && world.lineOfSight(this.pos.x, this.pos.y + 1.5, this.pos.z, P.x, P.y, P.z);
-      if (close || !nav || !this._route(nav, move)) move.set(dx / dist, 0, dz / dist);
+      // Up or down a stairwell, or off a floor of one, by the hostiles' own
+      // walk of it — the route field is a map of the street.
+      const stairs = this._stairWalk(move, player, V4.set(dx / (dist || 1), 0, dz / (dist || 1)), world);
+      if (!stairs) {
+        // By the route field, all the way: a line of sight out of a shop runs
+        // through a window as often as a door, and straight at you from
+        // there is into the wall under it. Straight at you only for the
+        // last few metres, or where the field has no answer.
+        const nav = this.game.nav;
+        const close = dist < CAST.far && world.lineOfSight(this.pos.x, this.pos.y + 1.5, this.pos.z, P.x, P.y, P.z);
+        if (close || !nav || !this._route(nav, move)) move.set(dx / (dist || 1), 0, dz / (dist || 1));
+      }
+      // Round what the field does not see, as a hostile goes round it: a car
+      // between you, and a heap of rubble, which the field leaves open
+      // because a hostile climbs one, and a steep one a holdout stood against.
+      // Round the side it chose: along the face of a wreck the probe grazed
+      // it, the nearest open angle swapped sides every frame, and a holdout
+      // stood shuffling against the door.
+      if (stairs !== 'in' && stairs !== 'with' && move.lengthSq() > 1e-4) this._avoid(move, world, dt, true);
     }
     const speed = this.type.speed * (dist > CAST.far ? 1.2 : dist < CAST.near + 1.5 ? 0.55 : 1);
     this.vel.lerp(V3.copy(move).multiplyScalar(speed), Math.min(1, dt * 6));
     this.pos.addScaledVector(this.vel, dt);
-    world.resolve(this.pos, this.radius, this.pos.y, 0.55, 1.9 * this.type.scale);
+    world.resolve(this.pos, this.radius, this.pos.y, 0.55, bodyHeight(this));
     world.clampToBounds(this.pos, this.radius);
     const support = world.groundHeight(this.pos.x, this.pos.z, SUPPORT_RADIUS, this.pos.y + 0.55);
     if (support > this.pos.y) this.pos.y = Math.min(support, this.pos.y + dt * 6);
@@ -2019,10 +2171,15 @@ export class Enemy {
     return true;
   }
 
-  /** Down under a ceiling lower than its crown, by as much as it takes (`STOOP`). */
+  /**
+   * Down under a ceiling lower than its crown, by as much as it takes
+   * (`STOOP`). Asked from the hips, not the feet: on a flight the tread two
+   * steps up has its underside a few centimetres over the feet, and a body
+   * asked from its feet stooped all the way up every stair.
+   */
   _headroom(dt, world) {
     const s = this.group.scale.x;
-    const room = world.ceilingAbove(this.pos.x, this.pos.z, this.radius, this.pos.y) - this.pos.y;
+    const room = world.ceilingAbove(this.pos.x, this.pos.z, this.radius, this.pos.y + STOOP.hip * s) - this.pos.y;
     const want = THREE.MathUtils.clamp((STOOP.top + STOOP.margin) - room / s, 0, STOOP.max);
     // quick to go down, slower to come back up
     this.stoop += (want - this.stoop) * Math.min(1, dt * (want > this.stoop ? 10 : 3));
