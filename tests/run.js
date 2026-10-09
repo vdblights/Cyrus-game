@@ -5197,6 +5197,57 @@ check('a marksman holds a window over the street, and a holdout is found upstair
     windows: `${r.windows}/${r.stairs}`, picks: r.picks, view: r.view.join(' ') };
 });
 
+check("a ruin's windows are holes: seen and shot through both ways, and its piers are not", async (page) => {
+  // A roofless ruin wears a facade, and the facade shader cut each painted
+  // window into an opening with a room traced behind it — wrong in a shell
+  // wall 0.7 m thick, whose far side is the courtyard. The walls are built
+  // round their windows now (`ruinWall` in `city.js`), cut where the paint
+  // puts them, and every piece is its own collider: so a window is a hole to
+  // sight and to a round, from either side, and the wall beside it is not.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game, w = g.world;
+    const ray = new THREE.Raycaster();
+    const shoot = (x, y, z, dx, dz, far) => {
+      ray.set(new THREE.Vector3(x, y, z), new THREE.Vector3(dx, 0, dz).normalize());
+      ray.far = far;
+      const hit = ray.intersectObjects(w.solids, false)[0];
+      return hit ? hit.distance : Infinity;
+    };
+    const out = { windows: w.ruinWindows.length, seen: 0, shot: 0, piers: 0, pierStops: 0, sills: 0, sillStops: 0, blind: [] };
+    for (const q of w.ruinWindows) {
+      const y = (q.sill + q.head) / 2, back = q.thick / 2 + 1.0;
+      for (const s of [1, -1]) {
+        const ox = q.x + q.nx * s * back, oz = q.z + q.nz * s * back;
+        const tx = q.x - q.nx * s * back, tz = q.z - q.nz * s * back;
+        if (w.lineOfSight(ox, y, oz, tx, y, tz)) out.seen++;
+        else if (out.blind.length < 4) out.blind.push([+q.x.toFixed(1), +q.z.toFixed(1), +y.toFixed(2)]);
+        if (shoot(ox, y, oz, -q.nx * s, -q.nz * s, back * 2) > back * 2 - 0.01) out.shot++;
+      }
+      // the pier beside it, half a window and half a pier along
+      const tx = -q.nz, tz = q.nx, off = q.width / 2 + 0.3;
+      const px = q.x + tx * off, pz = q.z + tz * off;
+      out.piers++;
+      if (!w.lineOfSight(px + q.nx * back, y, pz + q.nz * back, px - q.nx * back, y, pz - q.nz * back)
+          && shoot(px + q.nx * back, y, pz + q.nz * back, -q.nx, -q.nz, back * 2) < back + 0.01) out.pierStops++;
+      // and the wall under the sill
+      if (q.sill > 0.4) {
+        out.sills++;
+        const sy = q.sill - 0.2;
+        if (!w.lineOfSight(q.x + q.nx * back, sy, q.z + q.nz * back, q.x - q.nx * back, sy, q.z - q.nz * back)
+            && shoot(q.x + q.nx * back, sy, q.z + q.nz * back, -q.nx, -q.nz, back * 2) < back + 0.01) out.sillStops++;
+      }
+    }
+    return out;
+  });
+  expect(r.windows >= 60, `only ${r.windows} windows in the ruins' walls`);
+  expect(r.seen === r.windows * 2, `${r.windows * 2 - r.seen} of ${r.windows * 2} looks through a ruin's window are blind: ${JSON.stringify(r.blind)}`);
+  expect(r.shot === r.windows * 2, `${r.windows * 2 - r.shot} of ${r.windows * 2} rounds through a ruin's window stopped in it`);
+  expect(r.pierStops === r.piers, `${r.piers - r.pierStops} of ${r.piers} piers beside a ruin's window let sight or a round through`);
+  expect(r.sills > 0 && r.sillStops === r.sills, `${r.sills - r.sillStops} of ${r.sills} walls under a sill let sight or a round through`);
+  return r;
+});
+
 check('a juggernaut stoops up a stairwell after you, and a warlord stays down', async (page) => {
   // A flight's headroom is a lap less the slab, at most the 2.5 m doors, and
   // a juggernaut is 2.57 m of body, so none was ever sent up a stair. It
@@ -5716,10 +5767,19 @@ check('a seed still lays out the city it did', async (page) => {
   // its building's facade is built of (`infillMat`): one solid more a
   // floor, 32, 16 and 29, and not a box, a perch or a draw moved. Before
   // it: solids 1617, 1307 and 1683.
+  //
+  // And a ruin's walls have their windows open (`ruinWall`): each wall is
+  // the piers, the wall under each sill and the lintel over each window,
+  // where it was one box. Compared collider by collider on all three seeds:
+  // 21, 13 and 4 colliders gone, every one a ruin wall, and 467, 283 and 64
+  // new, every one inside one of those; the perches identical, and the mark
+  // after boot identical with the walls built either way. Before it:
+  // 4915 '1ee92ae6' (4557 'c62209d3'), 3390 'ddfed437' (2932 'eb0a4c59'),
+  // 4794 '9f142bd4' (4312 '4476e7f7').
   const want = {
-    1: { boxes: 4915, solids: 1649, perches: 12, fp: '1ee92ae6', placed: 4557, fpPlaced: 'c62209d3' },
-    7: { boxes: 3390, solids: 1323, perches: 11, fp: 'ddfed437', placed: 2932, fpPlaced: 'eb0a4c59' },
-    20260101: { boxes: 4794, solids: 1712, perches: 10, fp: '9f142bd4', placed: 4312, fpPlaced: '4476e7f7' },
+    1: { boxes: 5361, solids: 1649, perches: 12, fp: 'b0d92d20', placed: 5003, fpPlaced: '6edef181' },
+    7: { boxes: 3660, solids: 1323, perches: 11, fp: '3dc368da', placed: 3202, fpPlaced: 'dc28bfb4' },
+    20260101: { boxes: 4854, solids: 1712, perches: 10, fp: 'a5ab07a8', placed: 4372, fpPlaced: 'f8b6d04b' },
   };
   // (bare rooms: 2497/1540/12 b323ced2 (2139 e5d0438f), 1933/1268/11
   // 9d1c7f32 (1475 de4ab94c), 2526/1617/10 e1cfa671 (2044 9123bce6))

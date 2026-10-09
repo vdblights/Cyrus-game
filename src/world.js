@@ -80,6 +80,8 @@ export class World {
      * the door off the stair's landing and every window, as a room has.
      */
     this.floors = [];
+    // every window opening in a ruin's walls, as a hole through it
+    this.ruinWindows = [];
     this.bounds = 100;
   }
 
