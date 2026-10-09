@@ -861,8 +861,10 @@ check('the ground you stand on is the ground you can see', async (page) => {
     // the next prop rather than the overhang past this one. A floor beyond the
     // edge — pavement, a ruin's courtyard — is the ground being walked off
     // onto, not a prop, and every floor is under a step high.
+    // A heap of rubble is left out: it holds a body up wherever the body
+    // touches it (`HEAP_REACH`), on purpose — see the rubble invariant.
     const edges = W.boxes.filter((b) => {
-      if (b.top < 0.8 || b.top > 4 || b.sin !== 0) return false;
+      if (b.top < 0.8 || b.top > 4 || b.sin !== 0 || b.heap) return false;
       return !W.boxes.some((o) => o !== b && o.top > 0.55
         && o.maxX > b.maxX && o.minX < b.maxX + 2.5
         && o.maxZ > b.cz - 1 && o.minZ < b.cz + 1);
@@ -4764,6 +4766,19 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
     g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
     const out = { floors: w.floors.length, low: [], windows: 0, open: 0, shotOut: 0, piers: 0, pierStops: 0,
       walked: 0, walks: 0, stuck: [], follow: [], drop: null };
+    // what each building with floors is built of: its walls are its facade's
+    // own style with the windows left as holes, not one grey for all of them
+    out.walls = w.stairs.map((st) => {
+      const R = st.roof, names = new Set();
+      for (const m of w.solids) {
+        const n = m.material?.userData?.name;
+        if (!n || !m.geometry) continue;
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        const c = m.geometry.boundingBox.getCenter(new (m.position.constructor)()).applyMatrix4(m.matrixWorld);
+        if (c.x > R.minX && c.x < R.maxX && c.z > R.minZ && c.z < R.maxZ && c.y > 2.5) names.add(n);
+      }
+      return [...names].filter((n) => n.startsWith('infill'));
+    });
     const ray = new THREE.Raycaster();
     const shoot = (x, y, z, dx, dz, far) => {
       ray.set(new THREE.Vector3(x, y, z), new THREE.Vector3(dx, 0, dz).normalize());
@@ -4963,6 +4978,10 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
   // a juggernaut each reached every one and came back down, unrelocated.
   expect(r.floors >= 20, `only ${r.floors} floors on this seed`);
   expect(r.low.length === 0, `floors with too little headroom at the door: ${JSON.stringify(r.low)}`);
+  const bare = r.walls.filter((n) => n.length !== 1);
+  const styles = new Set(r.walls.flat());
+  expect(bare.length === 0, `${bare.length} of ${r.walls.length} buildings with floors are not walled in one style of their own: ${JSON.stringify(r.walls)}`);
+  expect(styles.size >= 3, `the ${r.walls.length} buildings with floors are walled in ${styles.size} styles`);
   expect(r.windows >= 200 && r.open === r.windows, `${r.windows - r.open} of ${r.windows} windows cannot be seen out of`);
   expect(r.shotOut === r.windows, `${r.windows - r.shotOut} of ${r.windows} windows stop a round`);
   expect(r.pierStops === r.piers, `${r.piers - r.pierStops} of ${r.piers} piers let a sight line or a round through`);
@@ -4980,7 +4999,7 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
     `a juggernaut got back off ${r.back.home} of ${r.back.floors} floors: ${JSON.stringify(r.back.stuck.slice(0, 3))}`);
   expect(Math.abs(r.drop.at) < 0.05, `a drop landed ${r.drop.at} m off the floor it fell on`);
   expect(!r.drop.takenBelow && r.drop.takenOn, `a drop on a floor: taken from below ${r.drop.takenBelow}, taken beside it ${r.drop.takenOn}`);
-  return { back: `${r.back.home}/${r.back.floors}, ${r.back.behind} behind the shaft`, drop: r.drop, floors: r.floors, windows: r.windows, walked: `${r.walked}/${r.walks}`, follow: r.follow };
+  return { styles: [...styles], back: `${r.back.home}/${r.back.floors}, ${r.back.behind} behind the shaft`, drop: r.drop, floors: r.floors, windows: r.windows, walked: `${r.walked}/${r.walks}`, follow: r.follow };
 });
 
 check('a marksman holds a window over the street, and a holdout is found upstairs and walked down', async (page) => {
@@ -5692,10 +5711,15 @@ check('a seed still lays out the city it did', async (page) => {
   // inside a stairwell building's footprint or its cap's 30 cm overhang;
   // the perches and the mark after boot identical. Before it: the line
   // below as it stood for the bare rooms.
+  //
+  // A floor's walls are then a raycast target of their own, in the wall
+  // its building's facade is built of (`infillMat`): one solid more a
+  // floor, 32, 16 and 29, and not a box, a perch or a draw moved. Before
+  // it: solids 1617, 1307 and 1683.
   const want = {
-    1: { boxes: 4915, solids: 1617, perches: 12, fp: '1ee92ae6', placed: 4557, fpPlaced: 'c62209d3' },
-    7: { boxes: 3390, solids: 1307, perches: 11, fp: 'ddfed437', placed: 2932, fpPlaced: 'eb0a4c59' },
-    20260101: { boxes: 4794, solids: 1683, perches: 10, fp: '9f142bd4', placed: 4312, fpPlaced: '4476e7f7' },
+    1: { boxes: 4915, solids: 1649, perches: 12, fp: '1ee92ae6', placed: 4557, fpPlaced: 'c62209d3' },
+    7: { boxes: 3390, solids: 1323, perches: 11, fp: 'ddfed437', placed: 2932, fpPlaced: 'eb0a4c59' },
+    20260101: { boxes: 4794, solids: 1712, perches: 10, fp: '9f142bd4', placed: 4312, fpPlaced: '4476e7f7' },
   };
   // (bare rooms: 2497/1540/12 b323ced2 (2139 e5d0438f), 1933/1268/11
   // 9d1c7f32 (1475 de4ab94c), 2526/1617/10 e1cfa671 (2044 9123bce6))

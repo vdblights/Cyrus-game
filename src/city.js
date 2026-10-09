@@ -1027,16 +1027,25 @@ function bakeStatic(group, world) {
   // in a batch of its own that is always drawn, as everything used to be.
   const buckets = new Map();
   const perMaterial = new Map();
-  for (const m of meshes) {
-    const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
-    shadeGeometry(geo, m.userData.tint || [1, 1, 1], occlusion, m.userData.mottle || 0, indoors);
-    const key = `${materialIndex(perMaterial, m.material)}:${patchOf(geo)}`;
-    let b = buckets.get(key);
-    if (!b) buckets.set(key, b = { material: m.material, geos: [], cast: false, receive: false });
-    b.geos.push(geo);
-    b.cast = b.cast || m.castShadow;
-    b.receive = b.receive || m.receiveShadow;
-  }
+  // Every clone mints a geometry, a UUID's draws of the seeded stream, and
+  // the stream after the bake is the one that picks spawns: so every mesh in
+  // the city used to move every spawn, wherever it was built and whatever
+  // `reserve` it was built in. The clones are made in a reserve now and the
+  // bill is a UUID for each mesh but those marked `unbilled` — what the city
+  // cost before they existed.
+  reserve(() => {
+    for (const m of meshes) {
+      const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
+      shadeGeometry(geo, m.userData.tint || [1, 1, 1], occlusion, m.userData.mottle || 0, indoors);
+      const key = `${materialIndex(perMaterial, m.material)}:${patchOf(geo)}`;
+      let b = buckets.get(key);
+      if (!b) buckets.set(key, b = { material: m.material, geos: [], cast: false, receive: false });
+      b.geos.push(geo);
+      b.cast = b.cast || m.castShadow;
+      b.receive = b.receive || m.receiveShadow;
+    }
+  });
+  spend(meshes.filter((m) => !m.userData.unbilled).length * UUID_COST);
 
   // nothing updates a detached mesh's matrix, so freeze it at what it was
   for (const m of meshes) {
@@ -1062,7 +1071,7 @@ function bakeStatic(group, world) {
       for (const g of b.geos) g.dispose();
     }
   });
-  spend(perMaterial.size * 2 * UUID_COST);
+  spend([...perMaterial.keys()].filter((m) => !m.userData.unbilled).length * 2 * UUID_COST);
   return buckets.size;
 }
 
@@ -1691,7 +1700,17 @@ export const CITY_PAINT = [
           roughnessMap: TEX.surfaceFrom(map, { dark: 1, lite: 0.34, half: true }, key),
           roughness: 1, metalness: 0.05, envMapIntensity: 0.7, vertexColors: true,
         }), TEX.facadeWindows(style, v)));
+        m.facades[m.facades.length - 1].userData.style = style;
       }
+      // the same wall with no windows painted on it, for a building whose
+      // windows are real holes (`upperFloors`)
+      const plain = TEX.infill(style), key = 'infill' + style;
+      (m.infills ||= [])[style] = new THREE.MeshStandardMaterial({
+        map: plain, normalMap: TEX.normalFrom(plain, 1.1, key, 1, true),
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        roughnessMap: TEX.surfaceFrom(plain, { dark: 1, lite: 0.34, half: true }, key),
+        roughness: 1, metalness: 0.05, envMapIntensity: 0.7, vertexColors: true,
+      });
     },
   })),
   {
@@ -1985,6 +2004,9 @@ function paintCity() {
 function labelMaterials(m) {
   const label = (mat, name, tile) => { mat.userData.name = name; mat.userData.tile = tile; };
   m.facades.forEach((mat, i) => label(mat, 'facade' + i, TILE.facade));
+  // A batch costs the stream what one per material always did, and these are
+  // new: unbilled, so a building's walls changing material moves no spawn.
+  m.infills.forEach((mat, i) => { label(mat, 'infill' + i, TILE.facade); mat.userData.unbilled = true; });
   m.carBodyMats.forEach((mat, i) => label(mat, 'car' + i, TILE.metal));
   m.carRustMats.forEach((mat, i) => label(mat, 'carrust' + i, TILE.metal));
   label(m.concreteMat, 'concrete', TILE.concrete);
@@ -2026,7 +2048,7 @@ export function buildCity(scene, painted = null) {
 
   const mats = painted || paintCity();
   labelMaterials(mats);
-  const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
+  const { facades, infills, concreteMat, darkConcrete, rusts, metalMat, glassMat,
     asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, ironMat, gratingMat, railMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat, shardMat } = mats;
 
@@ -2091,6 +2113,9 @@ export function buildCity(scene, painted = null) {
   const heaps = [];
   // how many props `settle` has stood up, so each one's colliders carry an id
   let settled = 0;
+  // the wall a building with floors is built of: its facade's style, with
+  // the windows left as the holes they are (`buildTower`, `upperFloors`)
+  let infillMat = null;
 
   // sidewalks: a raised concrete apron around every lot, its kerb dropped
   // wherever a crossing meets it. Built in a `reserve` and paid for at what
@@ -2466,6 +2491,7 @@ export function buildCity(scene, painted = null) {
       shut.position.set(x + randRange(-bw / 4, bw / 4), 1.4, z + bd / 2 + 0.12);
       shut.userData.tint = tintAt(x, z, 2, 0.1);
       let stair = null;
+      infillMat = infills[mat.userData.style] || conc;
       if (open) reserve(() => { stair = groundFloor(g, w, x, z, bw, bd, h, cx, cz, conc, metal, tint, body, cap, party); });
       else { g.add(band); g.add(shut); }
 
@@ -3436,11 +3462,15 @@ export function buildCity(scene, painted = null) {
       // the walls, pier and sill and lintel, with the openings left open
       const top = L.wall, head = Math.min(L.F + 2.3, top - 0.25);
       const glazed = head - (L.F + SILL) >= 0.8;
+      // the frame is the slabs, in concrete; between them the walls are what
+      // the building is built of — its facade's own brick, render, stone or
+      // panel, with no windows painted on it, because its windows are holes
+      const walls = [];
       const piece = (f, a, b, lo, hi) => {
         if (b - a < 0.02 || hi - lo < 0.02) return;
         const q = f.along === 'x' ? { minX: x + a, maxX: x + b, minZ: f.at - T / 2, maxZ: f.at + T / 2 }
           : { minX: f.at - T / 2, maxX: f.at + T / 2, minZ: z + a, maxZ: z + b };
-        geos.push(geoAt(q, lo, hi));
+        walls.push(geoAt(q, lo, hi, TILE.facade));
         w.addCeiling(q.minX, q.minZ, q.maxX, q.maxZ, hi, lo);
       };
       for (const f of faces) {
@@ -3463,6 +3493,7 @@ export function buildCity(scene, painted = null) {
         }
       }
       add(mergeIntoOne(geos), conc, true);
+      add(mergeIntoOne(walls), infillMat || conc, true).userData.unbilled = true;
       // a finish over the slab, flush with it, with vertices for the bake
       add(mergeIntoOne(around(inner, o).map((q) => geoAt(q, L.F, L.F + FINISH, TILE.concrete, { cells: 4 }))), darkConcrete, false);
 
