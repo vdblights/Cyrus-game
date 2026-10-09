@@ -5010,7 +5010,7 @@ check('a marksman holds a window over the street, and a holdout is found upstair
   // holdout up a building (`floorSite` in `objectives.js`), counted only from
   // its own floor, and once cut loose it comes off the floor and down the
   // stair by the hostiles' own walk (`_stairWalk` from `_follow`), and round
-  // what stands in the street by their avoidance (`_avoid`).
+  // what stands in the street by the route field.
   const r = await page.evaluate(() => {
     const g = window.__game, w = g.world, p = g.player, O = g.objectives;
     g.startRun();
@@ -5083,10 +5083,11 @@ check('a marksman holds a window over the street, and a holdout is found upstair
     for (let i = 0; i < 200; i++) if (g.windowPerches.includes(g.findPerch())) atWindow++;
     out.picks = { atWindow, expect: Math.round(200 * winOk / Math.max(1, allOk)) };
 
-    // A holdout walks round what is in its way, as a hostile does: one
-    // following from beside every wreck, the player five metres past it,
-    // inside the range it walks straight at you over. With no avoidance it
-    // stood against all sixteen on seed 1.
+    // A holdout walks round what is in its way: one following from beside
+    // every wreck, the player five metres past it, inside the range it walks
+    // straight at you over. It walks straight only along a line the route
+    // field can walk as well as see (`nav.clearLine`); walking at whatever it
+    // could see, it stood against all sixteen on seed 1.
     const open = (x, z) => {
       const fy = w.groundHeight(x, z, 0.12, 0.6);
       return fy < 0.5 && !w.blocked(x, z, 0.6, fy + 0.3) && Math.abs(x) < w.bounds - 3 && Math.abs(z) < w.bounds - 3;
@@ -5188,11 +5189,11 @@ check('a marksman holds a window over the street, and a holdout is found upstair
   expect(loose.length === n, `a holdout was cut loose on ${loose.length} of ${n} floors`);
   const out = loose.filter((x) => x.out !== undefined && x.out <= 45);
   expect(out.length === n, `a holdout came down out of ${out.length} of ${n} buildings: ${JSON.stringify(loose.filter((x) => !(x.out <= 45)).slice(0, 3))}`);
-  // Two stalls are allowed after the building, in the street: a heap of
-  // rubble too steep to climb that the route field reads as open (see the
-  // rubble invariant). Every one seen so far was one of those.
+  // Every one: it used to allow two, for heaps of rubble too steep to climb
+  // that the route field read as open, until a heap took a body's weight
+  // where the body touched it (`HEAP_REACH`).
   const done = loose.filter((x) => x.done);
-  expect(done.length >= n - 2, `a holdout reached the pickup from ${done.length} of ${n} floors: ${JSON.stringify(loose.filter((x) => !x.done))}`);
+  expect(done.length === n, `a holdout reached the pickup from ${done.length} of ${n} floors: ${JSON.stringify(loose.filter((x) => !x.done))}`);
   return { rescued: `${done.length}/${n}`, cars: `${r.cars.past}/${r.cars.staged}`, outBy: Math.max(...out.map((x) => x.out)), stalls: loose.filter((x) => !x.done).map((x) => x.at),
     windows: `${r.windows}/${r.stairs}`, picks: r.picks, view: r.view.join(' ') };
 });
