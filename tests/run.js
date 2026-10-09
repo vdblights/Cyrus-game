@@ -2668,13 +2668,21 @@ check('auto starts at the tier this machine can hold', async (page) => {
     const g = window.__game;
     const realNow = performance.now.bind(performance);
     const realRender = g.render;
-    const trial = (cost) => {
+    const suite = g.suite, software = g.perf.software;
+    let drawn = 0;
+    const trial = (cost, { named = false, inSuite = false } = {}) => {
       let clock = 0;
+      drawn = 0;
       performance.now = () => clock;
-      g.render = () => { clock += cost[g.activeTier]; };
+      g.render = () => { drawn++; clock += cost[g.activeTier]; };
       g.settings.quality = 'auto';
-      try { g.chooseStartingTier(); } finally { performance.now = realNow; g.render = realRender; }
-      return g.startingTier;
+      g.suite = inSuite;
+      g.perf.software = named;
+      g.renderScale = 1;
+      try { g.chooseStartingTier(); } finally {
+        performance.now = realNow; g.render = realRender; g.suite = suite; g.perf.software = software;
+      }
+      return { ...g.startingTier, scale: +g.renderScale.toFixed(2), drawn };
     };
     return {
       // high misses 60 fps, medium makes it with a fight's worth to spare
@@ -2683,8 +2691,13 @@ check('auto starts at the tier this machine can hold', async (page) => {
       // fight at 53 fps, which the old 16.7 ms bar let it start in
       tight: trial({ high: 31, medium: 14, low: 7 }),
       fast: trial({ high: 9, medium: 6, low: 4 }),
-      // a frame this slow is software rendering, not a frame rate
+      // A frame this slow is the CPU drawing. It used to be read as a
+      // machine too slow to measure and left on high, seconds a frame.
       software: trial({ high: 1900, medium: 1600, low: 1200 }),
+      // and a browser that names its renderer as software is not timed at all
+      named: trial({ high: 1900, medium: 1600, low: 1200 }, { named: true }),
+      // the suite draws in software too, and keeps the tier its checks know
+      suite: trial({ high: 1900, medium: 1600, low: 1200 }, { named: true, inSuite: true }),
     };
   });
   expect(r.midrange?.tier === 'medium' && r.midrange.measured,
@@ -2692,8 +2705,12 @@ check('auto starts at the tier this machine can hold', async (page) => {
   expect(r.tight?.tier === 'low',
     `a machine with no room for a fight on medium starts on ${JSON.stringify(r.tight)}`);
   expect(r.fast?.tier === 'high', `a fast machine starts on ${JSON.stringify(r.fast)}`);
-  expect(r.software?.tier === 'high' && !r.software.measured,
-    `a machine too slow to measure was moved to ${JSON.stringify(r.software)}`);
+  expect(r.software?.tier === 'low' && r.software.cpu && r.software.scale === 0.7,
+    `a machine drawing a second a frame on every tier starts on ${JSON.stringify(r.software)}`);
+  expect(r.named?.tier === 'low' && r.named.cpu && r.named.scale === 0.7 && r.named.drawn === 0,
+    `a browser with no GPU starts on ${JSON.stringify(r.named)}`);
+  expect(r.suite?.tier === 'high' && !r.suite.cpu && r.suite.scale === 1,
+    `the suite starts on ${JSON.stringify(r.suite)}`);
   return r;
 });
 
@@ -4282,7 +4299,18 @@ check('auto quality keeps watching, and gives back resolution before shaders', a
       g.applyQuality();
       run(7, 20);                                       // chosen, never overridden
       const chosen = read();
-      return { calm, fight, paused, spent, quiet, chosen };
+      // Drawn on the CPU, at 3 fps: every frame is a third of a second, which
+      // a GPU machine reads as a pause, so auto never moved on these at all.
+      // Here each counts, and resolution goes on down past the usual floor.
+      g.settings.quality = 'auto';
+      g.autoTier = 'low';
+      g.renderScale = 0.7;
+      g.applyQuality();
+      g.cpuDrawn = true;
+      run(10, 3);
+      const cpu = read();
+      g.cpuDrawn = false;
+      return { calm, fight, paused, spent, quiet, chosen, cpu };
     } finally {
       performance.now = real;
     }
@@ -4296,6 +4324,8 @@ check('auto quality keeps watching, and gives back resolution before shaders', a
   expect(r.quiet.tier === 'low', `a slow stretch between waves left the tier at ${r.quiet.tier}`);
   expect(r.chosen.tier === 'high' && r.chosen.scale === 1,
     `an explicit choice was overridden: ${JSON.stringify(r.chosen)}`);
+  expect(r.cpu.tier === 'low' && r.cpu.scale === 0.4,
+    `a machine drawing on the CPU at 3 fps was left at ${JSON.stringify(r.cpu)}`);
   return r;
 });
 
