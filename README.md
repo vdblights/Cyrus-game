@@ -246,7 +246,9 @@ through the doorway of a shop you are hiding in, instead of sliding along the
 wall between you. With a clear view it comes straight at you, as it always
 did.
 
-A marksman claims a rooftop or terrace and stays there while it can see you.
+A marksman claims a rooftop, a terrace or a window on a floor of a building
+— the one in each building with the longest view of the street — and stays
+there while it can see you.
 Before each shot it paints you with an aiming laser for about a second — that
 red line is your warning to break line of sight. Warlords are outsized, carry
 roughly 1100 HP, wear a gold band, and get their own health bar at the top of
@@ -349,7 +351,9 @@ The newer four each ask something different of you:
   there first.
 - **A holdout** follows you once cut loose, by the same routes the hostiles
   use. They are not a target and your rounds pass them, but anything near
-  wears them down, and a blast hurts them like anyone else.
+  wears them down, and a blast hurts them like anyone else. Every other one
+  has gone to ground up a building: find the stairwell, cut them loose on
+  their floor, and they come down the stair behind you.
 
 Progress bleeds back if you are driven off rather than resetting,
 so being pushed out costs ground without wiping the job, and a beacon

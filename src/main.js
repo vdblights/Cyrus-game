@@ -32,6 +32,16 @@ const INSERTION = { x: -17, z: 24 };
 /** What each objective pays, times the wave it is finished on. */
 const OBJECTIVE_PAY = { cache: 300, hold: 500, extraction: 750, relay: 600, sabotage: 600, hunt: 700, rescue: 800, convoy: 1500 };
 
+/**
+ * A marksman at a window: how far back from the glass it stands, its eye
+ * over the floor, the fan of street it is judged on (radians off the way
+ * the window faces, metres out), and how much of that fan it has to see.
+ */
+const WINDOW_PERCH = {
+  back: 0.95, eye: 1.5, least: 6,
+  rays: { turn: [-0.5, -0.25, 0, 0.25, 0.5], out: [12, 20, 30, 42, 55] },
+};
+
 /** Every material slot that can hold a texture boot should upload. */
 const TEXTURE_SLOTS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap',
   'aoMap', 'alphaMap', 'bumpMap', 'lightMap'];
@@ -204,6 +214,9 @@ class Game {
         // typed arrays only, so it costs the seeded stream nothing — see
         // nav.js.
         this.nav = new NavGrid(this.world);
+        // A marksman's other perch: a floor's window over the street. Read
+        // off the floors as built, drawing nothing, so it costs no seed.
+        this.windowPerches = this.findWindowPerches();
         this.loading.survey(this.world, this.perches, INSERTION);
       }],
       ['Loading the debris', 1, () => {
@@ -1323,9 +1336,10 @@ class Game {
    * the damage the sector deals up by about half again on its own.
    */
   findPerch(overlooking = false) {
-    if (!this.perches.length) return null;
+    const all = this.windowPerches?.length ? [...this.perches, ...this.windowPerches] : this.perches;
+    if (!all.length) return null;
     const p = this.player.position;
-    const candidates = this.perches.filter((q) => {
+    const candidates = all.filter((q) => {
       const d = Math.hypot(q.x - p.x, q.z - p.z);
       if (d < 16 || d > 95) return false;      // within its detection range
       return !this.enemies.some((e) => e.alive && Math.hypot(e.pos.x - q.x, e.pos.z - q.z) < 3);
@@ -1340,6 +1354,56 @@ class Game {
       : [];
     const from = withView.length ? withView : candidates;
     return from[(Math.random() * from.length) | 0];
+  }
+
+  /**
+   * One window a building, on any of its floors, for a marksman to stand
+   * back from: the one that sees most of the street — sample points out to
+   * 50 m along and either side of the way it faces. A window onto a
+   * junction sees down two streets, so it wins without being told to.
+   * Each stands a metre in from the glass (`WINDOW_PERCH.back`), on floor
+   * with nothing in the way and headroom for a body, and is a perch like
+   * any other: the hostile on it holds it.
+   */
+  findWindowPerches() {
+    const w = this.world, out = [];
+    const byStair = new Map();
+    for (const f of w.floors) {
+      if (!f.stair) continue;
+      let a = byStair.get(f.stair);
+      if (!a) byStair.set(f.stair, a = []);
+      a.push(f);
+    }
+    const { back, eye, rays, least } = WINDOW_PERCH;
+    for (const floors of byStair.values()) {
+      let best = null;
+      for (const f of floors) {
+        for (const win of f.windows) {
+          const x = win.x - win.nx * back, z = win.z - win.nz * back;
+          const floor = w.groundHeight(x, z, SUPPORT_RADIUS, f.floor + 0.5);
+          if (Math.abs(floor - f.floor) > 0.05 || w.blocked(x, z, 0.5, floor + 0.9)) continue;
+          if (w.ceilingAbove(x, z, 0.5, floor + 0.9) < floor + 2.2) continue;
+          const ey = floor + eye;
+          let seen = 0;
+          for (const a of rays.turn) {
+            const c = Math.cos(a), s = Math.sin(a);
+            const dx = win.nx * c - win.nz * s, dz = win.nz * c + win.nx * s;
+            for (const d of rays.out) {
+              const tx = win.x + dx * d, tz = win.z + dz * d;
+              if (Math.abs(tx) > w.bounds - 1 || Math.abs(tz) > w.bounds - 1) continue;
+              const ty = w.groundHeight(tx, tz, SUPPORT_RADIUS, 0.6) + 1.0;
+              if (w.lineOfSight(x, ey, z, tx, ty, tz)) seen++;
+            }
+          }
+          // the higher floor of two that see the same
+          if (seen >= least && (!best || seen > best.seen || (seen === best.seen && floor > best.y))) {
+            best = { x, y: floor, z, seen, wx: win.x, wz: win.z };
+          }
+        }
+      }
+      if (best) out.push(best);
+    }
+    return out;
   }
 
   spawnEnemy(typeKey, elite = false) {
@@ -1374,7 +1438,11 @@ class Game {
   onObjectiveStart(obj) {
     const lines = RADIO.objective[obj.kind];
     // a beacon put up in place of something the city had nowhere for says so
-    if (lines) this.say(obj.instead && lines.instead ? lines.instead : lines.start, this.objectivesSecured + this.wave, obj.dist);
+    // and a holdout up a building says which way in
+    if (lines) {
+      const say = obj.instead && lines.instead ? lines.instead : obj.upstairs && lines.upstairs ? lines.upstairs : lines.start;
+      this.say(say, this.objectivesSecured + this.wave, obj.dist);
+    }
   }
 
   /** It has moved on a stage: a charge armed, a holdout cut loose. */

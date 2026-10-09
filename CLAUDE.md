@@ -663,7 +663,18 @@ These each cost real debugging time. Changing them needs a reason.
   kerb: every tier rises less than a step, so a hostile climbs a heap
   rather than walking round it, and baking them as walls cut 1.9% of seed
   1's walkable sector off into pockets — `the route field reaches the whole
-  sector` caught it at 98.1% connected.
+  sector` caught it at 98.1% connected. **That premise is only half true.**
+  Each tier rises less than a step, but a body is stopped at its radius
+  (0.43 m) by anything a step above its feet and lifted only by what is
+  under its middle (0.12 m), so the tier under has to stand 0.31 m proud of
+  the one above or the pair is one tall step. Measured on seed 1 over 358
+  heap tiers, from the outline grown by that margin: a median effective rise
+  of 0.62 m, 228 tiers over a step, 96 over 0.9 m — a fallen slab's tiers
+  nest within centimetres. So the field routes bodies into heaps they cannot
+  climb; a hostile is turned by its avoidance or moved by the watchdog, and
+  a holdout, which has neither, stood against one until the clock ran out.
+  Baking the steep tiers as walls is the obvious fix and was not taken here:
+  it is most of the heaps, which is the 1.9% of pockets again.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
   earlier version only checked height at the entry point, which let a hostile
   see a target that could not see it back.
@@ -1466,6 +1477,38 @@ These each cost real debugging time. Changing them needs a reason.
 - **Perch-holders never leave a perch.** Marksmen do not drift while unalerted,
   do not strafe on a perch, and get a longer stuck-watchdog leash. All three
   routes had to be closed before they stopped falling off roofs.
+- **A perch may be a window, and a holdout may be upstairs.** Two uses of the
+  floors, both reading them rather than scripted into them.
+  `findWindowPerches` in `main.js` picks one window a stairwell building —
+  on any floor — for a marksman to stand 0.95 m back from: whichever sees
+  most of a fan of street out to 55 m (`WINDOW_PERCH`), which favours a
+  window onto a junction without being told to. 12 of 13 buildings on seed
+  1, all on the first floor, because a sill cuts off the near street from
+  higher up. They are computed at boot and draw nothing, so `g.perches` and
+  the layout are untouched; `findPerch` draws from both lists, so about
+  half of marksman spawns and relocations land at a window. A marksman there
+  holds it with no new code: `onPerch` is any perch-holder over 1.5 m.
+  Every other rescue (`rescues` in `objectives.js`, so the first is a shop)
+  puts the holdout on a floor (`floorSite`), sited only where the walk to
+  the landing door the hostiles' way (`Enemy._floorWay`, run in
+  `_walksOut`) stays clear of furniture; the handler says to find the stair;
+  it counts only from within 1.2 m of the floor's height, because floors
+  can be 2.9 m apart and the shop's 3 m let the floor below cut it loose.
+  Cut loose, it comes down by the stair walk (`_follow` calls
+  `_stairWalk`): back to the door, onto the landing, down the points, into
+  the street, out of the building within 11 s on all 32 floors of seed 1.
+  The street was the hard part. A holdout has no watchdog, and it used to
+  have no avoidance; it now shares the hostiles' (`_avoid`, extracted), and
+  once it has been pressed against something for 0.4 s (`pressed`, `wary`)
+  it also asks a foot's width just past its body for anything over a step,
+  which turns it off a steep heap of rubble — see the rubble invariant.
+  Asked all the time, that probe turned one away from a heap it would have
+  slid along and past. Shop rescues, all 21 rooms under three draws: 62 of
+  63 before, 63 after. Floor rescues: 93 of 96, and the three that miss
+  are a steep heap in the street, after the building. While the player is
+  on a floor, the hostiles' cover posts are the shop's stair door
+  (`roomAt` reads a floor as its stair's shop), which is the floor's only
+  way down, so a floor's landing needs no posts of its own.
 - **A mantle owns the player for its duration.** `Player.update` returns early
   while `player.mantle` is set — no gravity, no collision, no walking, no
   firing — so a pull-up cannot be interrupted halfway and leave you standing
@@ -3092,11 +3135,15 @@ Suggested next work, in the order I would do it:
    scrip) are first guesses against about 1,500 points a wave early on.
    Whether a run can afford the plate carrier before wave 4, and whether
    anyone buys optics, is a play question.
-4. **Spawn on the floors, and hold them.** Nothing starts a wave up a
-   building, and a marksman's perch is still a roof or a terrace; a floor
-   with windows onto a junction is a better one, and a floor is where a
-   holdout would be found. The stair posts cover a shop's stair door; a
-   floor's door off its landing could be covered the same way.
+4. **Make rubble something a body can climb, or a wall to the route
+   field.** Most heap tiers are a 0.6 m step at a body's reach (the rubble
+   invariant), so the field leads hostiles and holdouts into heaps they
+   stand against. Two ways: register heaps so each tier stands 0.31 m proud
+   of the one above where the shape allows, and bake what is left over a
+   step as a wall; or bake only the sheerest (96 tiers over 0.9 m on seed
+   1). Either has to keep `the route field reaches the whole sector` at
+   0.995, and moves every hostile's route, so the scripted run's noise floor
+   applies.
 5. **A floored building's look.** The concrete frame reads as a building
    you can go into, which is the point, but all 13 are the same grey;
    giving the frame a facade style's colour, or a band of the facade's

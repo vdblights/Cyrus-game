@@ -4912,6 +4912,167 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
   return { back: `${r.back.home}/${r.back.floors}, ${r.back.behind} behind the shaft`, drop: r.drop, floors: r.floors, windows: r.windows, walked: `${r.walked}/${r.walks}`, follow: r.follow };
 });
 
+check('a marksman holds a window over the street, and a holdout is found upstairs and walked down', async (page) => {
+  // The floors are somewhere to fight from and somewhere to go. A marksman's
+  // perch is a roof, a terrace or now a floor's window (`findWindowPerches`
+  // in `main.js`: one a building, the window that sees most of the street),
+  // and it holds the window as it holds a roof. Every other rescue puts the
+  // holdout up a building (`floorSite` in `objectives.js`), counted only from
+  // its own floor, and once cut loose it comes off the floor and down the
+  // stair by the hostiles' own walk (`_stairWalk` from `_follow`).
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world, p = g.player, O = g.objectives;
+    g.startRun();
+    g.input.locked = true;
+    g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
+    g.wave = 6;
+    const clear = () => { for (const e of g.enemies) { e.alive = false; e.group.visible = false; } g.enemies.length = 0; };
+    const stand = (x, z, y) => { p.reset(x, z); p.feetY = y; p.position.y = y + p.eyeHeight; p.maxHealth = p.health = 1e6; };
+    const out = { stairs: w.stairs.length, windows: g.windowPerches.length, onFloor: 0, view: [], hold: [] };
+
+    // every window perch on a floor, and seeing the street about as well as
+    // the best window in its building does — judged on a fan of the check's
+    // own, wider and denser than the one it was picked by
+    const view = (x, y, z, wx, wz) => {
+      const nx = wx - x, nz = wz - z, n = Math.hypot(nx, nz);
+      let seen = 0, asked = 0;
+      for (let a = -0.6; a <= 0.61; a += 0.15) for (const d of [10, 16, 24, 34, 46, 60]) {
+        const c = Math.cos(a), s = Math.sin(a), dx = (nx * c - nz * s) / n, dz = (nz * c + nx * s) / n;
+        const tx = wx + dx * d, tz = wz + dz * d;
+        if (Math.abs(tx) > w.bounds - 1 || Math.abs(tz) > w.bounds - 1) continue;
+        asked++;
+        if (w.lineOfSight(x, y + 1.5, z, tx, w.groundHeight(tx, tz, 0.12, 0.6) + 1.0, tz)) seen++;
+      }
+      return seen / Math.max(1, asked);
+    };
+    for (const q of g.windowPerches) {
+      const on = w.stairAt(q.x, q.y + 0.1, q.z);
+      if (on && on.floor && Math.abs(on.floor.y - q.y) < 0.05) out.onFloor++;
+      let best = 0;
+      for (const f of w.floors) {
+        if (!on || f.stair !== on.stair) continue;
+        for (const win of f.windows) {
+          const x = win.x - win.nx * 0.95, z = win.z - win.nz * 0.95, y = w.groundHeight(x, z, 0.12, f.floor + 0.5);
+          if (Math.abs(y - f.floor) > 0.05 || w.blocked(x, z, 0.5, y + 0.9)) continue;
+          best = Math.max(best, view(x, y, z, win.x, win.z));
+        }
+      }
+      out.view.push(+(view(q.x, q.y, q.z, q.wx, q.wz) / Math.max(best, 1e-6)).toFixed(2));
+    }
+
+    // a marksman on each, the player in the street in front of it: it stays
+    // where it was put and fires out of the window
+    for (const q of g.windowPerches) {
+      clear();
+      const nx = q.wx - q.x, nz = q.wz - q.z, n = Math.hypot(nx, nz);
+      let spot = null;
+      for (const d of [20, 28, 15, 35, 12]) {
+        const tx = q.wx + nx / n * d, tz = q.wz + nz / n * d, fy = w.groundHeight(tx, tz, 0.12, 0.6);
+        if (fy > 0.5 || w.blocked(tx, tz, 0.5, fy + 0.9)) continue;
+        if (w.lineOfSight(q.x, q.y + 1.5, q.z, tx, fy + 1.6, tz)) { spot = { x: tx, z: tz }; break; }
+      }
+      if (!spot) { out.hold.push({ spot: false }); continue; }
+      p.reset(spot.x, spot.z); p.maxHealth = p.health = 1e6;
+      const e = g.spawnEnemy('marksman');
+      e.pos.set(q.x, q.y, q.z); e.group.position.copy(e.pos); e.markWatchdog(p);
+      e.alert(g.time);
+      let shots = 0;
+      const shoot = e._shoot.bind(e);
+      e._shoot = (...a) => { shots++; return shoot(...a); };
+      window.__step(6);
+      out.hold.push({ moved: +Math.hypot(e.pos.x - q.x, e.pos.z - q.z).toFixed(2), dy: +(e.pos.y - q.y).toFixed(2), shots, alive: e.alive });
+    }
+    clear();
+
+    // a marksman's perch is a window about as often as there are windows
+    p.reset(0, 0);
+    const near = (q) => { const d = Math.hypot(q.x - p.position.x, q.z - p.position.z); return d >= 16 && d <= 95; };
+    const winOk = g.windowPerches.filter(near).length, allOk = winOk + g.perches.filter(near).length;
+    let atWindow = 0;
+    for (let i = 0; i < 200; i++) if (g.windowPerches.includes(g.findPerch())) atWindow++;
+    out.picks = { atWindow, expect: Math.round(200 * winOk / Math.max(1, allOk)) };
+
+    // the rescues alternate: a shop, then a floor, and the handler says so
+    O.reset();
+    const first = O.start('rescue');
+    out.firstUp = !!first?.upstairs;
+    O.finish(false);
+    g.hud.clearRadio();
+    const second = O.start('rescue');
+    const on2 = second && w.stairAt(second.x, second.y + 0.1, second.z);
+    out.secondUp = !!second?.upstairs && !!on2?.floor && Math.abs(on2.floor.y - second.y) < 0.05;
+    out.said = g.hud.radioLog.join(' | ');
+    O.finish(false);
+
+    // and from every floor of every building: not counted from the level
+    // under it, cut loose on it, off the floor and out of the building, and
+    // to a pickup
+    const real = O._inBand.bind(O);
+    out.rescue = [];
+    for (const rec of w.floors.filter((f) => f.stair)) {
+      clear();
+      O._inBand = (list, def, at) => list.includes(rec) ? rec : real(list, def, at);
+      O.rescues = 1;
+      const o = O.start('rescue');
+      const row = { y: +rec.floor.toFixed(1) };
+      out.rescue.push(row);
+      if (!o || !o.upstairs) { row.sited = false; if (O.active) O.finish(false); continue; }
+      const s = rec.stair, k = s.floors.findIndex((f) => Math.abs(f.y - rec.floor) < 0.01);
+      const below = k > 0 ? s.floors[k - 1].y : s.room.floor;
+      stand(o.x + 0.5, o.z, below);
+      window.__step(1);
+      row.fromBelow = +o.progress.toFixed(2);
+      const h = o.target;
+      stand(o.x + 1.2, o.z, o.y);
+      window.__step(o.def.channel + 0.4);
+      row.loose = o.stage === 'escort';
+      if (!row.loose) { O.finish(false); continue; }
+      const pick = { x: o.x, z: o.z };
+      p.reset(pick.x, pick.z); p.maxHealth = p.health = 1e6;
+      let t = 0;
+      while (O.active && t < 90) {
+        window.__step(1); t++;
+        if (row.out === undefined && !h.stair && h.pos.y < 1) row.out = t;
+      }
+      row.done = !O.active && g.op.rescue > 0;
+      row.took = t;
+      if (!row.done) row.at = [Math.round(h.pos.x), +h.pos.y.toFixed(1), Math.round(h.pos.z)];
+      g.op.rescue = 0;
+      if (O.active) O.finish(false);
+    }
+    O._inBand = real;
+    return out;
+  });
+  expect(r.windows >= r.stairs - 2, `only ${r.windows} of ${r.stairs} stairwell buildings have a window for a marksman`);
+  expect(r.onFloor === r.windows, `${r.windows - r.onFloor} of ${r.windows} window perches are not on a floor`);
+  const blind = r.view.filter((v) => v < 0.5);
+  expect(blind.length === 0, `${blind.length} window perches see under half what their building's best window does: ${r.view.join(', ')}`);
+  const held = r.hold.filter((h) => h.spot !== false && h.moved < 0.3 && Math.abs(h.dy) < 0.05 && h.alive);
+  const fired = r.hold.filter((h) => h.shots > 0);
+  expect(held.length === r.windows, `a marksman held ${held.length} of ${r.windows} windows: ${JSON.stringify(r.hold)}`);
+  expect(fired.length === r.windows, `a marksman fired out of ${fired.length} of ${r.windows} windows: ${JSON.stringify(r.hold)}`);
+  expect(r.picks.atWindow >= r.picks.expect * 0.6 && r.picks.expect > 0,
+    `findPerch chose a window ${r.picks.atWindow} times in 200, against about ${r.picks.expect}`);
+  expect(!r.firstUp && r.secondUp, `the first rescue upstairs ${r.firstUp}, the second ${r.secondUp}`);
+  expect(/stair/i.test(r.said), `the handler did not say the holdout is up a stair: ${r.said}`);
+  const n = r.rescue.length;
+  const sited = r.rescue.filter((x) => x.sited !== false);
+  expect(n >= 20 && sited.length === n, `a holdout was sited on ${sited.length} of ${n} floors`);
+  const below = sited.filter((x) => x.fromBelow > 0);
+  expect(below.length === 0, `${below.length} floors' holdouts were cut loose from the level under them: ${JSON.stringify(below.slice(0, 3))}`);
+  const loose = sited.filter((x) => x.loose);
+  expect(loose.length === n, `a holdout was cut loose on ${loose.length} of ${n} floors`);
+  const out = loose.filter((x) => x.out !== undefined && x.out <= 45);
+  expect(out.length === n, `a holdout came down out of ${out.length} of ${n} buildings: ${JSON.stringify(loose.filter((x) => !(x.out <= 45)).slice(0, 3))}`);
+  // Two stalls are allowed after the building, in the street: a heap of
+  // rubble too steep to climb that the route field reads as open (see the
+  // rubble invariant). Every one seen so far was one of those.
+  const done = loose.filter((x) => x.done);
+  expect(done.length >= n - 2, `a holdout reached the pickup from ${done.length} of ${n} floors: ${JSON.stringify(loose.filter((x) => !x.done))}`);
+  return { rescued: `${done.length}/${n}`, outBy: Math.max(...out.map((x) => x.out)), stalls: loose.filter((x) => !x.done).map((x) => x.at),
+    windows: `${r.windows}/${r.stairs}`, picks: r.picks, view: r.view.join(' ') };
+});
+
 check('a juggernaut stoops up a stairwell after you, and a warlord stays down', async (page) => {
   // A flight's headroom is a lap less the slab, at most the 2.5 m doors, and
   // a juggernaut is 2.57 m of body, so none was ever sent up a stair. It
