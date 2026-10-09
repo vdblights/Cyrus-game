@@ -25,6 +25,22 @@
  */
 export const SUPPORT_RADIUS = 0.12;
 
+/**
+ * How far out a heap of rubble takes your weight. A heap is registered as a
+ * stack of tiers a third of a metre deep, each the shape of the mound at
+ * that height, so a tier is nested only a little inside the one below — a
+ * few centimetres where a mound is steep, none where a fallen slab leans. A
+ * body is stopped at its radius by a tier over a step above its feet, and a
+ * foot (`SUPPORT_RADIUS`) only lifts it onto a tier under its middle, so a
+ * pair of tiers nested closer than 0.31 m was one tall step nothing walked
+ * up: the median on seed 1 was 0.62 m. Rubble is loose and irregular, and
+ * standing out over its edge reads as standing on it, so a heap holds a body
+ * up wherever the body touches it, which makes a mound what its tiers were
+ * cut to be, something you scramble up. Only heaps: everywhere else a foot
+ * is a foot.
+ */
+export const HEAP_REACH = 0.45;
+
 /** Room a body needs over its feet to stand: a mantle onto less is refused. */
 export const HEADROOM = 1.9;
 
@@ -296,22 +312,24 @@ export class World {
    */
   groundHeight(x, z, radius, ceiling, under = ceiling) {
     let best = 0;
-    const rSq = radius * radius;
-    for (const b of near(this, x - radius, z - radius, x + radius, z + radius)) {
+    // a heap takes your weight further out than anything else does
+    const wide = Math.max(radius, HEAP_REACH);
+    for (const b of near(this, x - wide, z - wide, x + wide, z + wide)) {
       if (b.top <= best || (b.top > ceiling && !b.surface)) continue;
       // A box off the ground is a ceiling, never a floor — unless it is a
       // deck (a stair tread, a landing, a roof you reach by them), and then
       // only from at or above its underside: `under` is how high the asker
       // is, so a body under a flight is not stood on the one over its head.
       if (b.base && (!b.deck || b.base > under)) continue;
-      if (x <= b.minX - radius || x >= b.maxX + radius
-          || z <= b.minZ - radius || z >= b.maxZ + radius) continue;
+      const r = b.heap ? wide : radius;
+      if (x <= b.minX - r || x >= b.maxX + r
+          || z <= b.minZ - r || z >= b.maxZ + r) continue;
       const rx = x - b.cx, rz = z - b.cz;
       const lx = b.cos * rx - b.sin * rz;
       const lz = b.sin * rx + b.cos * rz;
       const dx = Math.max(0, Math.abs(lx) - b.hx);
       const dz = Math.max(0, Math.abs(lz) - b.hz);
-      if (dx * dx + dz * dz >= rSq) continue;
+      if (dx * dx + dz * dz >= r * r) continue;
       if (!b.surface) { best = b.top; continue; }
       // a floor whose top is not level — a pavement with its kerb dropped —
       // answers for itself, with the highest of it within reach

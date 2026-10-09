@@ -3152,11 +3152,45 @@ check('rubble stops you and stops a bullet, and you can climb it', async (page) 
       walks.push({ dist: +closest.toFixed(2), up: +up.toFixed(2) });
     }
 
+    // And up every heap in the sector: walk at each summit from the first
+    // level approach and see how high the feet get. A tier is cut to the
+    // mound's shape at its height, so it nests only a little inside the one
+    // under it, and a foot held up only by what is under its middle was
+    // stopped at its radius by most pairs of them: one tall step.
+    const tiers = W.boxes.filter((b) => b.heap);
+    const inside = (b, x, z) => {
+      const rx = x - b.cx, rz = z - b.cz;
+      return Math.abs(b.cos * rx - b.sin * rz) <= b.hx && Math.abs(b.sin * rx + b.cos * rz) <= b.hz;
+    };
+    const summits = tiers.filter((b) => b.top > 0.6 && !tiers.some((o) => o !== b && o.top > b.top && inside(o, b.cx, b.cz)));
+    const climbs = { summits: summits.length, walked: 0, reached: 0, short: [] };
+    for (const t of summits) {
+      const R2 = Math.max(t.hx, t.hz) + 2.6;
+      for (const a of [0, Math.PI / 2, Math.PI, 1.5 * Math.PI]) {
+        const sx = t.cx + Math.cos(a) * R2, sz = t.cz + Math.sin(a) * R2;
+        const fy = W.groundHeight(sx, sz, 0.12, 0.6);
+        if (fy > 0.5 || W.blocked(sx, sz, 0.5, fy + 0.3)) continue;
+        g.player.reset(sx, sz);
+        let peak = g.player.feetY;
+        g.input.keys.add('KeyW');
+        for (let f = 0; f < 150 && peak < t.top - 0.45; f++) {
+          g.player.yaw = Math.atan2(-(t.cx - g.player.position.x), -(t.cz - g.player.position.z)); g.player.pitch = 0;
+          g.time += 1 / 30; g.player.health = 100; g.step(1 / 30);
+          peak = Math.max(peak, g.player.feetY);
+        }
+        g.input.keys.delete('KeyW');
+        climbs.walked++;
+        if (peak >= t.top - 0.45) climbs.reached++;
+        else if (climbs.short.length < 5) climbs.short.push({ top: +t.top.toFixed(2), peak: +peak.toFixed(2), at: [Math.round(t.cx), Math.round(t.cz)] });
+        break;
+      }
+    }
+
     // and a shot along the ground at it, from three metres out
     const angs = [0, 1, 2, 3].map((k) => k * Math.PI / 2 + 0.4);
     const hit = sight(heap, angs.find((a) => sight(heap, a)?.object === heap));
     const shot = hit ? { at: +hit.distance.toFixed(2), heap: hit.object === heap } : null;
-    return { ghostArea: +ghostArea.toFixed(1), heaps: heaps.length, R: +R.toFixed(2), shot, walks, ghost };
+    return { ghostArea: +ghostArea.toFixed(1), heaps: heaps.length, R: +R.toFixed(2), shot, walks, climbs, ghost };
   });
   // Seed 1: about 660 m² of rubble at body height with nothing under it
   // before; under 10 now, which is the low rim of the heaps at ankle height.
@@ -3169,7 +3203,14 @@ check('rubble stops you and stops a bullet, and you can climb it', async (page) 
     // walking at a heap you are stopped at its foot, or you scramble up it
     expect(w.dist > r.R * 0.45 || w.up > 0.25, `walked ${w.dist} m from the centre of a ${r.R} m heap at ${w.up} m up — inside it`);
   }
-  return r;
+  // A heap holds a body up wherever the body touches it (`HEAP_REACH`).
+  // Seed 1: 116 of 151 summits walked up, against 46 when a heap held you
+  // only under your middle. What is left is the leaning slabs, whose tiers
+  // rise 0.6 m apiece and overhang the street: a wall, walked round.
+  const c = r.climbs;
+  expect(c.walked >= c.summits * 0.9 && c.reached >= c.walked * 0.65,
+    `walked up ${c.reached} of ${c.walked} heaps of rubble (${c.summits} summits): ${JSON.stringify(c.short)}`);
+  return { ...r, ghost: undefined };
 });
 
 check('every prop stands clear of the rest, inside the sector, and on its floor', async (page) => {
