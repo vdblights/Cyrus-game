@@ -1510,10 +1510,10 @@ These each cost real debugging time. Changing them needs a reason.
   were in: a "same floor as the player" gate on following, and a probe at
   the feet for a step too high, which helped one heap and turned a holdout
   away from another it would have slid past. Shop rescues, all 21 rooms
-  under three draws: 62 of 63 before. Floor rescues on seed 1 reach the
-  pickup from all 32 floors in the check's draw; under other draws a few
-  stop against a steep heap in the street — see the rubble invariant —
-  which is why the check allows two. While the player is
+  under three draws: 62 of 63 before, 63 after. Floor rescues under the
+  same three: 95 of 96, and the one short stopped against a steep heap in
+  the street after the building — see the rubble invariant — which is why
+  the check allows two. While the player is
   on a floor, the hostiles' cover posts are the shop's stair door
   (`roomAt` reads a floor as its stair's shop), which is the floor's only
   way down, so a floor's landing needs no posts of its own.
