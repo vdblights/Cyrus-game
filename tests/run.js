@@ -3075,6 +3075,48 @@ check('a wreck fits the box you collide with, and stands on its wheels', async (
   return r;
 });
 
+check('a closed block has shopfronts onto its streets, not a band of glass round it', async (page) => {
+  // Every closed tower's ground floor was one box of dark glass wrapped round
+  // the block — a black stripe along every street and down every side onto
+  // the next building. The faces onto a street are shopfronts now
+  // (`storefront`), bays with glass in most of them, and the faces onto the
+  // next block are plain. This reads the glass the merged city draws on
+  // each face of every closed block, under 3 m: some on most street faces,
+  // and none at all on a face that does not look onto a street.
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world;
+    const faces = [];
+    for (const f of w.storefronts || []) {
+      faces.push({ ax: 'z', at: f.z - f.bd / 2, s: -1, lo: f.x - f.bw / 2, hi: f.x + f.bw / 2, street: f.street[0], n: 0 });
+      faces.push({ ax: 'z', at: f.z + f.bd / 2, s: 1, lo: f.x - f.bw / 2, hi: f.x + f.bw / 2, street: f.street[1], n: 0 });
+      faces.push({ ax: 'x', at: f.x - f.bw / 2, s: -1, lo: f.z - f.bd / 2, hi: f.z + f.bd / 2, street: f.street[2], n: 0 });
+      faces.push({ ax: 'x', at: f.x + f.bw / 2, s: 1, lo: f.z - f.bd / 2, hi: f.z + f.bd / 2, street: f.street[3], n: 0 });
+    }
+    for (const m of g.city.children) {
+      if (m.material?.userData?.name !== 'glass') continue;
+      const p = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : p.count;
+      const at = (k) => (idx ? idx.getX(k) : k);
+      for (let t = 0; t < n; t += 3) {
+        let cx = 0, cy = 0, cz = 0;
+        for (let k = 0; k < 3; k++) { cx += p.getX(at(t + k)) / 3; cy += p.getY(at(t + k)) / 3; cz += p.getZ(at(t + k)) / 3; }
+        if (cy > 3) continue;
+        for (const f of faces) {
+          const d = (f.ax === 'z' ? cz - f.at : cx - f.at) * f.s, u = f.ax === 'z' ? cx : cz;
+          if (d > -0.01 && d < 0.15 && u > f.lo && u < f.hi) f.n++;
+        }
+      }
+    }
+    const street = faces.filter((f) => f.street), side = faces.filter((f) => !f.street);
+    return { blocks: faces.length / 4, street: street.length, glazed: street.filter((f) => f.n > 0).length,
+      side: side.length, wrapped: side.filter((f) => f.n > 0).length };
+  });
+  expect(r.blocks >= 20 && r.street >= 20, `only ${r.blocks} closed blocks with ${r.street} street faces to read`);
+  expect(r.glazed >= r.street * 0.8, `${r.glazed} of ${r.street} street faces of closed blocks have a shop window`);
+  expect(r.wrapped === 0, `${r.wrapped} of ${r.side} faces onto the next block are glazed — the band of glass is back`);
+  return r;
+});
+
 check('steel is folded, a ruin is broken at the top, and rubble is a heap', async (page) => {
   // Three things that read as made, in seven rendered frames. A container
   // and a shop's shutter were boxes wearing painted folds — under one low
@@ -3445,6 +3487,45 @@ check('what is set into the street lies flush on it, road or pavement', async (p
     expect(s.worst < 0.03, `a ${name} corner stands ${s.worst} m off what is under it`);
     expect(s.wrongSurface === 0, `${s.wrongSurface} ${name} corners are on the wrong side of a kerb`);
   }
+  return r;
+});
+
+check('a road arrow points the way its lane runs, its head to a point', async (page) => {
+  // An arrow is a shaft and two barbs raked back from its tip. The barbs were
+  // turned by `side * rake` whichever way the lane ran, so every arrow for
+  // traffic running toward −v, half of them, had its barbs mirrored across
+  // the shaft — splayed half a metre wide at the tip, an inverted Y, reported
+  // from a screenshot as an arrow with its head on backwards. This reads the
+  // merged paint round each arrow's tip: within 12 cm of it the paint is no
+  // wider than the shaft and the barbs' roots, and 0.6-0.85 m back the barbs
+  // reach out to either side.
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world;
+    const paint = g.city.children.filter((m) => m.material?.userData?.name === 'paint');
+    const pts = [];
+    for (const m of paint) {
+      const p = m.geometry.attributes.position;
+      for (let i = 0; i < p.count; i++) pts.push([p.getX(i), p.getZ(i)]);
+    }
+    const out = { arrows: (w.arrows || []).length, pointed: 0, barbed: 0, bad: [] };
+    for (const a of w.arrows || []) {
+      let tipWide = 0, backWide = 0;
+      for (const [x, z] of pts) {
+        const u = a.axisX ? z : x, v = a.axisX ? x : z;
+        const du = Math.abs(u - a.u), back = (a.tip - v) * a.fwd;
+        if (du > 0.8 || back < -0.3 || back > 2) continue;
+        if (back < 0.12) tipWide = Math.max(tipWide, du);
+        if (back > 0.6 && back < 0.85) backWide = Math.max(backWide, du);
+      }
+      if (tipWide < 0.2) out.pointed++;
+      if (backWide > 0.4) out.barbed++;
+      if ((tipWide >= 0.2 || backWide <= 0.4) && out.bad.length < 4) out.bad.push({ fwd: a.fwd, tip: +tipWide.toFixed(2), back: +backWide.toFixed(2) });
+    }
+    return out;
+  });
+  expect(r.arrows >= 10, `only ${r.arrows} arrows painted`);
+  expect(r.pointed === r.arrows && r.barbed === r.arrows,
+    `${r.arrows - r.pointed} of ${r.arrows} arrows splay at the tip and ${r.arrows - r.barbed} have no barbs behind it: ${JSON.stringify(r.bad)}`);
   return r;
 });
 
