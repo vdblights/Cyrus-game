@@ -310,6 +310,54 @@ function ringGeo(w, h, d, wall, tile = TILE.concrete) {
 }
 
 /**
+ * A crate, `w` x `h` x `d` about its middle: boards in a frame. It was a box
+ * wearing a container's painted folds, so a stack of crates in a shop read
+ * as a stack of small containers. Now the body is boarded in 2 cm behind a
+ * frame of battens along all twelve edges, and each side carries a diagonal
+ * brace unless it is a painted crate (`brace`), whose face carries its
+ * stencil. The frame comes to the box the crate registers and no further, so
+ * its collider is unchanged. Every board's grain runs along it, and every
+ * face is centred on the tile, which is where a painted crate's stencil is.
+ * The battens never overlap one another: the ones along X run the full
+ * width, the rest stop at them, so no two faces share a plane and fight.
+ */
+function crateGeo(w, h, d, { brace = true } = {}) {
+  const e = 0.022, b = Math.min(0.09, Math.max(0.05, Math.min(w, h, d) * 0.09));
+  const board = (gw, gh, gd, axis, x = 0, y = 0, z = 0) => {
+    const g = new THREE.BoxGeometry(gw, gh, gd);
+    const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv;
+    for (let i = 0; i < pos.count; i++) {
+      const n = [Math.abs(nor.getX(i)), Math.abs(nor.getY(i)), Math.abs(nor.getZ(i))];
+      const p = [pos.getX(i) + x, pos.getY(i) + y, pos.getZ(i) + z];
+      const ni = n[0] > 0.5 ? 0 : n[1] > 0.5 ? 1 : 2;
+      const free = [0, 1, 2].filter((a) => a !== ni);
+      // grain along the board; on its end, and on the body, along X or Z
+      const ua = free.includes(axis) ? axis : free.includes(0) ? 0 : 2;
+      const va = free.find((a) => a !== ua);
+      uv.setXY(i, 0.5 + p[ua] / TILE.wood, 0.5 + p[va] / TILE.wood);
+    }
+    return g.translate(x, y, z);
+  };
+  const parts = [board(w - 2 * e, h - 2 * e, d - 2 * e, -1)];
+  const X = w / 2 - b / 2, Y = h / 2 - b / 2, Z = d / 2 - b / 2;
+  for (const sy of [-1, 1]) for (const sz of [-1, 1]) parts.push(board(w, b, b, 0, 0, sy * Y, sz * Z));
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) parts.push(board(b, h - 2 * b, b, 1, sx * X, 0, sz * Z));
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) parts.push(board(b, b, d - 2 * b, 2, sx * X, sy * Y, 0));
+  if (brace) {
+    // a brace lies 3 mm behind the frame's face, so where its ends run
+    // under the battens the batten is in front, not level with it
+    const t = e - 0.006, bw = b * 0.9;
+    for (const s of [-1, 1]) {
+      const a = Math.atan2(h - 2 * b, w - 2 * b) * s;
+      parts.push(board(Math.hypot(w - 2 * b, h - 2 * b), bw, t, 0).rotateZ(a).translate(0, 0, s * (d / 2 - 0.003 - t / 2)));
+      const c = Math.atan2(h - 2 * b, d - 2 * b) * s;
+      parts.push(board(t, bw, Math.hypot(d - 2 * b, h - 2 * b), 2).rotateX(c).translate(s * (w / 2 - 0.003 - t / 2), 0, 0));
+    }
+  }
+  return mergeIntoOne(parts);
+}
+
+/**
  * Cylinder with UVs at a declared world scale, the way `boxGeo` does it.
  *
  * Three's own unwrap runs 0..1 around the barrel and 0..1 up it, so a 0.4 m
@@ -1954,6 +2002,23 @@ export const CITY_PAINT = [
     },
   },
   {
+    label: 'Knocking the crates together',
+    weight: 5,
+    // Bare boards, silvered, stained, and one painted olive: four, so each
+    // stands where one of the rusts used to (`crateFor`)
+    run(m) {
+      m.crates = [0, 1, 2, 3].map((v) => {
+        const key = 'wood' + v, tex = TEX.woodCrate(v);
+        return new THREE.MeshStandardMaterial({
+          map: tex, normalMap: TEX.normalFrom(tex, 1.4, key, 1),
+          normalScale: new THREE.Vector2(1, 1),
+          roughnessMap: TEX.surfaceFrom(tex, { dark: 1, lite: 0.78 }, key),
+          roughness: 1, metalness: 0, envMapIntensity: 0.55, vertexColors: true,
+        });
+      });
+    },
+  },
+  {
     label: 'Painting the metal, dirtying the glass',
     weight: 2,
     run(m) {
@@ -2219,6 +2284,12 @@ function labelMaterials(m) {
   // twin: whichever of the two a seed's props end up wearing, the batches
   // cost the stream what the rust alone always did.
   m.rustSheets.forEach((mat, i) => { label(mat, 'rustsheet' + i, TILE.rust); mat.userData.billAs = m.rusts[i]; });
+  // A crate is worn where its rust used to be, and billed as it, the same way
+  m.crates.forEach((mat, i) => {
+    label(mat, 'wood' + i, TILE.wood);
+    mat.userData.billAs = m.rusts[i];
+    mat.userData.crate = { brace: i !== 2 };
+  });
   label(m.metalMat, 'metal', TILE.metal);
   label(m.glassMat, 'glass', TILE.glass);
   label(m.asphaltMat, 'asphalt', TILE.asphalt);
@@ -2256,7 +2327,7 @@ export function buildCity(scene, painted = null) {
 
   const mats = painted || paintCity();
   labelMaterials(mats);
-  const { facades, infills, concreteMat, darkConcrete, debrisMat, rusts, rustSheets, metalMat, glassMat,
+  const { facades, infills, concreteMat, darkConcrete, debrisMat, rusts, rustSheets, crates, metalMat, glassMat,
     asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, ironMat, gratingMat, railMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat, shardMat } = mats;
 
@@ -2265,6 +2336,8 @@ export function buildCity(scene, painted = null) {
     rusts[Math.floor(hash2(Math.round(x), Math.round(z), 21) * rusts.length)];
   /** The same paint, as a plain sheet, for a part whose folds are geometry. */
   const sheetFor = (x, z) => rustSheets[rusts.indexOf(rustFor(x, z))];
+  /** The same pick again, as the boards of a crate. */
+  const crateFor = (x, z) => crates[rusts.indexOf(rustFor(x, z))];
 
   /**
    * Every shape the street furniture is cut from, minted once.
@@ -3095,8 +3168,12 @@ export function buildCity(scene, painted = null) {
       const room = Math.max(0, sw / 2 - 0.55 - 0.6 - clear);   // inside the lip
       const cx = x + Math.sign(rx || 1) * (clear + (Math.abs(rx) / (sw / 4)) * room);
       const cz = z + rz;
-      const crate = new THREE.Mesh(boxGeo(1.2, 1.2, 1.2, TILE.rust), rustFor(x, z));
+      // boards in a frame now, built aside and paying the box it was
+      spend(UUID_COST);
+      const mat = crateFor(x, z);
+      const crate = new THREE.Mesh(reserve(() => crateGeo(1.2, 1.2, 1.2, mat.userData.crate)), mat);
       crate.position.set(cx, h + 0.6, cz);
+      (w.crates ||= []).push({ x: cx, y: h, z: cz, w: 1.2, h: 1.2, d: 1.2 });
       crate.castShadow = true;
       crate.userData.tint = tintAt(cx, cz, 2, 0.12);
       g.add(crate);
@@ -3293,10 +3370,10 @@ export function buildCity(scene, painted = null) {
       const along = c.gw > c.gd, s = 0.72;
       for (const k of [-1, 1]) {
         const px = c.px + (along ? k * 0.4 : 0), pz = c.pz + (along ? 0 : k * 0.4);
-        part(s, s, s, px, KERB, pz, rustFor(px, pz), true, TILE.rust);
+        part(s, s, s, px, KERB, pz, crateFor(px, pz), true, TILE.wood);
       }
       const lean = (r(121) - 0.5) * 0.3;
-      part(0.62, 0.62, 0.62, c.px + (along ? lean : 0), KERB + s, c.pz + (along ? 0 : lean), rustFor(c.px, c.pz + 1), true, TILE.rust);
+      part(0.62, 0.62, 0.62, c.px + (along ? lean : 0), KERB + s, c.pz + (along ? 0 : lean), crateFor(c.px, c.pz + 1), true, TILE.wood);
       tag(from);
       pieces.push({ x: c.px, z: c.pz, w: c.gw, d: c.gd });
     }
@@ -3324,7 +3401,7 @@ export function buildCity(scene, painted = null) {
       const o = site(0.75, 0.75, 141);
       if (o) {
         const from = w.boxes.length;
-        part(0.75, 0.75, 0.75, o.px, KERB, o.pz, rustFor(o.px, o.pz), true, TILE.rust);
+        part(0.75, 0.75, 0.75, o.px, KERB, o.pz, crateFor(o.px, o.pz), true, TILE.wood);
         tag(from);
         pieces.push({ x: o.px, z: o.pz, w: 0.75, d: 0.75 });
       }
@@ -3354,7 +3431,10 @@ export function buildCity(scene, painted = null) {
     const r = (s) => hash2(Math.round(x * 3), Math.round(z * 3), 200 + s);
     const T = 0.35, PIER = 0.6, under = GROUND - SLAB;
     const part = (gw, gh, gd, px, py, pz, mat, collide, tile = TILE.concrete, opts = null) => {
-      const m = new THREE.Mesh(boxGeo(gw, gh, gd, tile, opts || (gh > 1.5 ? { bands: 3 } : {})), mat);
+      const geo = mat.userData.crate ? crateGeo(gw, gh, gd, mat.userData.crate)
+        : boxGeo(gw, gh, gd, tile, opts || (gh > 1.5 ? { bands: 3 } : {}));
+      if (mat.userData.crate) (w.crates ||= []).push({ x: px, y: py, z: pz, w: gw, h: gh, d: gd });
+      const m = new THREE.Mesh(geo, mat);
       m.position.set(px, py + gh / 2, pz);
       m.castShadow = m.receiveShadow = true;
       m.userData.tint = tint;
@@ -3548,7 +3628,7 @@ export function buildCity(scene, painted = null) {
         const c = 0.6 + r(80 + i) * 0.3;
         const along = end * (f.len / 2 - c / 2 - 0.2), inward = f.at - f.s * (T / 2 + c / 2 + 0.1);
         const px = f.along === 'x' ? x + along : inward, pz = f.along === 'x' ? inward : z + along;
-        furnish(c, c, c, px, KERB, pz, rustFor(px, pz), TILE.rust);
+        furnish(c, c, c, px, KERB, pz, crateFor(px, pz), TILE.wood);
       }
     }
 
@@ -3931,6 +4011,10 @@ export function buildCity(scene, painted = null) {
     const byMat = new Map();
     const put = (mat, geo) => { let a = byMat.get(mat); if (!a) byMat.set(mat, a = []); a.push(geo); };
     const box = (gw, gh, gd, px, py, pz, tile) => boxGeo(gw, gh, gd, tile).translate(px, py + gh / 2, pz);
+    const crate = (c, px, py, pz, mat) => {
+      (w.crates ||= []).push({ x: px, y: py, z: pz, w: c, h: c, d: c });
+      return crateGeo(c, c, c, mat.userData.crate).translate(px, py + c / 2, pz);
+    };
     const want = 3 + (r(0) < 0.5 ? 1 : 0);
     const placed = [];
     for (let t = 0; t < 16 && placed.length < want; t++) {
@@ -3951,15 +4035,16 @@ export function buildCity(scene, painted = null) {
         }
         w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, F + 0.78, F);
       } else if (kind === 'stack') {
-        const rust = rustFor(px, pz);
+        const wood = crateFor(px, pz);
         const ax = turn ? 0 : 0.38, az = turn ? 0.38 : 0;
-        put(rust, box(0.72, 0.72, 0.72, px - ax, F, pz - az, TILE.rust));
-        put(rust, box(0.72, 0.72, 0.72, px + ax, F, pz + az, TILE.rust));
-        put(rust, box(0.62, 0.62, 0.62, px - ax, F + 0.72, pz - az, TILE.rust));
+        put(wood, crate(0.72, px - ax, F, pz - az, wood));
+        put(wood, crate(0.72, px + ax, F, pz + az, wood));
+        put(wood, crate(0.62, px - ax, F + 0.72, pz - az, wood));
         w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, F + 0.72, F);
         w.addDeck(px - ax - 0.31, pz - az - 0.31, px - ax + 0.31, pz - az + 0.31, F + 1.34, F + 0.72);
       } else {
-        put(rustFor(px, pz), box(0.72, 0.72, 0.72, px, F, pz, TILE.rust));
+        const wood = crateFor(px, pz);
+        put(wood, crate(0.72, px, F, pz, wood));
         w.addDeck(q.minX, q.minZ, q.maxX, q.maxZ, F + 0.72, F);
       }
     }

@@ -71,6 +71,9 @@ export const TILE = {
   ammoCan: 0.5,
   medCase: 0.5,
   frag: 0.25,
+  // A crate's boards: eight to a metre, so a board is 12.5 cm and a 0.72 m
+  // crate's side is six of them, its frame and brace cut from the same tile.
+  wood: 1.0,
 };
 
 /** Windows per facade tile. `city.js` snaps wall UVs to these. */
@@ -1469,6 +1472,85 @@ export function crate() {
     splotches(ctx, s, 22, 'rgba(120,70,36,0.26)', 2, 8);
     grit(ctx, s, 500, '236,232,224', '28,24,20', 1.2);
     noise(ctx, s, 14);
+    return c;
+  });
+}
+
+/**
+ * The boards of a crate, eight to the tile and running along U.
+ *
+ * A crate wore a container's rust with its folds painted on, so every crate
+ * in a shop read as a shipping container a metre long. Boards are a pixel
+ * loop: growth rings across each board, bent along it by a wrapping field so
+ * they wander the way grain does and the tile still repeats, a gap and a
+ * worn arris at every joint, and each board its own shade. Weathering goes
+ * on over that the way it does everywhere else — `mottle`, never a disc.
+ * Variants 0, 1 and 3 are bare wood (pine, silvered, stained); 2 is a crate
+ * painted olive, worn back to the board, with a lot stencilled where the
+ * middle of a crate's face lands (`crateGeo` centres every face on the
+ * tile).
+ */
+export function woodCrate(variant = 0) {
+  return make('wood' + variant, () => {
+    const s = 512, c = canvas(s), ctx = c.getContext('2d');
+    const base = [[146, 124, 94], [138, 132, 120], [92, 98, 62], [116, 82, 58]][variant % 4];
+    const painted = variant % 4 === 2;
+    const boards = 8, bh = s / boards;
+    const bend = wrapFbm(4, 3), streak = wrapFbm(16, 2);
+    const tone = [], rings = [], phase = [];
+    for (let k = 0; k < boards; k++) { tone.push(rr(0.8, 1.12)); rings.push(rr(4, 10)); phase.push(rr(0, 1)); }
+    // Both fields are smooth along the board, so they are worked out on a
+    // coarse grid and read back: the bend once a board, the streaks at a
+    // quarter of the width. Per pixel, the two cost most of a second a tile.
+    const Q = s / 4, bent = new Float32Array(boards * s), streaks = new Float32Array(Q * s);
+    for (let k = 0; k < boards; k++) for (let x = 0; x < s; x++) bent[k * s + x] = bend(x / s, (k + 0.5) / boards * 0.25 + k * 0.37) * 3.2;
+    for (let y = 0; y < s; y++) {
+      const k = (y / bh) | 0;
+      for (let x = 0; x < Q; x++) streaks[y * Q + x] = streak(x / Q, (y / s) * 4 + k * 0.21);
+    }
+    const img = ctx.createImageData(s, s), d = img.data;
+    for (let y = 0; y < s; y++) {
+      const k = (y / bh) | 0, local = (y - k * bh) / bh;
+      const edge = Math.min(y - k * bh, (k + 1) * bh - 1 - y);
+      const joint = edge < 1.5 ? 0.32 : edge < 3.5 ? 0.78 : 1;
+      for (let x = 0; x < s; x++) {
+        // rings across the board, bent along its length
+        const t = local * rings[k] + bent[k * s + x] + phase[k];
+        const g = 0.5 + 0.5 * Math.cos(t * Math.PI * 2);
+        const line = g * g * g * g * g * g;
+        const qx = x / 4, x0 = qx | 0, f = qx - x0, x1 = x0 + 1 === Q ? 0 : x0 + 1;
+        const fine = streaks[y * Q + x0] * (1 - f) + streaks[y * Q + x1] * f;
+        const l = tone[k] * (1 - (painted ? 0.07 : 0.24) * line + (fine - 0.5) * (painted ? 0.1 : 0.22)) * joint;
+        const i = (y * s + x) * 4;
+        d[i] = base[0] * l; d[i + 1] = base[1] * l; d[i + 2] = base[2] * l; d[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    // knots, a few to the tile, each a dark pip with a ring round it
+    for (let n = 0; n < 7; n++) {
+      const x = rr(0, s), y = (((rr(0, boards) | 0) + rr(0.3, 0.7)) * bh), r = rr(2.5, 5.5);
+      ctx.fillStyle = `rgba(52,34,20,${painted ? 0.35 : 0.6})`;
+      ctx.beginPath(); ctx.ellipse(x, y, r * 1.6, r, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(70,46,26,0.3)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.ellipse(x, y, r * 2.8, r * 1.5, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (painted) {
+      // the olive worn back to the board at the arrises and in patches
+      mottle(ctx, s, 26, 'rgba(146,118,82,0.72)', 4, 16);
+      ctx.fillStyle = 'rgba(214,200,150,0.7)';
+      for (let k = 0; k < 6; k++) ctx.fillRect(s * 0.36 + k * 13, s * 0.42, 8, 26);
+      for (let k = 0; k < 4; k++) ctx.fillRect(s * 0.36 + k * 13, s * 0.53, 8, 18);
+      mottle(ctx, s, 14, 'rgba(92,98,62,0.5)', 4, 10);
+    } else {
+      // weather silvers bare wood, and water stains it from the top down
+      mottle(ctx, s, 22, 'rgba(150,146,136,0.38)', 14, 52);
+      for (let k = 0; k < 16; k++) runoff(ctx, rr(0, s), rr(0, s), rr(6, 22), rr(20, 90), '48,36,24', rr(0.1, 0.28));
+    }
+    mottle(ctx, s, 12, 'rgba(30,22,14,0.22)', 10, 40);
+    grit(ctx, s, 260, '220,210,190', '30,22,14', 1.1);
+    noise(ctx, s, 12);
     return c;
   });
 }
