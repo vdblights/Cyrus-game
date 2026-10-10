@@ -2441,6 +2441,10 @@ export function buildCity(scene, painted = null) {
     heaps.splice(k, 1);
     const i = world.solids.indexOf(m);
     if (i >= 0) world.solids.splice(i, 1);
+    // it pays the bake the UUID it no longer costs there, as a heap cleared
+    // from a doorway does: which heaps a perch clears depends on each
+    // heap's shape, and a shape is a look, which must not move a spawn
+    spend(UUID_COST);
   }
   // And a shop's doorway, from the pavement to just inside: a heap there is
   // one a body climbs, now that rubble takes your weight, and from its top

@@ -5801,10 +5801,23 @@ check('a seed still lays out the city it did', async (page) => {
   // perches and the mark after boot identical. Before it: 5342
   // '8afdfa64' (5003 '6edef181'), 3639 '3f753593' (3202 'dc28bfb4'), 4835
   // 'dd322493' (4372 'f8b6d04b').
+  //
+  // And a heap of rubble is a slumped, creased mound (`rubbleGeo`), tipped a
+  // little where it was spun on every axis, so its colliders — cut from its
+  // shape — are new, and a few more or fewer heaps overlap a perch's stairs
+  // or a doorway and are cleared. Everything placed before the rubble is
+  // unchanged on all three seeds (`placed`, `fpPlaced`), and so are the
+  // perches. The mark moved once, on purpose: a heap cleared for a perch
+  // now pays the bake the UUID it no longer costs there, as one cleared from
+  // a doorway already did, so which heaps a perch clears — a matter of their
+  // shape — no longer moves a spawn. Proved by putting the old boulders back
+  // under the new bill: the same three marks. Before it: 5303/1642
+  // '1885486a' -1361973962, 3625/1317 '34d1e3e5' -559214183, 4833/1706
+  // 'fc3267d4' -1572333659.
   const want = {
-    1: { boxes: 5303, solids: 1642, perches: 12, fp: '1885486a', placed: 4964, fpPlaced: 'cd6bf043', mark: -1361973962 },
-    7: { boxes: 3625, solids: 1317, perches: 11, fp: '34d1e3e5', placed: 3188, fpPlaced: '4ac1ea6a', mark: -559214183 },
-    20260101: { boxes: 4833, solids: 1706, perches: 10, fp: 'fc3267d4', placed: 4370, fpPlaced: '6eb20fbc', mark: -1572333659 },
+    1: { boxes: 5183, solids: 1628, perches: 12, fp: 'ad9623cd', placed: 4964, fpPlaced: 'cd6bf043', mark: -1632891350 },
+    7: { boxes: 3500, solids: 1302, perches: 11, fp: '3d385c25', placed: 3188, fpPlaced: '4ac1ea6a', mark: 1200834133 },
+    20260101: { boxes: 4704, solids: 1698, perches: 10, fp: 'cbb5835e', placed: 4370, fpPlaced: '6eb20fbc', mark: -1828098447 },
   };
   // `mark` is where the seeded stream stands at the end of boot, which is
   // the stream every spawn is picked from. Every pass that changed how
