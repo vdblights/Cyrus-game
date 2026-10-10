@@ -3075,6 +3075,95 @@ check('a wreck fits the box you collide with, and stands on its wheels', async (
   return r;
 });
 
+check('steel is folded, a ruin is broken at the top, and rubble is a heap', async (page) => {
+  // Three things that read as made, in seven rendered frames. A container
+  // and a shop's shutter were boxes wearing painted folds — under one low
+  // sun a painted fold is a stripe — so the folds are geometry now, and the
+  // container has to keep them inside the box you collide with. A ruin had
+  // a ruler-straight top; its walls step down where they broke. And a heap
+  // of rubble was a twenty-face boulder, spun on every axis so it could
+  // stand on end as an egg; it is a slumped mound now.
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world;
+    const out = {};
+    // the container: how much of it is the slope of a fold, and its reach
+    const facets = (geo, fn) => {
+      const p = geo.attributes.position, idx = geo.index;
+      const n = idx ? idx.count : p.count;
+      const v = [0, 1, 2].map(() => new (g.player.position.constructor)());
+      for (let t = 0; t < n; t += 3) {
+        for (let k = 0; k < 3; k++) v[k].fromBufferAttribute(p, idx ? idx.getX(t + k) : t + k);
+        const e1 = v[1].clone().sub(v[0]), e2 = v[2].clone().sub(v[0]);
+        const c = e1.cross(e2), area = c.length() / 2;
+        if (area > 1e-7) fn(c.normalize(), area, v);
+      }
+    };
+    const C = g.propShapes.container;
+    let slope = 0, total = 0;
+    facets(C, (nrm, area) => {
+      total += area;
+      if (Math.max(Math.abs(nrm.x), Math.abs(nrm.y), Math.abs(nrm.z)) < 0.98) slope += area;
+    });
+    C.computeBoundingBox();
+    const bb = C.boundingBox;
+    out.container = { slope: +(slope / total).toFixed(3),
+      x: +Math.max(-bb.min.x, bb.max.x).toFixed(3), z: +Math.max(-bb.min.z, bb.max.z).toFixed(3), top: +bb.max.y.toFixed(3) };
+    // shutters: anything in a rust sheet that is not a container or a drum,
+    // and whether its folds run across it (a slat's face tips up or down)
+    const shut = w.solids.filter((m) => (m.material?.userData?.name || '').startsWith('rustsheet')
+      && m.geometry !== C && m.geometry !== g.propShapes.drum);
+    out.shutters = shut.length;
+    out.slatted = shut.filter((m) => {
+      let tipped = 0;
+      facets(m.geometry, (nrm) => { if (Math.abs(nrm.y) > 0.3 && Math.abs(nrm.y) < 0.95) tipped++; });
+      return tipped > 20;
+    }).length;
+    // ruin walls: the tops of the pieces along each wall a window is in
+    const walls = new Map();
+    for (const q of w.ruinWindows) {
+      const key = q.nx ? 'x' + q.x.toFixed(2) : 'z' + q.z.toFixed(2);
+      if (!walls.has(key)) walls.set(key, q);
+    }
+    out.walls = walls.size;
+    out.broken = 0;
+    for (const q of walls.values()) {
+      // the highest piece of each column along the wall: a sill and the
+      // spandrel over it are tops too, and any windowed wall has three
+      const column = new Map();
+      for (const b of w.boxes) {
+        const thin = q.nx ? Math.abs(b.maxX - b.minX - q.thick) < 0.01 && Math.abs((b.minX + b.maxX) / 2 - q.x) < 0.01
+          : Math.abs(b.maxZ - b.minZ - q.thick) < 0.01 && Math.abs((b.minZ + b.maxZ) / 2 - q.z) < 0.01;
+        if (!thin) continue;
+        const at = (q.nx ? b.minZ : b.minX).toFixed(2);
+        column.set(at, Math.max(column.get(at) ?? 0, b.top));
+      }
+      if (new Set([...column.values()].map((t) => t.toFixed(2))).size >= 3) out.broken++;
+    }
+    // heaps: how many faces, and how they stand
+    const heaps = w.solids.filter((m) => m.material?.userData?.name === 'debris');
+    out.heaps = heaps.length;
+    out.boulders = 0; out.standing = 0;
+    for (const m of heaps) {
+      const geo = m.geometry, n = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+      if (n < 150) out.boulders++;
+      const box = new (g.player.position.constructor)();
+      if (!geo.boundingBox) geo.computeBoundingBox();
+      const b = geo.boundingBox.clone().applyMatrix4(m.matrixWorld);
+      b.getSize(box);
+      if (box.y > Math.min(box.x, box.z) * 0.9) out.standing++;
+    }
+    return out;
+  });
+  const c = r.container;
+  expect(c.slope > 0.15, `only ${(c.slope * 100).toFixed(1)}% of a container is the slope of a fold — its steel is painted, not folded`);
+  expect(c.x <= 1.251 && c.z <= 3.001 && c.top <= 2.601, `a container reaches ${c.x} x ${c.z} m and ${c.top} m up, past its 1.25 x 3 x 2.6 m collider`);
+  expect(r.shutters >= 10 && r.slatted === r.shutters, `${r.slatted} of ${r.shutters} shutters are slatted across`);
+  expect(r.walls >= 10 && r.broken >= r.walls * 0.5, `${r.broken} of ${r.walls} ruin walls step down at the top`);
+  expect(r.heaps >= 50 && r.boulders === 0, `${r.boulders} of ${r.heaps} heaps of rubble are a boulder of under 150 faces`);
+  expect(r.standing <= r.heaps * 0.05, `${r.standing} of ${r.heaps} heaps of rubble stand taller than they are wide`);
+  return r;
+});
+
 check('rubble stops you and stops a bullet, and you can climb it', async (page) => {
   // Reported from play: objects you can clip right through, rubble first.
   // Every heap of rubble and every fallen slab in a rubble lot was drawn and
