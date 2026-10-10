@@ -3385,7 +3385,10 @@ check('rubble stops you and stops a bullet, and you can climb it', async (page) 
     // mound's shape at its height, so it nests only a little inside the one
     // under it, and a foot held up only by what is under its middle was
     // stopped at its radius by most pairs of them: one tall step.
-    const tiers = W.boxes.filter((b) => b.heap);
+    // the mounds: a fallen slab's tiers rise 0.6 m apiece, a wall walked
+    // round by design, and a bigger sector has more rubble lots and so more
+    // of them, which as a share pulled the mounds' rate under the bar
+    const tiers = W.boxes.filter((b) => b.heap && !b.slab);
     const inside = (b, x, z) => {
       const rx = x - b.cx, rz = z - b.cz;
       return Math.abs(b.cos * rx - b.sin * rz) <= b.hx && Math.abs(b.sin * rx + b.cos * rz) <= b.hz;
@@ -4100,7 +4103,7 @@ check('a hostile reloads behind cover, and turns its head to a far-off shot', as
     // ---- the crouch: a seated barricade slab between it and you
     for (const x of g.enemies) { x.group.visible = false; g._recycle(x); }
     g.enemies.length = 0;
-    let cover = null;
+    let cover = null, c = null;
     for (const b of W.boxes) {
       if (!b.prop || Math.abs(b.hx - 1.1) > 0.01 || Math.abs(b.hz - 0.35) > 0.01) continue;
       // the slab's thin axis, in the world
@@ -4111,26 +4114,28 @@ check('a hostile reloads behind cover, and turns its head to a far-off shot', as
         const hy = W.groundHeight(hx, hz, 0.12, b.top - 0.5), qy = W.groundHeight(qx, qz, 0.12, 0.6);
         if (Math.abs(hy - (b.top - 1.05)) > 0.05 || qy > 0.5) continue;      // both ends on the slab's own floor
         if (W.blocked(hx, hz, 0.45, hy + 0.6) || W.blocked(qx, qz, 0.5, 0.6)) continue;
-        // and a slab that does what cover is for from where you stand: a
-        // standing chest in sight and a kneeling one (`CROUCH.drop`, 0.36 m
-        // lower) not — another prop in the line, or a kerb under your feet,
-        // can make either untrue, and then getting down is rightly refused
         g.player.reset(qx, qz);
-        const e = g.player.position;
-        if (!W.lineOfSight(e.x, e.y, e.z, hx, hy + 1.25, hz) || W.lineOfSight(e.x, e.y, e.z, hx, hy + 1.25 - 0.36, hz)) continue;
+        for (const x of g.enemies) { x.group.visible = false; g._recycle(x); }
+        g.enemies.length = 0;
+        c = g.spawnEnemy('raider');
+        c.pos.set(hx, hy, hz);
+        c.group.position.copy(c.pos);
+        c.alert(g.time, 0);
+        c.nextFire = g.time + 99;
+        tick(0.5);
+        // and a slab still doing what cover is for once it has settled: a
+        // standing chest in sight and a kneeling one (`CROUCH.drop`, 0.36 m
+        // lower) not. In the half second it settles a raider at its range
+        // strafes, and half a metre along can put another prop in the line
+        // or take the slab out of it, and then getting down is rightly refused
+        const E = g.player.position, sightAt = (dy) => W.lineOfSight(E.x, E.y, E.z, c.pos.x, c.pos.y + dy, c.pos.z);
+        if (!sightAt(1.25) || sightAt(1.25 - 0.36)) continue;
         cover = { hx, hy, hz, qx, qz };
         break;
       }
       if (cover) break;
     }
     if (!cover) return { gap, reload: reloadTime, handAtMag, handOnFore, cover: false };
-    g.player.reset(cover.qx, cover.qz);
-    const c = g.spawnEnemy('raider');
-    c.pos.set(cover.hx, cover.hy, cover.hz);
-    c.group.position.copy(c.pos);
-    c.alert(g.time, 0);
-    c.nextFire = g.time + 99;
-    tick(0.5);
     const head0 = c.parts.head.getWorldPosition(new THREE.Vector3()).y;
     const from = c.pos.clone();
     c._startReload(g.player, W, Math.hypot(c.pos.x - g.player.position.x, c.pos.z - g.player.position.z), g.time);
@@ -5398,6 +5403,11 @@ check('a marksman holds a window over the street, and a holdout is found upstair
         const ux = (b.cos * lx + b.sin * lz) * sgn, uz = (-b.sin * lx + b.cos * lz) * sgn;
         const hx = b.cx - ux * (short + 0.6), hz = b.cz - uz * (short + 0.6), px = b.cx + ux * (short + 5), pz = b.cz + uz * (short + 5);
         if (!open(hx, hz) || !open(px, pz)) continue;
+        // and a start the route field covers: beside a wreck parked half a
+        // metre off a wall it is a crevice in the field's shoulder with no
+        // open cell beside it, somewhere a holdout walking the field is
+        // never led
+        if (g.nav.solidAt(hx, hz)) continue;
         clear();
         p.reset(px, pz); p.maxHealth = p.health = 1e6;
         const h = g.spawnEnemy('holdout');
@@ -6111,10 +6121,23 @@ check('a seed still lays out the city it did', async (page) => {
   // under the new bill: the same three marks. Before it: 5303/1642
   // '1885486a' -1361973962, 3625/1317 '34d1e3e5' -559214183, 4833/1706
   // 'fc3267d4' -1572333659.
+  //
+  // And once more, for the larger sector: 8 x 8 lots where it was 6 x 6,
+  // every city new by construction, so nothing here could be compared
+  // collider by collider and the mark moved with it. The plaza is the same
+  // lot near the middle (`PLAZA`), at the same place, so a run starts where
+  // it did. Twenty-eight more lots found what thirty-six had not, and the
+  // generator changed with it, which moves these numbers too: a counter is
+  // left out where it would wall a stair shop's back off, a shop that fills
+  // its lot stands its furniture out in the room, a floor's furniture keeps
+  // 2 m off the shaft, and a fallen slab's tiers are flagged `slab`. Before
+  // it: 5183/1628/12 'ad9623cd' (4964 'cd6bf043') -1632891350, 3500/1302/11
+  // '3d385c25' (3188 '4ac1ea6a') 1200834133, 4704/1698/10 'cbb5835e' (4370
+  // '6eb20fbc') -1828098447.
   const want = {
-    1: { boxes: 5183, solids: 1628, perches: 12, fp: 'ad9623cd', placed: 4964, fpPlaced: 'cd6bf043', mark: -1632891350 },
-    7: { boxes: 3500, solids: 1302, perches: 11, fp: '3d385c25', placed: 3188, fpPlaced: '4ac1ea6a', mark: 1200834133 },
-    20260101: { boxes: 4704, solids: 1698, perches: 10, fp: 'cbb5835e', placed: 4370, fpPlaced: '6eb20fbc', mark: -1828098447 },
+    1: { boxes: 7724, solids: 2754, perches: 32, fp: 'a8ffa1c1', placed: 7040, fpPlaced: 'e7511e20', mark: 220091255 },
+    7: { boxes: 6966, solids: 2670, perches: 26, fp: 'eeb3f015', placed: 6435, fpPlaced: '5a88de2e', mark: 157064770 },
+    20260101: { boxes: 6739, solids: 2660, perches: 17, fp: '2cb13e75', placed: 6318, fpPlaced: '7e8dc140', mark: 475216655 },
   };
   // `mark` is where the seeded stream stands at the end of boot, which is
   // the stream every spawn is picked from. Every pass that changed how

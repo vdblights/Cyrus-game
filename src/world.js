@@ -367,6 +367,12 @@ export class World {
     // to grab one now, further to ask whether there is one to walk up to
     for (let d = radius + 0.1; d <= radius + reach; d += 0.18) {
       const gx = x + nx * d, gz = z + nz * d;
+      // A wall standing off the ground — a parapet on a roof, the sill of a
+      // building's upper floor — is a box `groundHeight` never reads, so the
+      // search walked straight through one and gripped whatever was past it:
+      // on the larger sector, a party wall and the roof next door beyond it.
+      // Past a wall there is no lip to reach.
+      if (this._wallAt(gx, gz, grip, feet + minRise, feet + 1.0)) return null;
       const top = this.groundHeight(gx, gz, grip, feet + maxRise);
       if (top < feet + minRise) continue;
       // anything taller here means we are staring at a wall, not gripping a
@@ -389,6 +395,23 @@ export class World {
       return { top, land, x: lx, z: lz };
     }
     return null;
+  }
+
+  /**
+   * Whether a box off the ground and not a deck — a wall standing on a roof
+   * or a floor — stands at (x, z), within `radius`, with its underside no
+   * higher than `chest` and its top over `above`: something in the way of a
+   * pull-up that is not something to pull up onto.
+   */
+  _wallAt(x, z, radius, above, chest) {
+    for (const b of near(this, x - radius, z - radius, x + radius, z + radius)) {
+      if (!b.base || b.deck || b.base > chest || b.top <= above) continue;
+      const rx = x - b.cx, rz = z - b.cz;
+      const lx = b.cos * rx - b.sin * rz, lz = b.sin * rx + b.cos * rz;
+      const dx = Math.max(0, Math.abs(lx) - b.hx), dz = Math.max(0, Math.abs(lz) - b.hz);
+      if (dx * dx + dz * dz < radius * radius) return true;
+    }
+    return false;
   }
 
   /**

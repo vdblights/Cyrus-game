@@ -670,6 +670,9 @@ function registerHeaps(world, heaps) {
       const wx = best.c * mu - best.s * mw, wz = best.s * mu + best.c * mw;
       world.addRotatedBox(wx, wz, hu, hw, -best.rot, base + (t / tiers) * (top - base));
       world.boxes[world.boxes.length - 1].heap = true;     // so the layout check can see past them
+      // and a fallen slab's tiers say so: each rises 0.6 m over the next,
+      // a wall walked round rather than a mound scrambled up
+      if (m.userData.slab) world.boxes[world.boxes.length - 1].slab = true;
     }
     if (!world.solids.includes(m)) world.solids.push(m);
   }
@@ -3028,6 +3031,7 @@ export function buildCity(scene, painted = null) {
       m.rotation.set(randRange(-0.9, 0.9), Math.random() * Math.PI, randRange(-0.9, 0.9));
       m.castShadow = m.receiveShadow = true;
       m.userData.tint = tintAt(m.position.x, m.position.z, 7, 0.12);
+      m.userData.slab = true;
       g.add(m);
       w.solids.push(m);
       heaps.push(m);
@@ -4040,7 +4044,10 @@ export function buildCity(scene, painted = null) {
     const r = (k) => hash2(Math.round(x * 3), Math.round(z * 3), 400 + L.k * 37 + k);
     const o = s.outer, F = L.F;
     const grow = (q, d) => ({ minX: q.minX - d, maxX: q.maxX + d, minZ: q.minZ - d, maxZ: q.maxZ + d });
-    const busy = [grow(o, 1.2), grow({ minX: door.x, maxX: door.x, minZ: door.z, maxZ: door.z }, 2.2)];
+    // 2 m round the shaft, which is the way round it to the door: at 1.2 a
+    // crate at the shaft's corner left a juggernaut walking back to the door
+    // 1.6 m to turn through, and it stood there till the watchdog moved it
+    const busy = [grow(o, 2.0), grow({ minX: door.x, maxX: door.x, minZ: door.z, maxZ: door.z }, 2.2)];
     const hits = (q, b) => q.minX < b.maxX && q.maxX > b.minX && q.minZ < b.maxZ && q.maxZ > b.minZ;
     const byMat = new Map();
     const put = (mat, geo) => { let a = byMat.get(mat); if (!a) byMat.set(mat, a = []); a.push(geo); };
