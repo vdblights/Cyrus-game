@@ -501,8 +501,18 @@ function jitter(hex, amount) {
  * gets several, because one texture per style meant every building of a kind
  * was the same building, and that is what the eye picks up first.
  */
-export function facade(style = 0, variant = 0) {
-  return make('facade' + style + '_' + variant, () => {
+/**
+ * A style's wall with no windows and no floor lines: the brick, the render,
+ * the stone or the panels a building is built of, where its openings are
+ * real (`upperFloors` in `city.js`) and a painted one would be a second
+ * window beside each hole.
+ */
+export function infill(style = 0) {
+  return facade(style, 0, true);
+}
+
+export function facade(style = 0, variant = 0, plain = false) {
+  return make((plain ? 'infill' : 'facade') + style + '_' + variant, () => {
     const s = 1024, c = canvas(s), ctx = c.getContext('2d');
     const def = FACADE_STYLES[style % FACADE_STYLES.length];
     const floor = s / FACADE_FLOORS;
@@ -519,7 +529,7 @@ export function facade(style = 0, variant = 0) {
     mottle(ctx, s, 8, 'rgba(210,190,160,0.07)', 40, 140);
 
     // floor line: a spandrel band with a lit top edge and a shadowed underside
-    for (let r = 0; r < FACADE_FLOORS; r++) {
+    for (let r = 0; r < (plain ? 0 : FACADE_FLOORS); r++) {
       const y = r * floor;
       ctx.fillStyle = jitter(def.trim, 10);
       ctx.fillRect(0, y, s, floor * 0.14);
@@ -531,14 +541,14 @@ export function facade(style = 0, variant = 0) {
 
     const winW = bay * WINDOW.w, winH = floor * WINDOW.h;
     const states = [];
-    for (let r = 0; r < FACADE_FLOORS; r++) {
+    for (let r = 0; r < (plain ? 0 : FACADE_FLOORS); r++) {
       for (let b = 0; b < FACADE_BAYS; b++) {
         const x = b * bay + (bay - winW) / 2;
         const y = r * floor + floor * WINDOW.top;
         states.push(window_(ctx, x, y, winW, winH, variant));
       }
     }
-    WINDOW_STATES.set('facade' + style + '_' + variant, states);
+    if (!plain) WINDOW_STATES.set('facade' + style + '_' + variant, states);
 
     // damage that crosses the whole face: shell scars and bullet swarms
     for (let i = 0; i < 2 + (variant % 2); i++) blast(ctx, s, rr(0, s), rr(0, s));

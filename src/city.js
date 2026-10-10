@@ -360,12 +360,24 @@ function cylGeo(rTop, rBot, h, tile = TILE.metal, seg = 8, open = false) {
  */
 const decorRandom = makeRandom(0x9e3779b9);
 function decor(fn) {
-  return reserve(() => {
-    const real = Math.random;
-    Math.random = decorRandom;
-    try { return fn(); } finally { Math.random = real; }
-  });
+  // and what it builds is marked, because the bake bills the stream for
+  // every mesh it merges (`bakeStatic`): litter, chips and weeds are laid
+  // round the colliders, so how many there are followed every wall, and
+  // the spawns moved with them
+  const before = new Set();
+  decorGroup?.traverse((o) => before.add(o));
+  try {
+    return reserve(() => {
+      const real = Math.random;
+      Math.random = decorRandom;
+      try { return fn(); } finally { Math.random = real; }
+    });
+  } finally {
+    decorGroup?.traverse((o) => { if (!before.has(o)) o.userData.decor = true; });
+  }
 }
+/** The city being built, which `decor` reads to see what a call added. */
+let decorGroup = null;
 
 /* ------------------------------------------------------------- shading bake */
 
@@ -1027,16 +1039,25 @@ function bakeStatic(group, world) {
   // in a batch of its own that is always drawn, as everything used to be.
   const buckets = new Map();
   const perMaterial = new Map();
-  for (const m of meshes) {
-    const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
-    shadeGeometry(geo, m.userData.tint || [1, 1, 1], occlusion, m.userData.mottle || 0, indoors);
-    const key = `${materialIndex(perMaterial, m.material)}:${patchOf(geo)}`;
-    let b = buckets.get(key);
-    if (!b) buckets.set(key, b = { material: m.material, geos: [], cast: false, receive: false });
-    b.geos.push(geo);
-    b.cast = b.cast || m.castShadow;
-    b.receive = b.receive || m.receiveShadow;
-  }
+  // Every clone mints a geometry, a UUID's draws of the seeded stream, and
+  // the stream after the bake is the one that picks spawns: so every mesh in
+  // the city used to move every spawn, wherever it was built and whatever
+  // `reserve` it was built in. The clones are made in a reserve now and the
+  // bill is a UUID for each mesh but those marked `unbilled` — what the city
+  // cost before they existed.
+  reserve(() => {
+    for (const m of meshes) {
+      const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
+      shadeGeometry(geo, m.userData.tint || [1, 1, 1], occlusion, m.userData.mottle || 0, indoors);
+      const key = `${materialIndex(perMaterial, m.material)}:${patchOf(geo)}`;
+      let b = buckets.get(key);
+      if (!b) buckets.set(key, b = { material: m.material, geos: [], cast: false, receive: false });
+      b.geos.push(geo);
+      b.cast = b.cast || m.castShadow;
+      b.receive = b.receive || m.receiveShadow;
+    }
+  });
+  spend(meshes.filter((m) => !m.userData.unbilled && !m.userData.decor).length * UUID_COST);
 
   // nothing updates a detached mesh's matrix, so freeze it at what it was
   for (const m of meshes) {
@@ -1062,7 +1083,7 @@ function bakeStatic(group, world) {
       for (const g of b.geos) g.dispose();
     }
   });
-  spend(perMaterial.size * 2 * UUID_COST);
+  spend([...perMaterial.keys()].filter((m) => !m.userData.unbilled).length * 2 * UUID_COST);
   return buckets.size;
 }
 
@@ -1691,7 +1712,17 @@ export const CITY_PAINT = [
           roughnessMap: TEX.surfaceFrom(map, { dark: 1, lite: 0.34, half: true }, key),
           roughness: 1, metalness: 0.05, envMapIntensity: 0.7, vertexColors: true,
         }), TEX.facadeWindows(style, v)));
+        m.facades[m.facades.length - 1].userData.style = style;
       }
+      // the same wall with no windows painted on it, for a building whose
+      // windows are real holes (`upperFloors`)
+      const plain = TEX.infill(style), key = 'infill' + style;
+      (m.infills ||= [])[style] = new THREE.MeshStandardMaterial({
+        map: plain, normalMap: TEX.normalFrom(plain, 1.1, key, 1, true),
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        roughnessMap: TEX.surfaceFrom(plain, { dark: 1, lite: 0.34, half: true }, key),
+        roughness: 1, metalness: 0.05, envMapIntensity: 0.7, vertexColors: true,
+      });
     },
   })),
   {
@@ -1985,6 +2016,9 @@ function paintCity() {
 function labelMaterials(m) {
   const label = (mat, name, tile) => { mat.userData.name = name; mat.userData.tile = tile; };
   m.facades.forEach((mat, i) => label(mat, 'facade' + i, TILE.facade));
+  // A batch costs the stream what one per material always did, and these are
+  // new: unbilled, so a building's walls changing material moves no spawn.
+  m.infills.forEach((mat, i) => { label(mat, 'infill' + i, TILE.facade); mat.userData.unbilled = true; });
   m.carBodyMats.forEach((mat, i) => label(mat, 'car' + i, TILE.metal));
   m.carRustMats.forEach((mat, i) => label(mat, 'carrust' + i, TILE.metal));
   label(m.concreteMat, 'concrete', TILE.concrete);
@@ -2023,10 +2057,11 @@ export function buildCity(scene, painted = null) {
 
   const group = new THREE.Group();
   scene.add(group);
+  decorGroup = group;
 
   const mats = painted || paintCity();
   labelMaterials(mats);
-  const { facades, concreteMat, darkConcrete, rusts, metalMat, glassMat,
+  const { facades, infills, concreteMat, darkConcrete, rusts, metalMat, glassMat,
     asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, ironMat, gratingMat, railMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat, shardMat } = mats;
 
@@ -2091,6 +2126,9 @@ export function buildCity(scene, painted = null) {
   const heaps = [];
   // how many props `settle` has stood up, so each one's colliders carry an id
   let settled = 0;
+  // the wall a building with floors is built of: its facade's style, with
+  // the windows left as the holes they are (`buildTower`, `upperFloors`)
+  let infillMat = null;
 
   // sidewalks: a raised concrete apron around every lot, its kerb dropped
   // wherever a crossing meets it. Built in a `reserve` and paid for at what
@@ -2296,6 +2334,26 @@ export function buildCity(scene, painted = null) {
     const i = world.solids.indexOf(m);
     if (i >= 0) world.solids.splice(i, 1);
   }
+  // And a shop's doorway, from the pavement to just inside: a heap there is
+  // one a body climbs, now that rubble takes your weight, and from its top
+  // your head is in the floor over the shop — on seed 1 one shop could not
+  // be walked into. It was a mesh the bake would have cloned, so it pays the
+  // UUID it no longer costs there, and the spawns are where they were.
+  const doorways = world.rooms.flatMap((room) => room.doors.map((d) => {
+    const a = d.width / 2 + 0.5;
+    const xs = [d.x + d.nx * 3, d.x - d.nx * 1.5], zs = [d.z + d.nz * 3, d.z - d.nz * 1.5];
+    return d.nx ? [Math.min(...xs), d.z - a, Math.max(...xs), d.z + a] : [d.x - a, Math.min(...zs), d.x + a, Math.max(...zs)];
+  }));
+  for (let k = heaps.length - 1; k >= 0; k--) {
+    const m = heaps[k];
+    const b = m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld);
+    if (!doorways.some(([x0, z0, x1, z1]) => b.max.x > x0 && b.min.x < x1 && b.max.z > z0 && b.min.z < z1)) continue;
+    m.removeFromParent();
+    heaps.splice(k, 1);
+    const i = world.solids.indexOf(m);
+    if (i >= 0) world.solids.splice(i, 1);
+    spend(UUID_COST);
+  }
 
   // The same for a fire escape, which is decoration — built on the facade
   // before any perch existed, and in neither collision list, because nothing
@@ -2466,6 +2524,7 @@ export function buildCity(scene, painted = null) {
       shut.position.set(x + randRange(-bw / 4, bw / 4), 1.4, z + bd / 2 + 0.12);
       shut.userData.tint = tintAt(x, z, 2, 0.1);
       let stair = null;
+      infillMat = infills[mat.userData.style] || conc;
       if (open) reserve(() => { stair = groundFloor(g, w, x, z, bw, bd, h, cx, cz, conc, metal, tint, body, cap, party); });
       else { g.add(band); g.add(shut); }
 
@@ -2495,6 +2554,11 @@ export function buildCity(scene, painted = null) {
       [0, -half, LOT - 2, t], [0, half, LOT - 2, t],
       [-half, 0, t, LOT - 2], [half, 0, t, LOT - 2],
     ];
+    // Rolled and paid for one wall at a time, as they always were, and built
+    // once all four are known: a shifted wall can run past the corner, and a
+    // window cut where the next wall crosses it would be a hole with a wall
+    // standing in it.
+    const standing = [];
     for (const [ox, oz, bw, bd] of walls) {
       if (Math.random() < 0.25) continue;              // blown-out wall
       const seg = Math.random() < 0.4 ? 0.55 : 1;      // partial collapse
@@ -2502,12 +2566,19 @@ export function buildCity(scene, painted = null) {
       const hh = h * randRange(0.6, 1);
       const px = cx + ox + (bw > bd ? randRange(-2, 2) : 0);
       const pz = cz + oz + (bd > bw ? randRange(-2, 2) : 0);
-      const m = new THREE.Mesh(boxGeo(wgt, hh, dgt, TILE.facade, wallUV(px, pz, hh)), mat);
-      m.position.set(px, hh / 2, pz);
+      spend(2 * UUID_COST);                         // what the solid box cost
+      standing.push({ px, pz, wgt, hh, dgt });
+    }
+    // its windows are holes: a shell has nothing behind them but the
+    // courtyard, which a painted pane with a room traced behind it lied
+    // about. Built inside a reserve, and paid for above.
+    for (const wall of standing) {
+      const others = standing.filter((o) => o !== wall).map((o) => ({
+        minX: o.px - o.wgt / 2, maxX: o.px + o.wgt / 2, minZ: o.pz - o.dgt / 2, maxZ: o.pz + o.dgt / 2 }));
+      const m = reserve(() => ruinWall(w, mat, wall.px, wall.pz, wall.wgt, wall.hh, wall.dgt, others));
       m.castShadow = m.receiveShadow = true;
       m.userData.tint = tintAt(cx, cz, 1);
       g.add(m);
-      w.addSolid(m, wgt / 2, dgt / 2, hh);
     }
     // floor slab + interior rubble
     const slab = new THREE.Mesh(boxGeo(LOT - 2, 0.3, LOT - 2, TILE.concrete, { cells: 9 }), conc);
@@ -2518,6 +2589,89 @@ export function buildCity(scene, painted = null) {
     floors.push(slab);
     for (let k = 0; k < 5; k++) rubblePile(g, cx + randRange(-8, 8), cz + randRange(-8, 8), conc);
     if (Math.random() < 0.5) settle(g, w, 4, () => container(g, w, cx + randRange(-6, 6), cz + randRange(-6, 6), Math.random() * Math.PI));
+  }
+
+  /**
+   * A ruin's wall with its windows open: cut where the facade paints them,
+   * a bay and a storey of the wall's own UVs at a time (`WINDOW`, the same
+   * rectangle `windows.js` traces), so the painted frame stands round a real
+   * hole and the hole goes through to the courtyard. Piers run the wall's
+   * height, the wall under a sill stands on the ground, and over a window is
+   * a ceiling; every piece is its collider, so a window is a hole to sight,
+   * to a round and to a crouching body alike. The long faces keep the UVs
+   * the whole wall had, piece by piece, and so does every face a hole opens.
+   */
+  function ruinWall(w, mat, px, pz, wgt, hh, dgt, others = []) {
+    const alongX = wgt >= dgt, L = alongX ? wgt : dgt, T = alongX ? dgt : wgt;
+    const { snapU, snapV, offsetU, offsetV, bands } = wallUV(px, pz, hh);
+    const nb = Math.max(1, Math.round(L / BAY)), bay = L / nb;
+    const ns = Math.max(1, Math.round(hh / STOREY)), storey = hh / ns;
+    const U0 = (1 - TEX.WINDOW.w) / 2, U1 = 1 - U0;
+    const V0 = 1 - TEX.WINDOW.top - TEX.WINDOW.h, V1 = 1 - TEX.WINDOW.top;
+    // spans along the wall: piers between the openings, and the opening columns
+    const cuts = [-L / 2];
+    for (let i = 0; i < nb; i++) cuts.push(-L / 2 + (i + U0) * bay, -L / 2 + (i + U1) * bay);
+    cuts.push(L / 2);
+    // a column another wall of the ruin crosses, or stands a metre in front
+    // of, is left solid
+    const crossed = (a0, a1) => others.some((o) => {
+      const x0 = alongX ? px + a0 : px - T / 2 - 1, x1 = alongX ? px + a1 : px + T / 2 + 1;
+      const z0 = alongX ? pz - T / 2 - 1 : pz + a0, z1 = alongX ? pz + T / 2 + 1 : pz + a1;
+      return o.minX < x1 && o.maxX > x0 && o.minZ < z1 && o.maxZ > z0;
+    });
+    const pieces = [];                                   // [a0, a1, y0, y1]
+    for (let k = 0; k + 1 < cuts.length; k++) {
+      const a0 = cuts[k], a1 = cuts[k + 1];
+      if (k % 2 === 0 || crossed(a0, a1)) { pieces.push([a0, a1, 0, hh]); continue; }
+      let y = 0;
+      for (let j = 0; j < ns; j++) {
+        pieces.push([a0, a1, y, (j + V0) * storey]);
+        y = (j + V1) * storey;
+        const ca = (a0 + a1) / 2;
+        w.ruinWindows.push({
+          x: alongX ? px + ca : px, z: alongX ? pz : pz + ca, nx: alongX ? 0 : 1, nz: alongX ? 1 : 0,
+          width: a1 - a0, sill: (j + V0) * storey, head: y, thick: T,
+        });
+      }
+      pieces.push([a0, a1, y, hh]);
+    }
+    // the whole wall's unwrap, asked of each piece's vertices where they are —
+    // but across its thickness at the tile's own scale: `boxGeo` snaps that to
+    // a whole bay, 3.6x over a 0.7 m end cap nobody saw, and every window has
+    // four faces across the thickness now
+    const span = (len, snap) => len === T ? T / TILE.facade
+      : Math.max(1, Math.round(len / snap)) * (snap / TILE.facade);
+    const su = { x: span(dgt, snapU), y: span(wgt, snapU), z: span(wgt, snapU) };
+    const sv = { x: span(hh, snapV), y: span(dgt, snapU), z: span(hh, snapV) };
+    const geos = [];
+    for (const [a0, a1, y0, y1] of pieces) {
+      if (a1 - a0 < 0.01 || y1 - y0 < 0.01) continue;
+      const sx = alongX ? a1 - a0 : T, sz = alongX ? T : a1 - a0, h = y1 - y0;
+      const ca = (a0 + a1) / 2, cy = (y0 + y1) / 2 - hh / 2;
+      const geo = new THREE.BoxGeometry(sx, h, sz, 1, Math.max(1, Math.round(bands * h / hh)), 1)
+        .translate(alongX ? ca : 0, cy, alongX ? 0 : ca);
+      const pos = geo.attributes.position, nor = geo.attributes.normal, uv = geo.attributes.uv;
+      for (let i = 0; i < pos.count; i++) {
+        const nx = Math.abs(nor.getX(i)), ny = Math.abs(nor.getY(i)), nz = Math.abs(nor.getZ(i));
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        let axis, u, v;
+        if (ny > nx && ny > nz) { axis = 'y'; u = x / wgt; v = z / dgt; }
+        else if (nx > nz) { axis = 'x'; u = z / dgt; v = y / hh; }
+        else { axis = 'z'; u = x / wgt; v = y / hh; }
+        uv.setXY(i, (u + 0.5) * su[axis] + offsetU, (v + 0.5) * sv[axis] + offsetV);
+      }
+      geos.push(geo);
+      // its collider: on the ground, or over a window and off it — a deck,
+      // because the wall's top is open sky and was always somewhere to stand
+      const qx0 = px + (alongX ? a0 : -T / 2), qx1 = px + (alongX ? a1 : T / 2);
+      const qz0 = pz + (alongX ? -T / 2 : a0), qz1 = pz + (alongX ? T / 2 : a1);
+      if (y0 > 0.001) w.addDeck(qx0, qz0, qx1, qz1, y1, y0);
+      else w.addBox(qx0, qz0, qx1, qz1, y1);
+    }
+    const m = new THREE.Mesh(mergeIntoOne(geos), mat);
+    m.position.set(px, hh / 2, pz);
+    w.solids.push(m);
+    return m;
   }
 
   function buildRubbleLot(g, w, cx, cz, conc) {
@@ -3436,11 +3590,15 @@ export function buildCity(scene, painted = null) {
       // the walls, pier and sill and lintel, with the openings left open
       const top = L.wall, head = Math.min(L.F + 2.3, top - 0.25);
       const glazed = head - (L.F + SILL) >= 0.8;
+      // the frame is the slabs, in concrete; between them the walls are what
+      // the building is built of — its facade's own brick, render, stone or
+      // panel, with no windows painted on it, because its windows are holes
+      const walls = [];
       const piece = (f, a, b, lo, hi) => {
         if (b - a < 0.02 || hi - lo < 0.02) return;
         const q = f.along === 'x' ? { minX: x + a, maxX: x + b, minZ: f.at - T / 2, maxZ: f.at + T / 2 }
           : { minX: f.at - T / 2, maxX: f.at + T / 2, minZ: z + a, maxZ: z + b };
-        geos.push(geoAt(q, lo, hi));
+        walls.push(geoAt(q, lo, hi, TILE.facade));
         w.addCeiling(q.minX, q.minZ, q.maxX, q.maxZ, hi, lo);
       };
       for (const f of faces) {
@@ -3463,6 +3621,7 @@ export function buildCity(scene, painted = null) {
         }
       }
       add(mergeIntoOne(geos), conc, true);
+      add(mergeIntoOne(walls), infillMat || conc, true).userData.unbilled = true;
       // a finish over the slab, flush with it, with vertices for the bake
       add(mergeIntoOne(around(inner, o).map((q) => geoAt(q, L.F, L.F + FINISH, TILE.concrete, { cells: 4 }))), darkConcrete, false);
 

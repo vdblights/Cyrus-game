@@ -2031,11 +2031,9 @@ export class Enemy {
    * Turn `moveDir` aside from what is in the way a stride or two ahead —
    * the last few metres, which the route field is too coarse to see. Probe
    * the heading; if it is blocked, fan outwards and take the first clear
-   * direction, round whichever side was chosen for this obstacle. `keep`
-   * searches every angle on that side before any on the other, rather than
-   * the nearest angle on either.
+   * direction, round whichever side was chosen for this obstacle.
    */
-  _avoid(moveDir, world, dt, keep = false) {
+  _avoid(moveDir, world, dt) {
     moveDir.normalize();
     const probe = 1.8 + this.radius;
     // out on a floor the shaft is not a way round, though its door is open
@@ -2075,13 +2073,12 @@ export class Enemy {
         this.avoidTimer = COMMIT;
       }
       let found = false;
-      const angles = [0.5, 1.0, 1.5, 2.0, 2.5];
-      const order = keep
-        ? [this.avoidDir, -this.avoidDir].flatMap((side) => angles.map((a) => a * side))
-        : angles.flatMap((a) => [a * this.avoidDir, -a * this.avoidDir]);
-      for (const a of order) {
-        const cand = rot(a, V4);
-        if (clear(cand.x, cand.z)) { moveDir.copy(cand); found = true; break; }
+      for (const a of [0.5, 1.0, 1.5, 2.0, 2.5]) {
+        for (const side of [this.avoidDir, -this.avoidDir]) {
+          const cand = rot(a * side, V4);
+          if (clear(cand.x, cand.z)) { moveDir.copy(cand); found = true; break; }
+        }
+        if (found) break;
       }
       if (!found) moveDir.set(-moveDir.x, 0, -moveDir.z);   // boxed in: back out
     } else {
@@ -2109,17 +2106,14 @@ export class Enemy {
         // through a window as often as a door, and straight at you from
         // there is into the wall under it. Straight at you only for the
         // last few metres, or where the field has no answer.
+        // A line you can see along is not always one you can walk: through a
+        // ruin's window it is a sill and a lintel, and straight at you there
+        // and back to the route field the next frame, it stood shuffling.
         const nav = this.game.nav;
-        const close = dist < CAST.far && world.lineOfSight(this.pos.x, this.pos.y + 1.5, this.pos.z, P.x, P.y, P.z);
+        const close = dist < CAST.far && world.lineOfSight(this.pos.x, this.pos.y + 1.5, this.pos.z, P.x, P.y, P.z)
+          && (!nav || nav.clearLine(this.pos.x, this.pos.z, P.x, P.z));
         if (close || !nav || !this._route(nav, move)) move.set(dx / (dist || 1), 0, dz / (dist || 1));
       }
-      // Round what the field does not see, as a hostile goes round it: a car
-      // between you, and a heap of rubble, which the field leaves open
-      // because a hostile climbs one, and a steep one a holdout stood against.
-      // Round the side it chose: along the face of a wreck the probe grazed
-      // it, the nearest open angle swapped sides every frame, and a holdout
-      // stood shuffling against the door.
-      if (stairs !== 'in' && stairs !== 'with' && move.lengthSq() > 1e-4) this._avoid(move, world, dt, true);
     }
     const speed = this.type.speed * (dist > CAST.far ? 1.2 : dist < CAST.near + 1.5 ? 0.55 : 1);
     this.vel.lerp(V3.copy(move).multiplyScalar(speed), Math.min(1, dt * 6));

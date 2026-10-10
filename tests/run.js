@@ -861,8 +861,10 @@ check('the ground you stand on is the ground you can see', async (page) => {
     // the next prop rather than the overhang past this one. A floor beyond the
     // edge — pavement, a ruin's courtyard — is the ground being walked off
     // onto, not a prop, and every floor is under a step high.
+    // A heap of rubble is left out: it holds a body up wherever the body
+    // touches it (`HEAP_REACH`), on purpose — see the rubble invariant.
     const edges = W.boxes.filter((b) => {
-      if (b.top < 0.8 || b.top > 4 || b.sin !== 0) return false;
+      if (b.top < 0.8 || b.top > 4 || b.sin !== 0 || b.heap) return false;
       return !W.boxes.some((o) => o !== b && o.top > 0.55
         && o.maxX > b.maxX && o.minX < b.maxX + 2.5
         && o.maxZ > b.cz - 1 && o.minZ < b.cz + 1);
@@ -3152,11 +3154,45 @@ check('rubble stops you and stops a bullet, and you can climb it', async (page) 
       walks.push({ dist: +closest.toFixed(2), up: +up.toFixed(2) });
     }
 
+    // And up every heap in the sector: walk at each summit from the first
+    // level approach and see how high the feet get. A tier is cut to the
+    // mound's shape at its height, so it nests only a little inside the one
+    // under it, and a foot held up only by what is under its middle was
+    // stopped at its radius by most pairs of them: one tall step.
+    const tiers = W.boxes.filter((b) => b.heap);
+    const inside = (b, x, z) => {
+      const rx = x - b.cx, rz = z - b.cz;
+      return Math.abs(b.cos * rx - b.sin * rz) <= b.hx && Math.abs(b.sin * rx + b.cos * rz) <= b.hz;
+    };
+    const summits = tiers.filter((b) => b.top > 0.6 && !tiers.some((o) => o !== b && o.top > b.top && inside(o, b.cx, b.cz)));
+    const climbs = { summits: summits.length, walked: 0, reached: 0, short: [] };
+    for (const t of summits) {
+      const R2 = Math.max(t.hx, t.hz) + 2.6;
+      for (const a of [0, Math.PI / 2, Math.PI, 1.5 * Math.PI]) {
+        const sx = t.cx + Math.cos(a) * R2, sz = t.cz + Math.sin(a) * R2;
+        const fy = W.groundHeight(sx, sz, 0.12, 0.6);
+        if (fy > 0.5 || W.blocked(sx, sz, 0.5, fy + 0.3)) continue;
+        g.player.reset(sx, sz);
+        let peak = g.player.feetY;
+        g.input.keys.add('KeyW');
+        for (let f = 0; f < 150 && peak < t.top - 0.45; f++) {
+          g.player.yaw = Math.atan2(-(t.cx - g.player.position.x), -(t.cz - g.player.position.z)); g.player.pitch = 0;
+          g.time += 1 / 30; g.player.health = 100; g.step(1 / 30);
+          peak = Math.max(peak, g.player.feetY);
+        }
+        g.input.keys.delete('KeyW');
+        climbs.walked++;
+        if (peak >= t.top - 0.45) climbs.reached++;
+        else if (climbs.short.length < 5) climbs.short.push({ top: +t.top.toFixed(2), peak: +peak.toFixed(2), at: [Math.round(t.cx), Math.round(t.cz)] });
+        break;
+      }
+    }
+
     // and a shot along the ground at it, from three metres out
     const angs = [0, 1, 2, 3].map((k) => k * Math.PI / 2 + 0.4);
     const hit = sight(heap, angs.find((a) => sight(heap, a)?.object === heap));
     const shot = hit ? { at: +hit.distance.toFixed(2), heap: hit.object === heap } : null;
-    return { ghostArea: +ghostArea.toFixed(1), heaps: heaps.length, R: +R.toFixed(2), shot, walks, ghost };
+    return { ghostArea: +ghostArea.toFixed(1), heaps: heaps.length, R: +R.toFixed(2), shot, walks, climbs, ghost };
   });
   // Seed 1: about 660 m² of rubble at body height with nothing under it
   // before; under 10 now, which is the low rim of the heaps at ankle height.
@@ -3169,7 +3205,14 @@ check('rubble stops you and stops a bullet, and you can climb it', async (page) 
     // walking at a heap you are stopped at its foot, or you scramble up it
     expect(w.dist > r.R * 0.45 || w.up > 0.25, `walked ${w.dist} m from the centre of a ${r.R} m heap at ${w.up} m up — inside it`);
   }
-  return r;
+  // A heap holds a body up wherever the body touches it (`HEAP_REACH`).
+  // Seed 1: 116 of 151 summits walked up, against 46 when a heap held you
+  // only under your middle. What is left is the leaning slabs, whose tiers
+  // rise 0.6 m apiece and overhang the street: a wall, walked round.
+  const c = r.climbs;
+  expect(c.walked >= c.summits * 0.9 && c.reached >= c.walked * 0.65,
+    `walked up ${c.reached} of ${c.walked} heaps of rubble (${c.summits} summits): ${JSON.stringify(c.short)}`);
+  return { ...r, ghost: undefined };
 });
 
 check('every prop stands clear of the rest, inside the sector, and on its floor', async (page) => {
@@ -4723,6 +4766,19 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
     g.startWave = () => {}; g.spawnQueue.length = 0; g.pendingSpawns = 0; g.bossPending = false;
     const out = { floors: w.floors.length, low: [], windows: 0, open: 0, shotOut: 0, piers: 0, pierStops: 0,
       walked: 0, walks: 0, stuck: [], follow: [], drop: null };
+    // what each building with floors is built of: its walls are its facade's
+    // own style with the windows left as holes, not one grey for all of them
+    out.walls = w.stairs.map((st) => {
+      const R = st.roof, names = new Set();
+      for (const m of w.solids) {
+        const n = m.material?.userData?.name;
+        if (!n || !m.geometry) continue;
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        const c = m.geometry.boundingBox.getCenter(new (m.position.constructor)()).applyMatrix4(m.matrixWorld);
+        if (c.x > R.minX && c.x < R.maxX && c.z > R.minZ && c.z < R.maxZ && c.y > 2.5) names.add(n);
+      }
+      return [...names].filter((n) => n.startsWith('infill'));
+    });
     const ray = new THREE.Raycaster();
     const shoot = (x, y, z, dx, dz, far) => {
       ray.set(new THREE.Vector3(x, y, z), new THREE.Vector3(dx, 0, dz).normalize());
@@ -4922,6 +4978,10 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
   // a juggernaut each reached every one and came back down, unrelocated.
   expect(r.floors >= 20, `only ${r.floors} floors on this seed`);
   expect(r.low.length === 0, `floors with too little headroom at the door: ${JSON.stringify(r.low)}`);
+  const bare = r.walls.filter((n) => n.length !== 1);
+  const styles = new Set(r.walls.flat());
+  expect(bare.length === 0, `${bare.length} of ${r.walls.length} buildings with floors are not walled in one style of their own: ${JSON.stringify(r.walls)}`);
+  expect(styles.size >= 3, `the ${r.walls.length} buildings with floors are walled in ${styles.size} styles`);
   expect(r.windows >= 200 && r.open === r.windows, `${r.windows - r.open} of ${r.windows} windows cannot be seen out of`);
   expect(r.shotOut === r.windows, `${r.windows - r.shotOut} of ${r.windows} windows stop a round`);
   expect(r.pierStops === r.piers, `${r.piers - r.pierStops} of ${r.piers} piers let a sight line or a round through`);
@@ -4939,7 +4999,7 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
     `a juggernaut got back off ${r.back.home} of ${r.back.floors} floors: ${JSON.stringify(r.back.stuck.slice(0, 3))}`);
   expect(Math.abs(r.drop.at) < 0.05, `a drop landed ${r.drop.at} m off the floor it fell on`);
   expect(!r.drop.takenBelow && r.drop.takenOn, `a drop on a floor: taken from below ${r.drop.takenBelow}, taken beside it ${r.drop.takenOn}`);
-  return { back: `${r.back.home}/${r.back.floors}, ${r.back.behind} behind the shaft`, drop: r.drop, floors: r.floors, windows: r.windows, walked: `${r.walked}/${r.walks}`, follow: r.follow };
+  return { styles: [...styles], back: `${r.back.home}/${r.back.floors}, ${r.back.behind} behind the shaft`, drop: r.drop, floors: r.floors, windows: r.windows, walked: `${r.walked}/${r.walks}`, follow: r.follow };
 });
 
 check('a marksman holds a window over the street, and a holdout is found upstairs and walked down', async (page) => {
@@ -4950,7 +5010,7 @@ check('a marksman holds a window over the street, and a holdout is found upstair
   // holdout up a building (`floorSite` in `objectives.js`), counted only from
   // its own floor, and once cut loose it comes off the floor and down the
   // stair by the hostiles' own walk (`_stairWalk` from `_follow`), and round
-  // what stands in the street by their avoidance (`_avoid`).
+  // what stands in the street by the route field.
   const r = await page.evaluate(() => {
     const g = window.__game, w = g.world, p = g.player, O = g.objectives;
     g.startRun();
@@ -5023,10 +5083,11 @@ check('a marksman holds a window over the street, and a holdout is found upstair
     for (let i = 0; i < 200; i++) if (g.windowPerches.includes(g.findPerch())) atWindow++;
     out.picks = { atWindow, expect: Math.round(200 * winOk / Math.max(1, allOk)) };
 
-    // A holdout walks round what is in its way, as a hostile does: one
-    // following from beside every wreck, the player five metres past it,
-    // inside the range it walks straight at you over. With no avoidance it
-    // stood against all sixteen on seed 1.
+    // A holdout walks round what is in its way: one following from beside
+    // every wreck, the player five metres past it, inside the range it walks
+    // straight at you over. It walks straight only along a line the route
+    // field can walk as well as see (`nav.clearLine`); walking at whatever it
+    // could see, it stood against all sixteen on seed 1.
     const open = (x, z) => {
       const fy = w.groundHeight(x, z, 0.12, 0.6);
       return fy < 0.5 && !w.blocked(x, z, 0.6, fy + 0.3) && Math.abs(x) < w.bounds - 3 && Math.abs(z) < w.bounds - 3;
@@ -5128,13 +5189,64 @@ check('a marksman holds a window over the street, and a holdout is found upstair
   expect(loose.length === n, `a holdout was cut loose on ${loose.length} of ${n} floors`);
   const out = loose.filter((x) => x.out !== undefined && x.out <= 45);
   expect(out.length === n, `a holdout came down out of ${out.length} of ${n} buildings: ${JSON.stringify(loose.filter((x) => !(x.out <= 45)).slice(0, 3))}`);
-  // Two stalls are allowed after the building, in the street: a heap of
-  // rubble too steep to climb that the route field reads as open (see the
-  // rubble invariant). Every one seen so far was one of those.
+  // Every one: it used to allow two, for heaps of rubble too steep to climb
+  // that the route field read as open, until a heap took a body's weight
+  // where the body touched it (`HEAP_REACH`).
   const done = loose.filter((x) => x.done);
-  expect(done.length >= n - 2, `a holdout reached the pickup from ${done.length} of ${n} floors: ${JSON.stringify(loose.filter((x) => !x.done))}`);
+  expect(done.length === n, `a holdout reached the pickup from ${done.length} of ${n} floors: ${JSON.stringify(loose.filter((x) => !x.done))}`);
   return { rescued: `${done.length}/${n}`, cars: `${r.cars.past}/${r.cars.staged}`, outBy: Math.max(...out.map((x) => x.out)), stalls: loose.filter((x) => !x.done).map((x) => x.at),
     windows: `${r.windows}/${r.stairs}`, picks: r.picks, view: r.view.join(' ') };
+});
+
+check("a ruin's windows are holes: seen and shot through both ways, and its piers are not", async (page) => {
+  // A roofless ruin wears a facade, and the facade shader cut each painted
+  // window into an opening with a room traced behind it — wrong in a shell
+  // wall 0.7 m thick, whose far side is the courtyard. The walls are built
+  // round their windows now (`ruinWall` in `city.js`), cut where the paint
+  // puts them, and every piece is its own collider: so a window is a hole to
+  // sight and to a round, from either side, and the wall beside it is not.
+  const r = await page.evaluate(async () => {
+    const THREE = await import('three');
+    const g = window.__game, w = g.world;
+    const ray = new THREE.Raycaster();
+    const shoot = (x, y, z, dx, dz, far) => {
+      ray.set(new THREE.Vector3(x, y, z), new THREE.Vector3(dx, 0, dz).normalize());
+      ray.far = far;
+      const hit = ray.intersectObjects(w.solids, false)[0];
+      return hit ? hit.distance : Infinity;
+    };
+    const out = { windows: w.ruinWindows.length, seen: 0, shot: 0, piers: 0, pierStops: 0, sills: 0, sillStops: 0, blind: [] };
+    for (const q of w.ruinWindows) {
+      const y = (q.sill + q.head) / 2, back = q.thick / 2 + 1.0;
+      for (const s of [1, -1]) {
+        const ox = q.x + q.nx * s * back, oz = q.z + q.nz * s * back;
+        const tx = q.x - q.nx * s * back, tz = q.z - q.nz * s * back;
+        if (w.lineOfSight(ox, y, oz, tx, y, tz)) out.seen++;
+        else if (out.blind.length < 4) out.blind.push([+q.x.toFixed(1), +q.z.toFixed(1), +y.toFixed(2)]);
+        if (shoot(ox, y, oz, -q.nx * s, -q.nz * s, back * 2) > back * 2 - 0.01) out.shot++;
+      }
+      // the pier beside it, half a window and half a pier along
+      const tx = -q.nz, tz = q.nx, off = q.width / 2 + 0.3;
+      const px = q.x + tx * off, pz = q.z + tz * off;
+      out.piers++;
+      if (!w.lineOfSight(px + q.nx * back, y, pz + q.nz * back, px - q.nx * back, y, pz - q.nz * back)
+          && shoot(px + q.nx * back, y, pz + q.nz * back, -q.nx, -q.nz, back * 2) < back + 0.01) out.pierStops++;
+      // and the wall under the sill
+      if (q.sill > 0.4) {
+        out.sills++;
+        const sy = q.sill - 0.2;
+        if (!w.lineOfSight(q.x + q.nx * back, sy, q.z + q.nz * back, q.x - q.nx * back, sy, q.z - q.nz * back)
+            && shoot(q.x + q.nx * back, sy, q.z + q.nz * back, -q.nx, -q.nz, back * 2) < back + 0.01) out.sillStops++;
+      }
+    }
+    return out;
+  });
+  expect(r.windows >= 60, `only ${r.windows} windows in the ruins' walls`);
+  expect(r.seen === r.windows * 2, `${r.windows * 2 - r.seen} of ${r.windows * 2} looks through a ruin's window are blind: ${JSON.stringify(r.blind)}`);
+  expect(r.shot === r.windows * 2, `${r.windows * 2 - r.shot} of ${r.windows * 2} rounds through a ruin's window stopped in it`);
+  expect(r.pierStops === r.piers, `${r.piers - r.pierStops} of ${r.piers} piers beside a ruin's window let sight or a round through`);
+  expect(r.sills > 0 && r.sillStops === r.sills, `${r.sills - r.sillStops} of ${r.sills} walls under a sill let sight or a round through`);
+  return r;
 });
 
 check('a juggernaut stoops up a stairwell after you, and a warlord stays down', async (page) => {
@@ -5651,10 +5763,33 @@ check('a seed still lays out the city it did', async (page) => {
   // inside a stairwell building's footprint or its cap's 30 cm overhang;
   // the perches and the mark after boot identical. Before it: the line
   // below as it stood for the bare rooms.
+  //
+  // A floor's walls are then a raycast target of their own, in the wall
+  // its building's facade is built of (`infillMat`): one solid more a
+  // floor, 32, 16 and 29, and not a box, a perch or a draw moved. Before
+  // it: solids 1617, 1307 and 1683.
+  //
+  // And a ruin's walls have their windows open (`ruinWall`): each wall is
+  // the piers, the wall under each sill and the lintel over each window,
+  // where it was one box. Compared collider by collider on all three seeds:
+  // 21, 13 and 4 colliders gone, every one a ruin wall, and 467, 283 and 64
+  // new, every one inside one of those; the perches identical, and the mark
+  // after boot identical with the walls built either way. Before it:
+  // 4915 '1ee92ae6' (4557 'c62209d3'), 3390 'ddfed437' (2932 'eb0a4c59'),
+  // 4794 '9f142bd4' (4312 '4476e7f7').
+  //
+  // And the rubble in a shop's doorway is cleared, as a perch's is: a heap
+  // takes a body's weight where it touches it now (`HEAP_REACH`), and from
+  // the top of one in a doorway your head is in the floor over the shop.
+  // 7, 6 and 6 heaps on the three seeds — 19, 21 and 19 heap colliders and
+  // one solid each — and every other collider, the perches and the mark
+  // after boot identical (each pays the bake the UUID it no longer costs
+  // there). Before it: 5361/1649 'b0d92d20', 3660/1323 '3dc368da',
+  // 4854/1712 'a5ab07a8'.
   const want = {
-    1: { boxes: 4915, solids: 1617, perches: 12, fp: '1ee92ae6', placed: 4557, fpPlaced: 'c62209d3' },
-    7: { boxes: 3390, solids: 1307, perches: 11, fp: 'ddfed437', placed: 2932, fpPlaced: 'eb0a4c59' },
-    20260101: { boxes: 4794, solids: 1683, perches: 10, fp: '9f142bd4', placed: 4312, fpPlaced: '4476e7f7' },
+    1: { boxes: 5342, solids: 1642, perches: 12, fp: '8afdfa64', placed: 5003, fpPlaced: '6edef181' },
+    7: { boxes: 3639, solids: 1317, perches: 11, fp: '3f753593', placed: 3202, fpPlaced: 'dc28bfb4' },
+    20260101: { boxes: 4835, solids: 1706, perches: 10, fp: 'dd322493', placed: 4372, fpPlaced: 'f8b6d04b' },
   };
   // (bare rooms: 2497/1540/12 b323ced2 (2139 e5d0438f), 1933/1268/11
   // 9d1c7f32 (1475 de4ab94c), 2526/1617/10 e1cfa671 (2044 9123bce6))
