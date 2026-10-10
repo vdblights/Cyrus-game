@@ -777,8 +777,8 @@ export const FACADE_VARIANTS = 2;
 /* ------------------------------------------------------------------- props */
 
 /** Rusted corrugated sheet for shutters, container walls, barricades. */
-export function rustMetal(variant = 0) {
-  return make('rust' + variant, () => {
+export function rustMetal(variant = 0, sheet = false) {
+  return make((sheet ? 'rustsheet' : 'rust') + variant, () => {
     const s = 512, c = canvas(s), ctx = c.getContext('2d');
     ctx.fillStyle = '#6b4a33';
     ctx.fillRect(0, 0, s, s);
@@ -792,6 +792,20 @@ export function rustMetal(variant = 0) {
     mottle(ctx, s, 34, 'rgba(92,54,30,0.55)', 6, 36);
     splotches(ctx, s, 60, 'rgba(168,112,58,0.30)', 3, 18);
     splotches(ctx, s, 40, 'rgba(38,26,18,0.45)', 3, 16);
+
+    // A sheet worn by something whose folds are geometry — a container's
+    // sides, a drum, a roller shutter — carries the paint failing and the
+    // oxide running down it, and no painted folds or ribs: the light on a
+    // real rib does that, and painted folds over it read as a second set at
+    // another pitch.
+    if (sheet) {
+      for (let k = 0; k < 26; k++) {
+        runoff(ctx, rr(0, s), rr(-20, s * 0.7), rr(3, 9), rr(40, 160), '84,44,20', rr(0.15, 0.4));
+      }
+      mottle(ctx, s, 12, 'rgba(0,0,0,0.18)', 10, 34);
+      noise(ctx, s, 20);
+      return c;
+    }
 
     // corrugation: a lit face and a shaded face per fold, 12 cm apart
     const fold = s / 20;

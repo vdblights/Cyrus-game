@@ -123,6 +123,38 @@ export function chamferGeo(w, h, d, bevel, tile, offset = null) {
 }
 
 /**
+ * A sheet of corrugated steel: a trapezoid profile run along X and drawn up
+ * Y, its ribs standing out toward +Z from z = 0 to z = `depth`.
+ *
+ * It spans `len` (centred on x = 0) by `height` (from y = 0), and the pitch
+ * is stretched to a whole number of folds so both ends finish in a trough —
+ * the plane a post or a frame meets. Each face of the fold is flat-shaded, so
+ * a low sun lights one slope and leaves the other in shade: the stripes a
+ * painted fold only pretended to have, which also break the silhouette at
+ * every edge you see one side-on. `crest` is the share of a fold that is the
+ * outer flat, and the same share is the trough; the slopes take the rest.
+ */
+export function corrugateGeo(len, height, { pitch = 0.3, depth = 0.04, crest = 0.3, tile = 1 } = {}) {
+  const f = facets(tile);
+  const n = Math.max(1, Math.round(len / pitch)), P = len / n;
+  const t = P * crest, s = (P - 2 * t) / 2;
+  // the profile: trough, slope up, crest, slope down, per fold
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const x0 = -len / 2 + i * P;
+    pts.push([x0, 0], [x0 + t / 2, 0], [x0 + t / 2 + s, depth], [x0 + t * 1.5 + s, depth], [x0 + t * 1.5 + 2 * s, 0]);
+  }
+  pts.push([len / 2, 0]);
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
+    if (bx - ax < 1e-6) continue;
+    const nrm = unit(-(bz - az), 0, bx - ax);
+    f.quad([ax, 0, az], [bx, 0, bz], [bx, height, bz], [ax, height, az], nrm);
+  }
+  return f.build();
+}
+
+/**
  * A prism described by its cross-sections instead of by a width and a depth.
  *
  * Each section is a rectangle at a height — `{ y, hx, hz, cx = 0, cz = 0 }` —

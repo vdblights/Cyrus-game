@@ -3,7 +3,7 @@ import { World, randRange, pick } from './world.js';
 import * as TEX from './textures.js';
 import { TILE, FACADE_BAYS, FACADE_FLOORS, FACADE_VARIANTS } from './textures.js';
 import { reserve, spend, makeRandom, UUID_COST } from './rng.js';
-import { chamferGeo, loftGeo, mergeIntoOne, sideGeo, latheGeo, bend } from './shapes.js';
+import { chamferGeo, corrugateGeo, loftGeo, mergeIntoOne, sideGeo, latheGeo, bend } from './shapes.js';
 import { cutWindows } from './windows.js';
 
 const BLOCK = 34;      // centre-to-centre distance between city lots
@@ -946,34 +946,85 @@ function jerseyBarrier() {
 }
 
 /**
- * A shipping container: a box, plus the six details that stop it being one.
+ * A shipping container, its steel corrugated the way a container's is.
  *
- * Corner castings, a sill rail top and bottom, and a pair of doors at one end
- * with the locking bars still on them. All one material, so it merges into
- * one geometry and costs exactly what the box cost.
+ * The sides, the back and both door leaves are trapezoid folds standing 4 cm
+ * proud (`corrugateGeo`), the roof shallower ones across it, all on a core
+ * box set back by their depth, so the crests come to the collider's faces
+ * and no further. Around them: corner posts, castings, a top rail round the
+ * roof, a sill, and four locking bars across the doors. The folds used to be
+ * painted on a flat box, and under one low sun a painted fold is a stripe —
+ * a real one lights one slope and shades the other, and breaks the edge of
+ * the silhouette wherever you see a side end-on. It wears a plain sheet
+ * (`rustSheets`) for the same reason: painted folds over real ones read as
+ * two sets at different pitches.
  */
 function shippingContainer() {
   const R = TILE.rust;
   const w = 2.5, h = 2.6, d = 6.0;
+  const cx = w / 2 - 0.06, cz = d / 2 - 0.1;          // the core's faces
+  const ribs = { pitch: 0.28, depth: 0.04, crest: 0.3, tile: R };
   const parts = [
-    chamferGeo(w - 0.1, h - 0.24, d - 0.1, 0.05, R, [0, h / 2, 0]),
-    chamferGeo(w, 0.2, d, 0.05, R, [0, h - 0.1, 0]),                  // top rail
+    chamferGeo(cx * 2, h - 0.2, cz * 2, 0.03, R, [0, h / 2, 0]),     // core
     chamferGeo(w, 0.2, d, 0.05, R, [0, 0.1, 0]),                      // sill
   ];
+  const panelH = h - 0.4;
+  // the long sides, folds out toward ±X
+  for (const sx of [-1, 1]) {
+    parts.push(corrugateGeo(d - 0.36, panelH, ribs).rotateY(sx * Math.PI / 2).translate(sx * cx, 0.2, 0));
+  }
+  // the back, out toward +Z, and the two door leaves out toward -Z
+  parts.push(corrugateGeo(w - 0.36, panelH, ribs).translate(0, 0.2, cz));
+  for (const sx of [-1, 1]) {
+    parts.push(corrugateGeo((w - 0.4) / 2, panelH, { ...ribs, depth: 0.03 })
+      .rotateY(Math.PI).translate(sx * (w - 0.4) / 4, 0.2, -cz));
+  }
+  // the roof: shallow folds running across it, faced up
+  const roof = corrugateGeo(d - 0.36, w - 0.36, { pitch: 0.5, depth: 0.025, crest: 0.35, tile: R });
+  roof.applyMatrix4(new THREE.Matrix4().set(0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1));
+  parts.push(roof.translate(-(w - 0.36) / 2, h - 0.1, 0));
+  // a top rail round the roof, the corner posts and their castings
+  for (const sx of [-1, 1]) parts.push(chamferGeo(0.14, 0.2, d, 0.03, R, [sx * (w / 2 - 0.07), h - 0.1, 0]));
+  for (const sz of [-1, 1]) parts.push(chamferGeo(w, 0.2, 0.16, 0.03, R, [0, h - 0.1, sz * (d / 2 - 0.08)]));
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
+      parts.push(chamferGeo(0.16, h, 0.18, 0.03, R, [sx * (w / 2 - 0.08), h / 2, sz * (d / 2 - 0.09)]));
       for (const sy of [0, 1]) {
         parts.push(chamferGeo(0.26, 0.26, 0.26, 0.05, R,
           [sx * (w / 2 - 0.13), sy ? h - 0.13 : 0.13, sz * (d / 2 - 0.13)]));
       }
     }
   }
-  // doors on the -Z end: two leaves, four locking bars
-  parts.push(chamferGeo(w - 0.16, h - 0.44, 0.08, 0.03, R, [0, h / 2, -d / 2 - 0.02]));
+  // four locking bars across the doors, standing off the leaves
   for (const bx of [-0.78, -0.26, 0.26, 0.78]) {
-    parts.push(chamferGeo(0.07, h - 0.6, 0.07, 0.02, R, [bx, h / 2, -d / 2 - 0.07]));
+    parts.push(chamferGeo(0.06, h - 0.6, 0.06, 0.02, R, [bx, h / 2, -cz - 0.06]));
   }
   return mergeIntoOne(parts);
+}
+
+/**
+ * A roller shutter, pulled down: `len` across, `height` up from y = 0, `thick`
+ * through, its slats facing +Z.
+ *
+ * A shutter is horizontal slats, not a container's vertical folds, and the
+ * rust sheet painted folds onto both, so every shop front in the city read as
+ * a container stood on end. The slats are a corrugated sheet laid on its side
+ * (`corrugateGeo`, 9 cm a slat), on a core set back by their depth so the
+ * crests stay inside the wall it stands in for, between two guide channels.
+ * Its UVs run with the sheet, so rust runs down it rather than across.
+ */
+function rollerShutter(len, height, thick, tile = TILE.rust) {
+  const slats = corrugateGeo(height, len - 0.12, { pitch: 0.09, depth: 0.018, crest: 0.4, tile });
+  // the profile runs up and the sheet across: x→y, y→−x, a turn about Z
+  slats.rotateZ(Math.PI / 2).translate(len / 2 - 0.06, height / 2, thick / 2 - 0.04);
+  const uv = slats.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getY(i), uv.getX(i));
+  return mergeIntoOne([
+    boxGeo(len - 0.12, height, thick - 0.04, tile).translate(0, height / 2, -0.02),
+    slats,
+    boxGeo(0.06, height, thick, tile).translate(-len / 2 + 0.03, height / 2, 0),
+    boxGeo(0.06, height, thick, tile).translate(len / 2 - 0.03, height / 2, 0),
+  ]);
 }
 
 /**
@@ -1083,7 +1134,7 @@ function bakeStatic(group, world) {
       for (const g of b.geos) g.dispose();
     }
   });
-  spend([...perMaterial.keys()].filter((m) => !m.userData.unbilled).length * 2 * UUID_COST);
+  spend(new Set([...perMaterial.keys()].filter((m) => !m.userData.unbilled).map((m) => m.userData.billAs || m)).size * 2 * UUID_COST);
   return buckets.size;
 }
 
@@ -1754,16 +1805,21 @@ export const CITY_PAINT = [
     // Rust is oxide over what is still metal, so the bright pixels hold some
     // of that back: one packed map feeds both roughness and metalness.
     run(m) {
-      m.rusts = [0, 1, 2, 3].map((v) => {
-        const tex = TEX.rustMetal(v);
-        const surface = TEX.surfaceFrom(tex, { dark: 1, lite: 0.5, metalDark: 0.1, metalLite: 0.75 }, 'rust' + v);
+      const rust = (v, sheet) => {
+        const key = (sheet ? 'rustsheet' : 'rust') + v;
+        const tex = TEX.rustMetal(v, sheet);
+        const surface = TEX.surfaceFrom(tex, { dark: 1, lite: 0.5, metalDark: 0.1, metalLite: 0.75 }, key);
         return new THREE.MeshStandardMaterial({
-          map: tex, normalMap: TEX.normalFrom(tex, 1.6, 'rust' + v, 1),
+          map: tex, normalMap: TEX.normalFrom(tex, 1.6, key, 1),
           normalScale: new THREE.Vector2(1, 1),
           roughnessMap: surface, metalnessMap: surface,
           roughness: 1, metalness: 1, envMapIntensity: 0.8, vertexColors: true,
         });
-      });
+      };
+      m.rusts = [0, 1, 2, 3].map((v) => rust(v, false));
+      // the same paints with no folds painted on, for whatever wears its
+      // folds as geometry — a container's sides, a drum, a roller shutter
+      m.rustSheets = [0, 1, 2, 3].map((v) => rust(v, true));
     },
   },
   {
@@ -2024,6 +2080,10 @@ function labelMaterials(m) {
   label(m.concreteMat, 'concrete', TILE.concrete);
   label(m.darkConcrete, 'dark', TILE.concrete);
   m.rusts.forEach((mat, i) => label(mat, 'rust' + i, TILE.rust));
+  // A sheet is worn where its rust twin was, so the bake bills it as that
+  // twin: whichever of the two a seed's props end up wearing, the batches
+  // cost the stream what the rust alone always did.
+  m.rustSheets.forEach((mat, i) => { label(mat, 'rustsheet' + i, TILE.rust); mat.userData.billAs = m.rusts[i]; });
   label(m.metalMat, 'metal', TILE.metal);
   label(m.glassMat, 'glass', TILE.glass);
   label(m.asphaltMat, 'asphalt', TILE.asphalt);
@@ -2061,13 +2121,15 @@ export function buildCity(scene, painted = null) {
 
   const mats = painted || paintCity();
   labelMaterials(mats);
-  const { facades, infills, concreteMat, darkConcrete, rusts, metalMat, glassMat,
+  const { facades, infills, concreteMat, darkConcrete, rusts, rustSheets, metalMat, glassMat,
     asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, ironMat, gratingMat, railMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat, shardMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
   const rustFor = (x, z) =>
     rusts[Math.floor(hash2(Math.round(x), Math.round(z), 21) * rusts.length)];
+  /** The same paint, as a plain sheet, for a part whose folds are geometry. */
+  const sheetFor = (x, z) => rustSheets[rusts.indexOf(rustFor(x, z))];
 
   /**
    * Every shape the street furniture is cut from, minted once.
@@ -2520,7 +2582,10 @@ export function buildCity(scene, painted = null) {
       // so the stream after it is the one every closed block leaves.
       const band = new THREE.Mesh(boxGeo(bw + 0.1, 2.6, bd + 0.1, TILE.glass), glass);
       band.position.set(x, 1.6, z);
-      const shut = new THREE.Mesh(boxGeo(bw * 0.4, 2.4, 0.2, TILE.rust), rustFor(x, z));
+      // the box it used to be cost a geometry's UUID; the slats are built
+      // free and pay that, so the rolls after it get the values they did
+      spend(UUID_COST);
+      const shut = new THREE.Mesh(reserve(() => rollerShutter(bw * 0.4, 2.4, 0.2).translate(0, -1.2, 0)), sheetFor(x, z));
       shut.position.set(x + randRange(-bw / 4, bw / 4), 1.4, z + bd / 2 + 0.12);
       shut.userData.tint = tintAt(x, z, 2, 0.1);
       let stair = null;
@@ -2853,7 +2918,7 @@ export function buildCity(scene, painted = null) {
     const cw = 2.5, ch = 2.6, cd = 6.0;
     for (let k = 0; k < 2; k++) {
       spend(2 * UUID_COST);                       // what the box used to cost
-      const m = reserve(() => new THREE.Mesh(shapes.container, rustFor(x, z + k * 3)));
+      const m = reserve(() => new THREE.Mesh(shapes.container, sheetFor(x, z + k * 3)));
       // The top one used to be slid up to 0.4 m off the one below, over a
       // collider that stayed put — a deck you stood on air beside and fell
       // through the edge of. The roll is still drawn, because the stream
@@ -3169,6 +3234,22 @@ export function buildCity(scene, painted = null) {
       if (f.along === 'x') part(len, hi - lo, T, x + mid, lo, f.at, mat, collide, tile);
       else part(T, hi - lo, len, f.at, lo, z + mid, mat, collide, tile);
     };
+    // a shutter rolled down across a bay: a wall piece to everything that
+    // collides, and slats facing the street
+    const shutter = (f, a, b, hi, mat) => {
+      const mid = (a + b) / 2, len = b - a;
+      if (len < 0.2) return;
+      const m = new THREE.Mesh(rollerShutter(len, hi, T), mat);
+      if (f.along === 'x') m.position.set(x + mid, 0, f.at);
+      else m.position.set(f.at, 0, z + mid);
+      m.rotation.y = f.along === 'x' ? (f.s > 0 ? 0 : Math.PI) : f.s * Math.PI / 2;
+      m.castShadow = m.receiveShadow = true;
+      m.userData.tint = tint;
+      g.add(m);
+      w.solids.push(m);
+      if (f.along === 'x') w.addBox(x + a, f.at - T / 2, x + b, f.at + T / 2, hi);
+      else w.addBox(f.at - T / 2, z + a, f.at + T / 2, z + b, hi);
+    };
     const frontDoors = [];             // where along the shopfront its doorways are
     w.rooms.push(room);
     for (const f of faces) {
@@ -3191,7 +3272,7 @@ export function buildCity(scene, painted = null) {
             ? { x: x + m, z: f.at, nx: 0, nz: f.s, width: b - a }
             : { x: f.at, z: z + m, nx: f.s, nz: 0, width: b - a });
         }
-        else if (kinds[i] === 'shut') wall(f, a, b, 0, under, rustFor(x + a, z + b), true, TILE.rust);
+        else if (kinds[i] === 'shut') shutter(f, a, b, under, sheetFor(x + a, z + b));
         // a doorway: open to the ceiling, its shutter rolled up into a box at
         // the top, which is above any head
         else {
@@ -4363,7 +4444,7 @@ export function buildCity(scene, painted = null) {
   function container(g, w, x, z, rot) {
     const cw = 2.5, ch = 2.6, cd = 6.0;
     spend(2 * UUID_COST);                         // what the box used to cost
-    const m = reserve(() => new THREE.Mesh(shapes.container, rustFor(x, z)));
+    const m = reserve(() => new THREE.Mesh(shapes.container, sheetFor(x, z)));
     m.position.set(x, 0, z);
     m.rotation.y = rot;
     m.castShadow = m.receiveShadow = true;
@@ -4375,7 +4456,7 @@ export function buildCity(scene, painted = null) {
 
   function fireBarrel(g, w, x, z) {
     spend(2 * UUID_COST);                         // what the drum used to cost
-    const drum = reserve(() => new THREE.Mesh(shapes.drum, rustFor(x, z)));
+    const drum = reserve(() => new THREE.Mesh(shapes.drum, sheetFor(x, z)));
     drum.userData.tint = tintAt(x, z, 2, 0.16);
     drum.position.set(x, 0, z);
     drum.castShadow = true;
