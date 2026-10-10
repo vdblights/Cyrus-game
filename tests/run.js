@@ -3469,6 +3469,7 @@ const CITY_FINGERPRINT = () => {
     // everything placed before the rubble was given colliders
     placed: placed.length,
     fpPlaced: print(placed),
+    mark: g.bootMark,
   };
 };
 
@@ -5787,10 +5788,15 @@ check('a seed still lays out the city it did', async (page) => {
   // there). Before it: 5361/1649 'b0d92d20', 3660/1323 '3dc368da',
   // 4854/1712 'a5ab07a8'.
   const want = {
-    1: { boxes: 5342, solids: 1642, perches: 12, fp: '8afdfa64', placed: 5003, fpPlaced: '6edef181' },
-    7: { boxes: 3639, solids: 1317, perches: 11, fp: '3f753593', placed: 3202, fpPlaced: 'dc28bfb4' },
-    20260101: { boxes: 4835, solids: 1706, perches: 10, fp: 'dd322493', placed: 4372, fpPlaced: 'f8b6d04b' },
+    1: { boxes: 5342, solids: 1642, perches: 12, fp: '8afdfa64', placed: 5003, fpPlaced: '6edef181', mark: -1361973962 },
+    7: { boxes: 3639, solids: 1317, perches: 11, fp: '3f753593', placed: 3202, fpPlaced: 'dc28bfb4', mark: -559214183 },
+    20260101: { boxes: 4835, solids: 1706, perches: 10, fp: 'dd322493', placed: 4372, fpPlaced: 'f8b6d04b', mark: -1572333659 },
   };
+  // `mark` is where the seeded stream stands at the end of boot, which is
+  // the stream every spawn is picked from. Every pass that changed how
+  // something is built measured it by hand and wrote "the mark after boot is
+  // identical" into its note; it is held here now. A look change that moves
+  // it moves where every wave comes from without moving a single collider.
   // (bare rooms: 2497/1540/12 b323ced2 (2139 e5d0438f), 1933/1268/11
   // 9d1c7f32 (1475 de4ab94c), 2526/1617/10 e1cfa671 (2044 9123bce6))
 
@@ -5811,6 +5817,8 @@ check('a seed still lays out the city it did', async (page) => {
     expect(r.fp === w.fp,
       `seed ${seed} has the same number of colliders in different places ` +
       `(${r.fp}, not ${w.fp})`);
+    expect(r.mark === w.mark,
+      `seed ${seed} leaves the spawn stream at ${r.mark} after boot, not ${w.mark}`);
   }
   return got;
 });

@@ -3247,8 +3247,9 @@ export function buildCity(scene, painted = null) {
       m.userData.tint = tint;
       g.add(m);
       w.solids.push(m);
-      if (f.along === 'x') w.addBox(x + a, f.at - T / 2, x + b, f.at + T / 2, hi);
-      else w.addBox(f.at - T / 2, z + a, f.at + T / 2, z + b, hi);
+      // the box the wall piece it replaces registered, to the last bit
+      if (f.along === 'x') w.addBox((x + mid) - len / 2, f.at - T / 2, (x + mid) + len / 2, f.at + T / 2, 0 + hi);
+      else w.addBox(f.at - T / 2, (z + mid) - len / 2, f.at + T / 2, (z + mid) + len / 2, 0 + hi);
     };
     const frontDoors = [];             // where along the shopfront its doorways are
     w.rooms.push(room);
