@@ -3,7 +3,7 @@ import { World, randRange, pick } from './world.js';
 import * as TEX from './textures.js';
 import { TILE, FACADE_BAYS, FACADE_FLOORS, FACADE_VARIANTS } from './textures.js';
 import { reserve, spend, makeRandom, UUID_COST } from './rng.js';
-import { chamferGeo, loftGeo, mergeIntoOne, sideGeo, latheGeo, bend } from './shapes.js';
+import { chamferGeo, corrugateGeo, loftGeo, mergeIntoOne, sideGeo, latheGeo, bend, planarUV } from './shapes.js';
 import { cutWindows } from './windows.js';
 
 const BLOCK = 34;      // centre-to-centre distance between city lots
@@ -946,34 +946,119 @@ function jerseyBarrier() {
 }
 
 /**
- * A shipping container: a box, plus the six details that stop it being one.
+ * A shipping container, its steel corrugated the way a container's is.
  *
- * Corner castings, a sill rail top and bottom, and a pair of doors at one end
- * with the locking bars still on them. All one material, so it merges into
- * one geometry and costs exactly what the box cost.
+ * The sides, the back and both door leaves are trapezoid folds standing 4 cm
+ * proud (`corrugateGeo`), the roof shallower ones across it, all on a core
+ * box set back by their depth, so the crests come to the collider's faces
+ * and no further. Around them: corner posts, castings, a top rail round the
+ * roof, a sill, and four locking bars across the doors. The folds used to be
+ * painted on a flat box, and under one low sun a painted fold is a stripe —
+ * a real one lights one slope and shades the other, and breaks the edge of
+ * the silhouette wherever you see a side end-on. It wears a plain sheet
+ * (`rustSheets`) for the same reason: painted folds over real ones read as
+ * two sets at different pitches.
  */
 function shippingContainer() {
   const R = TILE.rust;
   const w = 2.5, h = 2.6, d = 6.0;
+  const cx = w / 2 - 0.06, cz = d / 2 - 0.1;          // the core's faces
+  const ribs = { pitch: 0.28, depth: 0.04, crest: 0.3, tile: R };
   const parts = [
-    chamferGeo(w - 0.1, h - 0.24, d - 0.1, 0.05, R, [0, h / 2, 0]),
-    chamferGeo(w, 0.2, d, 0.05, R, [0, h - 0.1, 0]),                  // top rail
+    chamferGeo(cx * 2, h - 0.2, cz * 2, 0.03, R, [0, h / 2, 0]),     // core
     chamferGeo(w, 0.2, d, 0.05, R, [0, 0.1, 0]),                      // sill
   ];
+  const panelH = h - 0.4;
+  // the long sides, folds out toward ±X
+  for (const sx of [-1, 1]) {
+    parts.push(corrugateGeo(d - 0.36, panelH, ribs).rotateY(sx * Math.PI / 2).translate(sx * cx, 0.2, 0));
+  }
+  // the back, out toward +Z, and the two door leaves out toward -Z
+  parts.push(corrugateGeo(w - 0.36, panelH, ribs).translate(0, 0.2, cz));
+  for (const sx of [-1, 1]) {
+    parts.push(corrugateGeo((w - 0.4) / 2, panelH, { ...ribs, depth: 0.03 })
+      .rotateY(Math.PI).translate(sx * (w - 0.4) / 4, 0.2, -cz));
+  }
+  // the roof: shallow folds running across it, faced up
+  const roof = corrugateGeo(d - 0.36, w - 0.36, { pitch: 0.5, depth: 0.025, crest: 0.35, tile: R });
+  roof.applyMatrix4(new THREE.Matrix4().set(0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1));
+  parts.push(roof.translate(-(w - 0.36) / 2, h - 0.1, 0));
+  // a top rail round the roof, the corner posts and their castings
+  for (const sx of [-1, 1]) parts.push(chamferGeo(0.14, 0.2, d, 0.03, R, [sx * (w / 2 - 0.07), h - 0.1, 0]));
+  for (const sz of [-1, 1]) parts.push(chamferGeo(w, 0.2, 0.16, 0.03, R, [0, h - 0.1, sz * (d / 2 - 0.08)]));
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
+      parts.push(chamferGeo(0.16, h, 0.18, 0.03, R, [sx * (w / 2 - 0.08), h / 2, sz * (d / 2 - 0.09)]));
       for (const sy of [0, 1]) {
         parts.push(chamferGeo(0.26, 0.26, 0.26, 0.05, R,
           [sx * (w / 2 - 0.13), sy ? h - 0.13 : 0.13, sz * (d / 2 - 0.13)]));
       }
     }
   }
-  // doors on the -Z end: two leaves, four locking bars
-  parts.push(chamferGeo(w - 0.16, h - 0.44, 0.08, 0.03, R, [0, h / 2, -d / 2 - 0.02]));
+  // four locking bars across the doors, standing off the leaves
   for (const bx of [-0.78, -0.26, 0.26, 0.78]) {
-    parts.push(chamferGeo(0.07, h - 0.6, 0.07, 0.02, R, [bx, h / 2, -d / 2 - 0.07]));
+    parts.push(chamferGeo(0.06, h - 0.6, 0.06, 0.02, R, [bx, h / 2, -cz - 0.06]));
   }
   return mergeIntoOne(parts);
+}
+
+/**
+ * A roller shutter, pulled down: `len` across, `height` up from y = 0, `thick`
+ * through, its slats facing +Z.
+ *
+ * A shutter is horizontal slats, not a container's vertical folds, and the
+ * rust sheet painted folds onto both, so every shop front in the city read as
+ * a container stood on end. The slats are a corrugated sheet laid on its side
+ * (`corrugateGeo`, 9 cm a slat), on a core set back by their depth so the
+ * crests stay inside the wall it stands in for, between two guide channels.
+ * Its UVs run with the sheet, so rust runs down it rather than across.
+ */
+function rollerShutter(len, height, thick, tile = TILE.rust) {
+  const slats = corrugateGeo(height, len - 0.12, { pitch: 0.09, depth: 0.018, crest: 0.4, tile });
+  // the profile runs up and the sheet across: x→y, y→−x, a turn about Z
+  slats.rotateZ(Math.PI / 2).translate(len / 2 - 0.06, height / 2, thick / 2 - 0.04);
+  const uv = slats.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getY(i), uv.getX(i));
+  return mergeIntoOne([
+    boxGeo(len - 0.12, height, thick - 0.04, tile).translate(0, height / 2, -0.02),
+    slats,
+    boxGeo(0.06, height, thick, tile).translate(-len / 2 + 0.03, height / 2, 0),
+    boxGeo(0.06, height, thick, tile).translate(len / 2 - 0.03, height / 2, 0),
+  ]);
+}
+
+/**
+ * A heap of rubble: a mound that slumped, not a stone that was cut.
+ *
+ * It used to be an icosahedron at detail 0 — twenty flat faces, which under
+ * one sun reads as a faceted grey boulder, a hundred and fifty of them across
+ * the city. This is the same sphere subdivided twice and pushed in and out
+ * by a lumpy field off each vertex's direction, so every copy of a vertex
+ * moves alike and the surface stays closed; the faces are shaded flat, so it
+ * reads as broken concrete in lumps. `n` picks the lumps (the heap's count,
+ * which the stream already decided), and the heap's colliders are cut from
+ * this shape (`registerHeaps`), so you stand on the lumps you see.
+ */
+function rubbleGeo(r, n) {
+  const geo = new THREE.IcosahedronGeometry(r, 2);
+  const p = geo.attributes.position;
+  const o = [hash2(n, 3, 61) * 9, hash2(n, 5, 62) * 9, hash2(n, 7, 63) * 9];
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i).normalize();
+    const x = v.x * 2.1 + o[0], y = v.y * 2.1 + o[1], z = v.z * 2.1 + o[2];
+    // ridged: |sin| folds make creases rather than swells, which is the
+    // difference between broken slabs leaning on each other and a pebble
+    const ridge = (t) => 1 - 2 * Math.abs(Math.sin(t));
+    const lump = 0.5 * Math.sin(x * 1.7 + Math.sin(z * 1.3)) * Math.sin(y * 1.9 + Math.sin(x * 1.1))
+      + 0.45 * ridge(x * 3.1 + y * 2.3 - z * 1.1)
+      + 0.35 * ridge(z * 4.7 - x * 2.9 + y * 1.7)
+      + 0.25 * ridge(y * 7.9 + z * 5.3 - x * 3.7);
+    v.multiplyScalar(r * (1 + 0.2 * lump));
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();             // non-indexed: one normal a face
+  return planarUV(geo, TILE.concrete);
 }
 
 /**
@@ -1083,7 +1168,7 @@ function bakeStatic(group, world) {
       for (const g of b.geos) g.dispose();
     }
   });
-  spend([...perMaterial.keys()].filter((m) => !m.userData.unbilled).length * 2 * UUID_COST);
+  spend(new Set([...perMaterial.keys()].filter((m) => !m.userData.unbilled).map((m) => m.userData.billAs || m)).size * 2 * UUID_COST);
   return buckets.size;
 }
 
@@ -1727,7 +1812,7 @@ export const CITY_PAINT = [
   })),
   {
     label: 'Pouring concrete',
-    weight: 6,
+    weight: 9,
     run(m) {
       const concreteTex = TEX.concrete('#6a6c72');   // cooler stock; the warm key tints it
       m.concreteMat = new THREE.MeshStandardMaterial({
@@ -1743,6 +1828,14 @@ export const CITY_PAINT = [
         roughnessMap: TEX.surfaceFrom(darkTex, { dark: 1, lite: 0.72 }, 'dark'),
         roughness: 1, metalness: 0.02, envMapIntensity: 0.6, vertexColors: true,
       });
+      // what a heap of rubble is made of, close to
+      const debrisTex = TEX.debris();
+      m.debrisMat = new THREE.MeshStandardMaterial({
+        map: debrisTex, normalMap: TEX.normalFrom(debrisTex, 2.2, 'debris', 1),
+        normalScale: new THREE.Vector2(1, 1),
+        roughnessMap: TEX.surfaceFrom(debrisTex, { dark: 1, lite: 0.8 }, 'debris'),
+        roughness: 1, metalness: 0.02, envMapIntensity: 0.5, vertexColors: true,
+      });
     },
   },
   {
@@ -1754,16 +1847,21 @@ export const CITY_PAINT = [
     // Rust is oxide over what is still metal, so the bright pixels hold some
     // of that back: one packed map feeds both roughness and metalness.
     run(m) {
-      m.rusts = [0, 1, 2, 3].map((v) => {
-        const tex = TEX.rustMetal(v);
-        const surface = TEX.surfaceFrom(tex, { dark: 1, lite: 0.5, metalDark: 0.1, metalLite: 0.75 }, 'rust' + v);
+      const rust = (v, sheet) => {
+        const key = (sheet ? 'rustsheet' : 'rust') + v;
+        const tex = TEX.rustMetal(v, sheet);
+        const surface = TEX.surfaceFrom(tex, { dark: 1, lite: 0.5, metalDark: 0.1, metalLite: 0.75 }, key);
         return new THREE.MeshStandardMaterial({
-          map: tex, normalMap: TEX.normalFrom(tex, 1.6, 'rust' + v, 1),
+          map: tex, normalMap: TEX.normalFrom(tex, 1.6, key, 1),
           normalScale: new THREE.Vector2(1, 1),
           roughnessMap: surface, metalnessMap: surface,
           roughness: 1, metalness: 1, envMapIntensity: 0.8, vertexColors: true,
         });
-      });
+      };
+      m.rusts = [0, 1, 2, 3].map((v) => rust(v, false));
+      // the same paints with no folds painted on, for whatever wears its
+      // folds as geometry — a container's sides, a drum, a roller shutter
+      m.rustSheets = [0, 1, 2, 3].map((v) => rust(v, true));
     },
   },
   {
@@ -2023,7 +2121,15 @@ function labelMaterials(m) {
   m.carRustMats.forEach((mat, i) => label(mat, 'carrust' + i, TILE.metal));
   label(m.concreteMat, 'concrete', TILE.concrete);
   label(m.darkConcrete, 'dark', TILE.concrete);
+  // new, so unbilled: the heaps it dresses used to wear concrete, which the
+  // rest of the city still wears, so the batches the stream pays for are the
+  // ones they were
+  label(m.debrisMat, 'debris', TILE.concrete); m.debrisMat.userData.unbilled = true;
   m.rusts.forEach((mat, i) => label(mat, 'rust' + i, TILE.rust));
+  // A sheet is worn where its rust twin was, so the bake bills it as that
+  // twin: whichever of the two a seed's props end up wearing, the batches
+  // cost the stream what the rust alone always did.
+  m.rustSheets.forEach((mat, i) => { label(mat, 'rustsheet' + i, TILE.rust); mat.userData.billAs = m.rusts[i]; });
   label(m.metalMat, 'metal', TILE.metal);
   label(m.glassMat, 'glass', TILE.glass);
   label(m.asphaltMat, 'asphalt', TILE.asphalt);
@@ -2061,13 +2167,15 @@ export function buildCity(scene, painted = null) {
 
   const mats = painted || paintCity();
   labelMaterials(mats);
-  const { facades, infills, concreteMat, darkConcrete, rusts, metalMat, glassMat,
+  const { facades, infills, concreteMat, darkConcrete, debrisMat, rusts, rustSheets, metalMat, glassMat,
     asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, ironMat, gratingMat, railMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat, shardMat } = mats;
 
   /** Which paint this bit of scrap wears — by position, so it costs no stream. */
   const rustFor = (x, z) =>
     rusts[Math.floor(hash2(Math.round(x), Math.round(z), 21) * rusts.length)];
+  /** The same paint, as a plain sheet, for a part whose folds are geometry. */
+  const sheetFor = (x, z) => rustSheets[rusts.indexOf(rustFor(x, z))];
 
   /**
    * Every shape the street furniture is cut from, minted once.
@@ -2333,6 +2441,10 @@ export function buildCity(scene, painted = null) {
     heaps.splice(k, 1);
     const i = world.solids.indexOf(m);
     if (i >= 0) world.solids.splice(i, 1);
+    // it pays the bake the UUID it no longer costs there, as a heap cleared
+    // from a doorway does: which heaps a perch clears depends on each
+    // heap's shape, and a shape is a look, which must not move a spawn
+    spend(UUID_COST);
   }
   // And a shop's doorway, from the pavement to just inside: a heap there is
   // one a body climbs, now that rubble takes your weight, and from its top
@@ -2520,7 +2632,10 @@ export function buildCity(scene, painted = null) {
       // so the stream after it is the one every closed block leaves.
       const band = new THREE.Mesh(boxGeo(bw + 0.1, 2.6, bd + 0.1, TILE.glass), glass);
       band.position.set(x, 1.6, z);
-      const shut = new THREE.Mesh(boxGeo(bw * 0.4, 2.4, 0.2, TILE.rust), rustFor(x, z));
+      // the box it used to be cost a geometry's UUID; the slats are built
+      // free and pay that, so the rolls after it get the values they did
+      spend(UUID_COST);
+      const shut = new THREE.Mesh(reserve(() => rollerShutter(bw * 0.4, 2.4, 0.2).translate(0, -1.2, 0)), sheetFor(x, z));
       shut.position.set(x + randRange(-bw / 4, bw / 4), 1.4, z + bd / 2 + 0.12);
       shut.userData.tint = tintAt(x, z, 2, 0.1);
       let stair = null;
@@ -2619,21 +2734,53 @@ export function buildCity(scene, painted = null) {
       const z0 = alongX ? pz - T / 2 - 1 : pz + a0, z1 = alongX ? pz + T / 2 + 1 : pz + a1;
       return o.minX < x1 && o.maxX > x0 && o.minZ < z1 && o.maxZ > z0;
     });
-    const pieces = [];                                   // [a0, a1, y0, y1]
+    // Where it broke. A wall that stood through a collapse does not keep a
+    // ruler-straight top: it comes down in notches, each a V of steps one
+    // column wide, deepest where the floor that tore it away was heaviest,
+    // with the corners — where a wall is stiffest — standing longest. A
+    // column's top is the wall's height less the deepest notch over it, and
+    // never under a stub of a metre and a half. Hashed off where the wall
+    // stands, so it costs the stream nothing; a wall in four keeps its top.
+    const key = [Math.round(px * 7), Math.round(pz * 7)];
+    const notches = [];
+    if (hash2(key[0], key[1], 51) > 0.25) {
+      const count = hash2(key[0], key[1], 52) < 0.45 ? 2 : 1;
+      for (let i = 0; i < count; i++) {
+        const c = (hash2(key[0] + i, key[1], 53) - 0.5) * L * 0.7;
+        notches.push({ c, depth: hh * (0.25 + 0.4 * hash2(key[0], key[1] + i, 54)), width: 2 + 3.5 * hash2(key[0] + i, key[1] + i, 55) });
+      }
+    }
+    const tops = [];
     for (let k = 0; k + 1 < cuts.length; k++) {
-      const a0 = cuts[k], a1 = cuts[k + 1];
-      if (k % 2 === 0 || crossed(a0, a1)) { pieces.push([a0, a1, 0, hh]); continue; }
+      const m = (cuts[k] + cuts[k + 1]) / 2;
+      let drop = 0;
+      for (const n of notches) drop = Math.max(drop, n.depth * Math.max(0, 1 - Math.abs(m - n.c) / n.width));
+      // a little unevenness along what is left, a column at a time
+      if (notches.length) drop += 0.35 * hash2(key[0] + k, key[1], 56);
+      tops.push(Math.max(Math.min(1.5, hh), hh - drop));
+    }
+    const pieces = [];                                   // [a0, a1, y0, y1]
+    const keep = (a0, a1, y0, y1, top) => { if (y0 < top - 0.01) pieces.push([a0, a1, y0, Math.min(y1, top)]); };
+    for (let k = 0; k + 1 < cuts.length; k++) {
+      const a0 = cuts[k], a1 = cuts[k + 1], top = tops[k];
+      if (k % 2 === 0 || crossed(a0, a1)) { keep(a0, a1, 0, hh, top); continue; }
       let y = 0;
       for (let j = 0; j < ns; j++) {
-        pieces.push([a0, a1, y, (j + V0) * storey]);
-        y = (j + V1) * storey;
+        const sill = (j + V0) * storey, head = (j + V1) * storey;
+        keep(a0, a1, y, sill, top);
+        y = head;
+        // A window counts where the piers either side still stand past its
+        // middle; its lintel may be gone, and then it is a notch open to the
+        // sky, which is still a hole to see and shoot through.
+        const open = Math.min(head, top), mid = (sill + open) / 2;
+        if (open - sill < 0.5 || Math.min(tops[k - 1], tops[k + 1]) < mid + 0.15) continue;
         const ca = (a0 + a1) / 2;
         w.ruinWindows.push({
           x: alongX ? px + ca : px, z: alongX ? pz : pz + ca, nx: alongX ? 0 : 1, nz: alongX ? 1 : 0,
-          width: a1 - a0, sill: (j + V0) * storey, head: y, thick: T,
+          width: a1 - a0, sill, head: open, thick: T,
         });
       }
-      pieces.push([a0, a1, y, hh]);
+      keep(a0, a1, y, hh, top);
     }
     // the whole wall's unwrap, asked of each piece's vertices where they are —
     // but across its thickness at the tile's own scale: `boxGeo` snaps that to
@@ -2853,7 +3000,7 @@ export function buildCity(scene, painted = null) {
     const cw = 2.5, ch = 2.6, cd = 6.0;
     for (let k = 0; k < 2; k++) {
       spend(2 * UUID_COST);                       // what the box used to cost
-      const m = reserve(() => new THREE.Mesh(shapes.container, rustFor(x, z + k * 3)));
+      const m = reserve(() => new THREE.Mesh(shapes.container, sheetFor(x, z + k * 3)));
       // The top one used to be slid up to 0.4 m off the one below, over a
       // collider that stayed put — a deck you stood on air beside and fell
       // through the edge of. The roll is still drawn, because the stream
@@ -3169,6 +3316,23 @@ export function buildCity(scene, painted = null) {
       if (f.along === 'x') part(len, hi - lo, T, x + mid, lo, f.at, mat, collide, tile);
       else part(T, hi - lo, len, f.at, lo, z + mid, mat, collide, tile);
     };
+    // a shutter rolled down across a bay: a wall piece to everything that
+    // collides, and slats facing the street
+    const shutter = (f, a, b, hi, mat) => {
+      const mid = (a + b) / 2, len = b - a;
+      if (len < 0.2) return;
+      const m = new THREE.Mesh(rollerShutter(len, hi, T), mat);
+      if (f.along === 'x') m.position.set(x + mid, 0, f.at);
+      else m.position.set(f.at, 0, z + mid);
+      m.rotation.y = f.along === 'x' ? (f.s > 0 ? 0 : Math.PI) : f.s * Math.PI / 2;
+      m.castShadow = m.receiveShadow = true;
+      m.userData.tint = tint;
+      g.add(m);
+      w.solids.push(m);
+      // the box the wall piece it replaces registered, to the last bit
+      if (f.along === 'x') w.addBox((x + mid) - len / 2, f.at - T / 2, (x + mid) + len / 2, f.at + T / 2, 0 + hi);
+      else w.addBox(f.at - T / 2, (z + mid) - len / 2, f.at + T / 2, (z + mid) + len / 2, 0 + hi);
+    };
     const frontDoors = [];             // where along the shopfront its doorways are
     w.rooms.push(room);
     for (const f of faces) {
@@ -3191,7 +3355,7 @@ export function buildCity(scene, painted = null) {
             ? { x: x + m, z: f.at, nx: 0, nz: f.s, width: b - a }
             : { x: f.at, z: z + m, nx: f.s, nz: 0, width: b - a });
         }
-        else if (kinds[i] === 'shut') wall(f, a, b, 0, under, rustFor(x + a, z + b), true, TILE.rust);
+        else if (kinds[i] === 'shut') shutter(f, a, b, under, sheetFor(x + a, z + b));
         // a doorway: open to the ceiling, its shutter rolled up into a box at
         // the top, which is above any head
         else {
@@ -4363,7 +4527,7 @@ export function buildCity(scene, painted = null) {
   function container(g, w, x, z, rot) {
     const cw = 2.5, ch = 2.6, cd = 6.0;
     spend(2 * UUID_COST);                         // what the box used to cost
-    const m = reserve(() => new THREE.Mesh(shapes.container, rustFor(x, z)));
+    const m = reserve(() => new THREE.Mesh(shapes.container, sheetFor(x, z)));
     m.position.set(x, 0, z);
     m.rotation.y = rot;
     m.castShadow = m.receiveShadow = true;
@@ -4375,7 +4539,7 @@ export function buildCity(scene, painted = null) {
 
   function fireBarrel(g, w, x, z) {
     spend(2 * UUID_COST);                         // what the drum used to cost
-    const drum = reserve(() => new THREE.Mesh(shapes.drum, rustFor(x, z)));
+    const drum = reserve(() => new THREE.Mesh(shapes.drum, sheetFor(x, z)));
     drum.userData.tint = tintAt(x, z, 2, 0.16);
     drum.position.set(x, 0, z);
     drum.castShadow = true;
@@ -4398,11 +4562,20 @@ export function buildCity(scene, painted = null) {
   }
 
   function rubblePile(g, x, z, conc, scale = 1) {
-    const geo = new THREE.IcosahedronGeometry(randRange(0.5, 1.1) * scale, 0);
-    const m = new THREE.Mesh(geo, conc);
+    // the radius is rolled as it always was, and the icosahedron it used to
+    // mint is paid for: the mound is built free (see `rubbleGeo`)
+    const r = randRange(0.5, 1.1) * scale;
+    spend(UUID_COST);
+    const geo = reserve(() => rubbleGeo(r, heaps.length + 1));
+    const m = new THREE.Mesh(geo, debrisMat);
     m.userData.tint = tintAt(x, z, 10, 0.2);
     m.position.set(x, randRange(0.05, 0.3) * scale, z);
-    m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+    // A heap slumps: squashed along the vertical and only tipped a little,
+    // where it used to be spun on all three axes and its squash could come
+    // out standing up — a grey egg on end. The three rolls are drawn as
+    // they always were, and the lumps give each a face of its own.
+    const tx = Math.random(), ty = Math.random(), tz = Math.random();
+    m.rotation.set((tx - 0.5) * 0.3, ty * 3, (tz - 0.5) * 0.3);
     m.scale.y = randRange(0.35, 0.7);
     m.receiveShadow = m.castShadow = true;
     g.add(m);

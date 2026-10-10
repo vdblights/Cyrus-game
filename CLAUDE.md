@@ -686,7 +686,16 @@ These each cost real debugging time. Changing them needs a reason.
   your weight in a shop's doorway puts your head in the floor over it, and
   one shop on seed 1 could not be walked into; rubble in a doorway's
   approach is cleared the way a perch's is (7, 6 and 6 heaps on the pinned
-  seeds), and pays the bake the UUID it no longer costs there. Baking the steep
+  seeds), and pays the bake the UUID it no longer costs there — and so,
+  now, does a heap a perch clears, because which heaps a perch's stairs
+  touch depends on each heap's footprint, and a footprint is a shape. **A
+  heap is a slumped mound** (`rubbleGeo`): the sphere subdivided twice and
+  creased by a ridged field off each vertex's direction (so every copy of a
+  vertex moves alike and the surface stays closed), flat-shaded, tipped a
+  little and squashed along the vertical, wearing broken concrete and brick
+  (`TEX.debris`). It was an icosahedron at detail 0 spun on all three axes,
+  a faceted grey boulder or, squashed and stood on end, an egg. Its
+  colliders are cut from its shape as before. Baking the steep
   tiers as walls was tried first and taken out: it cut 1.3-1.9% of the
   sector into pockets, and 0.6% even with no shoulder round them.
 - **Line of sight must stay symmetric.** It is a three-slab segment test. An
@@ -845,7 +854,14 @@ These each cost real debugging time. Changing them needs a reason.
   stands on a perch holds you up` found the top over every window drawn
   and not stood on. Its faces across the thickness are unwrapped at the
   tile's own scale, not `boxGeo`'s bay snap: 3.6x over a 0.7 m jamb, four
-  to a window, put a ruin's facade batch at 1.8x its declared tile.
+  to a window, put a ruin's facade batch at 1.8x its declared tile. **A
+  ruin's walls are broken at the top**, a column at a time: one or two
+  notches a wall, each a V of steps one column wide, hashed off where the
+  wall stands, never under a stub of 1.5 m, the corners standing longest,
+  and one wall in four whole. A window counts only where the piers either
+  side still stand past its middle; with its lintel gone it is a notch open
+  to the sky. With a ruler-straight top and real holes, a ruin read as a
+  building still going up.
   The sun is read from `directionalLights[0]`, which is the sun for the same
   reason the cascade patch depends on it — see the next item.
 - **The sun's shadow lookup reads two maps, and it depends on light order.**
@@ -1133,6 +1149,32 @@ These each cost real debugging time. Changing them needs a reason.
   wheels; `a wreck fits the box you collide with, and stands on its wheels`
   fails on all of it.
 
+- **Corrugated steel is folded, not painted.** The rust texture painted a
+  fold every 12 cm, a lit face and a shaded one, and under one low sun a
+  painted fold is a stripe: a container read as a striped box, and every
+  shop shutter, which is horizontal slats, wore a container's vertical
+  folds. `corrugateGeo` in `shapes.js` is a trapezoid profile drawn up a
+  sheet, its pitch stretched to a whole number of folds so both ends finish
+  in a trough, each face flat-shaded so the sun lights one slope and leaves
+  the other in shade, and the silhouette breaks wherever a side is seen
+  end-on. A container (`shippingContainer`) is folded on its sides, back and
+  doors (28 cm, 4 cm deep) and shallowly across its roof, on a core set back
+  by the fold so the crests come to the collider and no further, with corner
+  posts, a top rail and four locking bars; a shutter (`rollerShutter`) is the
+  same sheet laid on its side, 9 cm a slat, its UVs turned so rust runs down
+  it. Both wear a plain sheet (`TEX.rustMetal(v, true)`, `rustSheets`) with
+  no painted folds, because painted folds over real ones read as two sets at
+  two pitches; drums wear it too, since a drum never had folds. Three things
+  keep it free. The sheets are billed to the bake as the rust each stands in
+  for (`userData.billAs`), so whichever of the pair a seed's props wear, the
+  batches cost the stream what the rust alone did — billing them as
+  themselves moves seed 1's mark. A closed block's storefront shutter is
+  minted in the stream and pays the geometry it used to mint (`spend`), its
+  slats built in a `reserve`. And a shop's shutter registers *exactly* the
+  box the wall piece it replaced did — `(x + mid) - len / 2`, not `x + a`,
+  which is the same number in arithmetic and not in floating point, and the
+  layout check's fingerprint, at a millimetre, read the difference as a
+  moved city. What it costs is the next item's table.
 - **What a prop costs the seeded stream is a bill it pays, not a side effect
   of how it is built.** Three spends four draws on a UUID for every object
   (see the `generateUUID` invariant above), so the *number of meshes* a wreck
@@ -1741,7 +1783,11 @@ multisets, and require that everything gone and everything new lies inside
 the footprints that were meant to change, with the perches and
 `Math.random.mark()` after boot identical. That is what the open-buildings
 pass recorded in the layout check, and a fingerprint alone could not have
-said it.
+said it. The mark is held by the check now: the game records it at the end
+of boot (`bootMark`), and every seed's is in the check's table, so a look
+change that would move every spawn fails as itself. It caught two in its
+first pass — the rust sheets billed as themselves, and heaps reshaped under
+an unpaid clearing.
 
 A sixth, which is really a tool rather than a trap: the bot that plays the
 scripted run lives in `tests/harness.js` as `window.__botRun(seconds)`, not
@@ -1843,7 +1889,11 @@ want level ground at both ends) and *on the ground rather than on a prop*
 0.28 m the second kind started refusing every approach from a pavement. They
 read 0.5 m now, which is above every floor and below every prop; the first
 kind was left alone, because the road is still what they mean. When a
-floor's height changes, grep the suite for both.
+floor's height changes, grep the suite for both. The ledge check later
+learned the same lesson from a ruin: it took any box topped over 0.8 m as
+a ledge, and a broken wall's sill stands 0.8 m over the street and 0.52 m
+over the pavement in front of it, which is a step (`STEP_HEIGHT`, 0.55). It
+asks for rise over the ground it starts from.
 
 The other half is how to tell a bot-run regression from noise, and it is
 cheap. Any change that perturbs one runtime draw — here, objective siting
@@ -2030,6 +2080,22 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The pass after that went looking for what still read as made, in seven
+rendered frames, and found three things. Every container and shutter was a
+box wearing painted folds; every ruin had a ruler-straight top; every heap
+of rubble was a twenty-face boulder. Each is in an invariant above
+(corrugated steel, windows, rubble). What it cost, seed 1, three views
+interleaved against `main` under software rendering: the city 494k → 547k
+triangles, most of it the heaps; drawn a frame on high 779k → 867k, and
+draw calls 288 → 333 (low 98 → 112), the new materials batched per patch;
+frame time within noise (high 2,188-2,261 → 2,236-2,295 ms, low 303-334 →
+312-317). Two things worth keeping. The spawn stream's mark after boot is
+held by the layout check now, and both times it moved in this pass it was
+a look change billing the stream by accident. And collider by collider
+against `main`, the ruin tops changed only 0.7 m wall pieces on all three
+pinned seeds; the heaps changed only heap colliders and which heaps are
+cleared, and the old boulders under the new bill reproduce the new marks.
 
 The pass after the window perches took three items off the list at once:
 rubble you can climb, a floored building in its own style, and a ruin's

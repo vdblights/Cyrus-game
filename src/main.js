@@ -272,6 +272,10 @@ class Game {
     }
 
     this.loading.finish();
+    // Where the seeded stream stands once the city is built and everything
+    // boot mints is paid for: the stream every spawn is picked from. Reading
+    // it draws nothing, and the layout check holds it to what it was.
+    this.bootMark = Math.random.mark ? Math.random.mark() : null;
     this.state = 'menu';
     this.renderer.setAnimationLoop(() => this.frame());
   }

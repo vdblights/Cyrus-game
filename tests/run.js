@@ -618,7 +618,13 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
         const px = mid + off;
         // on the ground — the street or a floor laid on it, all under half a
         // metre — rather than on top of something
-        if (g.world.groundHeight(px, pz, R, 99) > 0.5) continue;
+        const ground = g.world.groundHeight(px, pz, R, 99);
+        if (ground > 0.5) continue;
+        // and a ledge, not a step: anything under 0.6 m over the ground you
+        // start from is walked onto (`STEP_HEIGHT`). The box list's height is
+        // over the street, and a broken ruin's sill can stand 0.8 m over it
+        // and 0.52 m over the pavement in front of it.
+        if (box.top - ground < 0.62) continue;
         if (g.world.occupied(px, pz, R, 0.6)) continue;            // stuck inside something
         // room for a body on the deck, and a deck there to stand on
         if (g.world.groundHeight(px, lz, R, Infinity) > box.top + 0.05) continue;
@@ -3069,6 +3075,95 @@ check('a wreck fits the box you collide with, and stands on its wheels', async (
   return r;
 });
 
+check('steel is folded, a ruin is broken at the top, and rubble is a heap', async (page) => {
+  // Three things that read as made, in seven rendered frames. A container
+  // and a shop's shutter were boxes wearing painted folds — under one low
+  // sun a painted fold is a stripe — so the folds are geometry now, and the
+  // container has to keep them inside the box you collide with. A ruin had
+  // a ruler-straight top; its walls step down where they broke. And a heap
+  // of rubble was a twenty-face boulder, spun on every axis so it could
+  // stand on end as an egg; it is a slumped mound now.
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world;
+    const out = {};
+    // the container: how much of it is the slope of a fold, and its reach
+    const facets = (geo, fn) => {
+      const p = geo.attributes.position, idx = geo.index;
+      const n = idx ? idx.count : p.count;
+      const v = [0, 1, 2].map(() => new (g.player.position.constructor)());
+      for (let t = 0; t < n; t += 3) {
+        for (let k = 0; k < 3; k++) v[k].fromBufferAttribute(p, idx ? idx.getX(t + k) : t + k);
+        const e1 = v[1].clone().sub(v[0]), e2 = v[2].clone().sub(v[0]);
+        const c = e1.cross(e2), area = c.length() / 2;
+        if (area > 1e-7) fn(c.normalize(), area, v);
+      }
+    };
+    const C = g.propShapes.container;
+    let slope = 0, total = 0;
+    facets(C, (nrm, area) => {
+      total += area;
+      if (Math.max(Math.abs(nrm.x), Math.abs(nrm.y), Math.abs(nrm.z)) < 0.98) slope += area;
+    });
+    C.computeBoundingBox();
+    const bb = C.boundingBox;
+    out.container = { slope: +(slope / total).toFixed(3),
+      x: +Math.max(-bb.min.x, bb.max.x).toFixed(3), z: +Math.max(-bb.min.z, bb.max.z).toFixed(3), top: +bb.max.y.toFixed(3) };
+    // shutters: anything in a rust sheet that is not a container or a drum,
+    // and whether its folds run across it (a slat's face tips up or down)
+    const shut = w.solids.filter((m) => (m.material?.userData?.name || '').startsWith('rustsheet')
+      && m.geometry !== C && m.geometry !== g.propShapes.drum);
+    out.shutters = shut.length;
+    out.slatted = shut.filter((m) => {
+      let tipped = 0;
+      facets(m.geometry, (nrm) => { if (Math.abs(nrm.y) > 0.3 && Math.abs(nrm.y) < 0.95) tipped++; });
+      return tipped > 20;
+    }).length;
+    // ruin walls: the tops of the pieces along each wall a window is in
+    const walls = new Map();
+    for (const q of w.ruinWindows) {
+      const key = q.nx ? 'x' + q.x.toFixed(2) : 'z' + q.z.toFixed(2);
+      if (!walls.has(key)) walls.set(key, q);
+    }
+    out.walls = walls.size;
+    out.broken = 0;
+    for (const q of walls.values()) {
+      // the highest piece of each column along the wall: a sill and the
+      // spandrel over it are tops too, and any windowed wall has three
+      const column = new Map();
+      for (const b of w.boxes) {
+        const thin = q.nx ? Math.abs(b.maxX - b.minX - q.thick) < 0.01 && Math.abs((b.minX + b.maxX) / 2 - q.x) < 0.01
+          : Math.abs(b.maxZ - b.minZ - q.thick) < 0.01 && Math.abs((b.minZ + b.maxZ) / 2 - q.z) < 0.01;
+        if (!thin) continue;
+        const at = (q.nx ? b.minZ : b.minX).toFixed(2);
+        column.set(at, Math.max(column.get(at) ?? 0, b.top));
+      }
+      if (new Set([...column.values()].map((t) => t.toFixed(2))).size >= 3) out.broken++;
+    }
+    // heaps: how many faces, and how they stand
+    const heaps = w.solids.filter((m) => m.material?.userData?.name === 'debris');
+    out.heaps = heaps.length;
+    out.boulders = 0; out.standing = 0;
+    for (const m of heaps) {
+      const geo = m.geometry, n = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+      if (n < 150) out.boulders++;
+      const box = new (g.player.position.constructor)();
+      if (!geo.boundingBox) geo.computeBoundingBox();
+      const b = geo.boundingBox.clone().applyMatrix4(m.matrixWorld);
+      b.getSize(box);
+      if (box.y > Math.min(box.x, box.z) * 0.9) out.standing++;
+    }
+    return out;
+  });
+  const c = r.container;
+  expect(c.slope > 0.15, `only ${(c.slope * 100).toFixed(1)}% of a container is the slope of a fold — its steel is painted, not folded`);
+  expect(c.x <= 1.251 && c.z <= 3.001 && c.top <= 2.601, `a container reaches ${c.x} x ${c.z} m and ${c.top} m up, past its 1.25 x 3 x 2.6 m collider`);
+  expect(r.shutters >= 10 && r.slatted === r.shutters, `${r.slatted} of ${r.shutters} shutters are slatted across`);
+  expect(r.walls >= 10 && r.broken >= r.walls * 0.5, `${r.broken} of ${r.walls} ruin walls step down at the top`);
+  expect(r.heaps >= 50 && r.boulders === 0, `${r.boulders} of ${r.heaps} heaps of rubble are a boulder of under 150 faces`);
+  expect(r.standing <= r.heaps * 0.05, `${r.standing} of ${r.heaps} heaps of rubble stand taller than they are wide`);
+  return r;
+});
+
 check('rubble stops you and stops a bullet, and you can climb it', async (page) => {
   // Reported from play: objects you can clip right through, rubble first.
   // Every heap of rubble and every fallen slab in a rubble lot was drawn and
@@ -3469,6 +3564,7 @@ const CITY_FINGERPRINT = () => {
     // everything placed before the rubble was given colliders
     placed: placed.length,
     fpPlaced: print(placed),
+    mark: g.bootMark,
   };
 };
 
@@ -5786,11 +5882,37 @@ check('a seed still lays out the city it did', async (page) => {
   // after boot identical (each pays the bake the UUID it no longer costs
   // there). Before it: 5361/1649 'b0d92d20', 3660/1323 '3dc368da',
   // 4854/1712 'a5ab07a8'.
+  //
+  // And a ruin's walls are broken at the top, a column at a time (`tops` in
+  // `ruinWall`), hashed off where each wall stands. Compared collider by
+  // collider on all three seeds: 243, 134 and 34 colliders gone and 204,
+  // 120 and 32 new, every one of either a 0.7 m ruin wall piece; the
+  // perches and the mark after boot identical. Before it: 5342
+  // '8afdfa64' (5003 '6edef181'), 3639 '3f753593' (3202 'dc28bfb4'), 4835
+  // 'dd322493' (4372 'f8b6d04b').
+  //
+  // And a heap of rubble is a slumped, creased mound (`rubbleGeo`), tipped a
+  // little where it was spun on every axis, so its colliders — cut from its
+  // shape — are new, and a few more or fewer heaps overlap a perch's stairs
+  // or a doorway and are cleared. Everything placed before the rubble is
+  // unchanged on all three seeds (`placed`, `fpPlaced`), and so are the
+  // perches. The mark moved once, on purpose: a heap cleared for a perch
+  // now pays the bake the UUID it no longer costs there, as one cleared from
+  // a doorway already did, so which heaps a perch clears — a matter of their
+  // shape — no longer moves a spawn. Proved by putting the old boulders back
+  // under the new bill: the same three marks. Before it: 5303/1642
+  // '1885486a' -1361973962, 3625/1317 '34d1e3e5' -559214183, 4833/1706
+  // 'fc3267d4' -1572333659.
   const want = {
-    1: { boxes: 5342, solids: 1642, perches: 12, fp: '8afdfa64', placed: 5003, fpPlaced: '6edef181' },
-    7: { boxes: 3639, solids: 1317, perches: 11, fp: '3f753593', placed: 3202, fpPlaced: 'dc28bfb4' },
-    20260101: { boxes: 4835, solids: 1706, perches: 10, fp: 'dd322493', placed: 4372, fpPlaced: 'f8b6d04b' },
+    1: { boxes: 5183, solids: 1628, perches: 12, fp: 'ad9623cd', placed: 4964, fpPlaced: 'cd6bf043', mark: -1632891350 },
+    7: { boxes: 3500, solids: 1302, perches: 11, fp: '3d385c25', placed: 3188, fpPlaced: '4ac1ea6a', mark: 1200834133 },
+    20260101: { boxes: 4704, solids: 1698, perches: 10, fp: 'cbb5835e', placed: 4370, fpPlaced: '6eb20fbc', mark: -1828098447 },
   };
+  // `mark` is where the seeded stream stands at the end of boot, which is
+  // the stream every spawn is picked from. Every pass that changed how
+  // something is built measured it by hand and wrote "the mark after boot is
+  // identical" into its note; it is held here now. A look change that moves
+  // it moves where every wave comes from without moving a single collider.
   // (bare rooms: 2497/1540/12 b323ced2 (2139 e5d0438f), 1933/1268/11
   // 9d1c7f32 (1475 de4ab94c), 2526/1617/10 e1cfa671 (2044 9123bce6))
 
@@ -5811,6 +5933,8 @@ check('a seed still lays out the city it did', async (page) => {
     expect(r.fp === w.fp,
       `seed ${seed} has the same number of colliders in different places ` +
       `(${r.fp}, not ${w.fp})`);
+    expect(r.mark === w.mark,
+      `seed ${seed} leaves the spawn stream at ${r.mark} after boot, not ${w.mark}`);
   }
   return got;
 });
