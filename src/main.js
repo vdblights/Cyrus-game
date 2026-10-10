@@ -1302,9 +1302,15 @@ class Game {
     // the door is in the shaft's wall, a third of the way from the lobby out
     const dx = b.x + (a.x - b.x) * 0.32, dz = b.z + (a.z - b.z) * 0.32;
     const q = stair.shaft;
-    for (const reach of [2.5, 4, 5.5, 7]) {
-      for (let k = 0; k < 16; k++) {
-        const t = (k / 16) * Math.PI * 2, ox = Math.cos(t), oz = Math.sin(t);
+    // and where that ring leaves a cramped shop one post or none — the
+    // stair door opening on a strip 4 m deep in front of the shopfront, on
+    // one shop in seventeen — closer in, on a finer ring, because that
+    // strip is the only floor there is to cover the door from
+    const rings = [[2.5, 16], [4, 16], [5.5, 16], [7, 16], [1.8, 24]];
+    for (const [reach, steps] of rings) {
+      if (reach < 2.5 && out.length >= 2) break;
+      for (let k = 0; k < steps; k++) {
+        const t = (k / steps) * Math.PI * 2, ox = Math.cos(t), oz = Math.sin(t);
         if (ox * nx + oz * nz < 0.15) continue;                 // in front of the door
         const x = dx + ox * reach, z = dz + oz * reach;
         if (x < room.minX + 0.8 || x > room.maxX - 0.8 || z < room.minZ + 0.8 || z > room.maxZ - 0.8) continue;

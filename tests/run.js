@@ -3991,6 +3991,10 @@ check('a hostile follows you onto a car roof, and stays up there with you', asyn
     for (const b of W.boxes) {
       if (out.length >= 8) break;
       if (b.floor || b.top < 0.8 || b.top > 1.7) continue;
+      // room for the player and the one that follows: the stub of a broken
+      // ruin pier is a 1.15 x 0.7 m deck the player fills, and a scavenger
+      // that climbs onto it steps across the window beside it to the next
+      if (Math.min(b.hx, b.hz) < 0.7) continue;
       const cx = b.cx ?? (b.minX + b.maxX) / 2, cz = b.cz ?? (b.minZ + b.maxZ) / 2;
       if (Math.abs(W.groundHeight(cx, cz, 0.42, 99) - b.top) > 0.05) continue;
       // a car roof, a crate in the street: under the sky. Indoors a deck is a
@@ -4780,6 +4784,10 @@ check('a stairwell climbs to a roof you can stand on, and a hostile follows you 
       for (let t = 0; t < n; t++) {
         for (let k = 0; k < 3; k++) P[k].fromBufferAttribute(pos, idx ? idx.getX(t * 3 + k) : t * 3 + k).applyMatrix4(m.matrixWorld);
         if (Math.abs(P[0].y - P[1].y) > 0.01 || Math.abs(P[0].y - P[2].y) > 0.01) continue;
+        // and bigger than a foot: a concrete chip of the shop's litter, 8 cm
+        // across, lies on the floor at the foot of a flight now and then
+        const area = Math.abs((P[1].x - P[0].x) * (P[2].z - P[0].z) - (P[2].x - P[0].x) * (P[1].z - P[0].z)) / 2;
+        if (area < 0.01) continue;
         tris.push([P[0].x, P[0].z, P[1].x, P[1].z, P[2].x, P[2].z, P[0].y]);
       }
     });
@@ -4972,9 +4980,19 @@ check('on a roof, two hostiles cover the stair door and are waiting when you com
       };
       const hold = () => { p.feetY = s.deck; p.onGround = true; p.velocity.set(0, 0, 0); p.position.set(exit.x, s.deck + p.eyeHeight, exit.z); p.health = 100; };
       p.reset(exit.x, exit.z); hold();
+      const taken = [];
       const es = [5, 6.5, 8].map((k, i) => {
         const e = g.spawnEnemy('raider');
-        const x = d.x + d.nx * k + (i - 1) * 1.2, z = d.z + d.nz * k;
+        // on open ground in front of the street door, and apart: the spot
+        // straight out can be a heap or a wreck
+        let x = d.x + d.nx * k + (i - 1) * 1.2, z = d.z + d.nz * k;
+        search: for (const out of [k, k + 1.5, k - 1, k + 3]) for (const side of [(i - 1) * 1.2, (i - 1) * 1.2 + 1.5, (i - 1) * 1.2 - 1.5]) {
+          const tx = d.x + d.nx * out - d.nz * side, tz = d.z + d.nz * out + d.nx * side;
+          if (w.groundHeight(tx, tz, 0.12, 0.6) > 0.5 || w.blocked(tx, tz, 0.8, 0.6)) continue;
+          if (taken.some(([ax, az]) => Math.hypot(ax - tx, az - tz) < 1.1)) continue;
+          x = tx; z = tz; break search;
+        }
+        taken.push([x, z]);
         e.pos.set(x, w.groundHeight(x, z, 0.12, 0.6), z);
         e.group.position.copy(e.pos);
         e.markWatchdog(p); e.alert(g.time, 0); e.frags = 0;
@@ -5069,8 +5087,10 @@ check('a building with a stairwell has floors: walked onto from the stair, seen 
       out.windows++;
       if (w.lineOfSight(ix, y, iz, q.x + q.nx * 2.5, y, q.z + q.nz * 2.5)) out.open++;
       if (shoot(ix, y, iz, q.nx, q.nz, 3) > 2.5) out.shotOut++;
-      // the pier beside it, half a window and half a pier along
-      const tx = -q.nz, tz = q.nx, off = q.width / 2 + 0.45;
+      // the pier beside it, a fifth of a metre past the window's edge: a
+      // corner pier is only 0.45 m wide, and half a pier along from a window
+      // at a corner is the building's own outer edge, which a line grazes
+      const tx = -q.nz, tz = q.nx, off = q.width / 2 + 0.2;
       const px = ix + tx * off, pz = iz + tz * off;
       out.piers++;
       if (!w.lineOfSight(px, y, pz, px + q.nx * 2.5, y, pz + q.nz * 2.5) && shoot(px, y, pz, q.nx, q.nz, 3) < 1.4) out.pierStops++;
@@ -5303,8 +5323,11 @@ check('a marksman holds a window over the street, and a holdout is found upstair
       for (let a = -0.6; a <= 0.61; a += 0.15) for (const d of [10, 16, 24, 34, 46, 60]) {
         const c = Math.cos(a), s = Math.sin(a), dx = (nx * c - nz * s) / n, dz = (nz * c + nx * s) / n;
         const tx = wx + dx * d, tz = wz + dz * d;
-        if (Math.abs(tx) > w.bounds - 1 || Math.abs(tz) > w.bounds - 1) continue;
+        // past the sector's edge is no street, so it counts as unseen: a
+        // window looking out of the sector sees all of the little street
+        // its fan has left, which as a fraction beat one down two streets
         asked++;
+        if (Math.abs(tx) > w.bounds - 1 || Math.abs(tz) > w.bounds - 1) continue;
         if (w.lineOfSight(x, y + 1.5, z, tx, w.groundHeight(tx, tz, 0.12, 0.6) + 1.0, tz)) seen++;
       }
       return seen / Math.max(1, asked);
@@ -5563,7 +5586,15 @@ check('a juggernaut stoops up a stairwell after you, and a warlord stays down', 
       g.enemies.length = 0;
       const d = w.rooms.find((rm) => rm.stair === s).doors[0];
       const e = g.spawnEnemy(kind, elite);
-      const sx = d.x + d.nx * 5, sz = d.z + d.nz * 5;
+      // in front of the door on open ground: 5 m straight out can be a heap
+      // or a wreck, and a body put down in one stands there till the
+      // watchdog moves it
+      let sx = d.x + d.nx * 5, sz = d.z + d.nz * 5;
+      search: for (const out of [5, 6, 4, 7, 8]) for (const side of [0, 1.5, -1.5, 3, -3]) {
+        const tx = d.x + d.nx * out - d.nz * side, tz = d.z + d.nz * out + d.nx * side;
+        if (w.groundHeight(tx, tz, 0.12, 0.6) > 0.5 || w.blocked(tx, tz, 0.9, 0.6)) continue;
+        sx = tx; sz = tz; break search;
+      }
       e.pos.set(sx, w.groundHeight(sx, sz, 0.12, 0.6), sz);
       e.group.position.copy(e.pos);
       e.markWatchdog(p);
