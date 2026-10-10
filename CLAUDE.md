@@ -1175,6 +1175,30 @@ These each cost real debugging time. Changing them needs a reason.
   which is the same number in arithmetic and not in floating point, and the
   layout check's fingerprint, at a millimetre, read the difference as a
   moved city. What it costs is the next item's table.
+- **A closed block's ground floor is shopfronts onto its streets.** It was
+  one box of dark glass wrapped round the block, a black stripe down every
+  street and every side. `storefront` in `city.js` builds the faces that
+  look onto a street (the open ground floor's rule: the face is at the
+  lot's edge) as bays about 3.2 m wide — piers on the bay lines, a stall
+  riser, a fascia, and in each bay a window over the riser, a door and a
+  light beside it, a roller shutter, or the opening blocked up, with a
+  transom light over all but the shutters — and the faces onto the next
+  block as a plain render band. Every piece is a few centimetres proud of
+  the block's face at most, where its collider is, so it is decoration by
+  the "on a wall" rule, and bullets stop at the block as they did at the
+  band. Two things keep it free. The glass rides on the band mesh and the
+  shutters on the shutter mesh the stream always minted, each paying the
+  box geometry it used to mint (`spend`), and the roll that placed the
+  shutter is still drawn; the piers, risers, fascias and frames are laid in
+  `decor`. The bake bills the band and the shutter as the two meshes they
+  always were, so the layout check's mark did not move. And **the bake
+  cannot merge an empty geometry**: a block with no glass at all hung boot
+  at the merge, so the band gets a speck of glass inside the block where
+  nobody can see it. `a closed block has shopfronts onto its streets, not a
+  band of glass round it` reads the merged city's glass on every face of
+  every closed block (`world.storefronts`): 82 of 83 street faces glazed on
+  seed 1 and none of the 49 onto the next block; 49 of 49 with the band
+  wrapped round, 0 of 83 with every bay shuttered.
 - **What a prop costs the seeded stream is a bill it pays, not a side effect
   of how it is built.** Three spends four draws on a UUID for every object
   (see the `generateUUID` invariant above), so the *number of meshes* a wreck
@@ -2080,6 +2104,13 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The pass after that kept looking, down a street this time, and found the
+ground floor of every closed block was a black stripe: one box of dark
+glass round the whole block. It is shopfronts now (invariant above). What
+it cost, seed 1 against `main`: the city 547k → 586k triangles, drawn a
+frame on high 867k → 939k, draw calls 333 → 335, frame time within noise
+(2,217 against 2,245 ms); the layout and the mark after boot identical.
 
 The pass after that went looking for what still read as made, in seven
 rendered frames, and found three things. Every container and shutter was a

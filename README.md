@@ -703,7 +703,9 @@ A few notes on the implementation:
   at the top in broken steps where the floors tore away. A heap is a
   slumped mound of broken concrete and brick, not a boulder. A container's
   steel is folded and a shop's shutter is slatted, in the shape rather than
-  painted on, so a low sun lights one side of every rib. Containers, wrecks, barriers, drums and lamps stand
+  painted on, so a low sun lights one side of every rib. A closed block's
+  ground floor is a row of shopfronts onto its street — piers, a fascia,
+  and in each bay a window, a door, a shutter or the opening blocked up. Containers, wrecks, barriers, drums and lamps stand
   clear of one another, inside the sector, and on the floor under them —
   a barrier on the pavement stands on the pavement — and the plaza's dry
   fountain is a basin you can climb into, round a plinth that stops you.
