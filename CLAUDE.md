@@ -1199,6 +1199,37 @@ These each cost real debugging time. Changing them needs a reason.
   every closed block (`world.storefronts`): 82 of 83 street faces glazed on
   seed 1 and none of the 49 onto the next block; 49 of 49 with the band
   wrapped round, 0 of 83 with every bay shuttered.
+- **A crate is boards in a frame, and is billed as the rust it was.**
+  Every crate — on a terrace, in a shop, on a floor — was a box wearing a
+  container's rust with its folds painted on, so a stack of them read as
+  small shipping containers. `crateGeo` in `city.js` boards the body in
+  2.2 cm behind a frame of battens along all twelve edges, with a diagonal
+  brace on each side unless the crate is painted (`userData.crate.brace`),
+  whose face carries a stencil instead; `TEX.woodCrate` paints the boards,
+  eight to `TILE.wood` (1 m), in four woods — pine, silvered, painted olive,
+  stained. Three things keep it honest. **The frame comes to the box the
+  crate registers and no further**, so its collider is the one it had; the
+  battens along X run the full width and the rest stop at them, so no two
+  faces share a plane, and a brace lies 3 mm behind the frame's face, so
+  where its ends run under a batten the batten is in front. **Every board's
+  UVs run along it and every face is centred on the tile**, which is where
+  the painted crate's stencil sits. And **a crate costs the stream what the
+  box did**: `crateFor` maps the rust a crate used to wear to its wood, one
+  to one, and each wood is billed to the bake as that rust (`billAs`), so a
+  floor's crates merge into exactly as many meshes as before and the bake
+  bills the same materials; the terrace crate, minted in the stream, pays
+  `spend(UUID_COST)` for the box geometry and builds its frame in a
+  `reserve`. Layout and the mark after boot are unchanged on all three
+  pinned seeds. The texture is a pixel loop, and per pixel its two noise
+  fields cost most of a second a tile; they are smooth along the board, so
+  the bend is worked out once a board and the streaks at a quarter of the
+  width, about 75 ms a tile. Timing a texture, the first one painted in a
+  page carries ~2 s of warm-up — paint one before starting the clock.
+  `a crate is boards in a frame, inside the box it registers` reads the
+  merged city round every crate the generator recorded (`world.crates`, 173
+  on seed 1): 173 of 173 flat with `crateGeo` returning a box, 135 of 135
+  drawn in no wood with `crateFor` returning the rust, and 173 of 173 1 cm
+  proud with the frame pushed out by that.
 - **What a prop costs the seeded stream is a bill it pays, not a side effect
   of how it is built.** Three spends four draws on a UUID for every object
   (see the `generateUUID` invariant above), so the *number of meshes* a wreck
@@ -2104,6 +2135,15 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The pass after the arrows went back to a survey of rendered frames and
+found the crates: every one in the city a box in a container's painted
+rust (invariant above). What it cost, seed 1, interleaved against `main`
+under software rendering: the city 586k → 617k triangles, drawn a frame on
+high 939k → 981k, draw calls 335 → 357 (four new materials, batched per
+patch), frame time within noise (high 2,409-2,517 against 2,446-2,552 ms,
+low 333-338 against 342-346); boot one paint step more, about half a
+second.
 
 A road arrow had its head on backwards, reported from a screenshot of this
 pass: half of all arrows — every one for traffic running toward −v — had

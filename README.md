@@ -705,7 +705,9 @@ A few notes on the implementation:
   steel is folded and a shop's shutter is slatted, in the shape rather than
   painted on, so a low sun lights one side of every rib. A closed block's
   ground floor is a row of shopfronts onto its street — piers, a fascia,
-  and in each bay a window, a door, a shutter or the opening blocked up. Containers, wrecks, barriers, drums and lamps stand
+  and in each bay a window, a door, a shutter or the opening blocked up. A
+  crate is boards nailed into a frame, bare pine, silvered, stained or
+  painted olive with its lot stencilled on, not a little container. Containers, wrecks, barriers, drums and lamps stand
   clear of one another, inside the sector, and on the floor under them —
   a barrier on the pavement stands on the pavement — and the plaza's dry
   fountain is a basin you can climb into, round a plinth that stops you.

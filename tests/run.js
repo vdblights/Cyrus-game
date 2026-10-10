@@ -3206,6 +3206,76 @@ check('steel is folded, a ruin is broken at the top, and rubble is a heap', asyn
   return r;
 });
 
+check('a crate is boards in a frame, inside the box it registers', async (page) => {
+  // Every crate in the city — on a terrace, in a shop, on a floor — was a
+  // box wearing a container's rust with its folds painted on, so a stack of
+  // them read as small shipping containers. A crate is boards now, set 2 cm
+  // behind a frame of battens (`crateGeo`). This reads the merged city round
+  // every crate the generator recorded (`world.crates`): what it is drawn in,
+  // that some of each side is frame at the box's face and some is boards
+  // behind it, and that nothing of it stands proud of the box it collides as.
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world;
+    const crates = (w.crates || []).map((c) => ({ ...c, wood: 0, rust: 0, face: 0, panel: 0, proud: 0 }));
+    const P = [0, 1, 2].map(() => new (g.player.position.constructor)());
+    for (const m of g.city.children) {
+      const name = m.material?.userData?.name || '';
+      const wood = name.startsWith('wood'), rust = /^rust\d/.test(name);
+      if (!wood && !rust) continue;
+      const p = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : p.count;
+      for (let t = 0; t < n; t += 3) {
+        for (let k = 0; k < 3; k++) P[k].fromBufferAttribute(p, idx ? idx.getX(t + k) : t + k);
+        const cx = (P[0].x + P[1].x + P[2].x) / 3, cy = (P[0].y + P[1].y + P[2].y) / 3, cz = (P[0].z + P[1].z + P[2].z) / 3;
+        // the crate this facet belongs to: the one whose box its middle is
+        // in, or nearest — a stack's crates touch, and share the plane between
+        const outOf = (c, x, y, z) => Math.max(Math.abs(x - c.x) - c.w / 2, Math.abs(z - c.z) - c.d / 2, c.y - y, y - c.y - c.h);
+        let c = null, best = 0.05;
+        const near = [];
+        for (const q of crates) {
+          const o = outOf(q, cx, cy, cz);
+          if (o > 0.05) continue;
+          near.push(q);
+          if (o < best) { best = o; c = q; }
+        }
+        if (!c) continue;
+        const e1 = P[1].clone().sub(P[0]), e2 = P[2].clone().sub(P[0]);
+        const nrm = e1.cross(e2), area = nrm.length() / 2;
+        if (area < 1e-8) continue;
+        nrm.normalize();
+        if (rust) { c.rust += area; continue; }
+        c.wood += area;
+        // proud of every box it could be part of
+        for (const q of P) {
+          const out = Math.min(...near.map((b) => outOf(b, q.x, q.y, q.z)));
+          if (out > 0.002) c.proud = Math.max(c.proud, out);
+        }
+        // a side: how far behind the box's face this facet stands
+        if (Math.abs(nrm.y) < 0.1) {
+          const behind = Math.abs(nrm.x) > Math.abs(nrm.z) ? c.w / 2 - Math.abs(cx - c.x) : c.d / 2 - Math.abs(cz - c.z);
+          if (behind < 0.004) c.face += area;
+          else if (behind > 0.012 && behind < 0.03) c.panel += area;
+        }
+      }
+    }
+    return {
+      crates: crates.length,
+      unseen: crates.filter((c) => c.wood === 0).length,
+      rusted: crates.filter((c) => c.rust > 0).length,
+      flat: crates.filter((c) => c.wood > 0 && (c.face === 0 || c.panel < c.face * 0.5)).length,
+      proud: crates.filter((c) => c.proud > 0).length,
+      worst: +Math.max(0, ...crates.map((c) => c.proud)).toFixed(4),
+      panel: +(crates.reduce((a, c) => a + c.panel / Math.max(1e-6, c.panel + c.face), 0) / Math.max(1, crates.length)).toFixed(3),
+    };
+  });
+  expect(r.crates >= 40, `only ${r.crates} crates recorded to read`);
+  expect(r.unseen === 0, `${r.unseen} of ${r.crates} crates are drawn in no wood`);
+  expect(r.rusted === 0, `${r.rusted} of ${r.crates} crates still wear a container's rust`);
+  expect(r.flat === 0, `${r.flat} of ${r.crates} crates have no boards set behind a frame — a box, not a crate`);
+  expect(r.proud === 0, `${r.proud} of ${r.crates} crates stand ${r.worst} m proud of the box they collide as`);
+  return r;
+});
+
 check('rubble stops you and stops a bullet, and you can climb it', async (page) => {
   // Reported from play: objects you can clip right through, rubble first.
   // Every heap of rubble and every fallen slab in a rubble lot was drawn and
