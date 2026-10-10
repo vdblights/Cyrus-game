@@ -3075,6 +3075,48 @@ check('a wreck fits the box you collide with, and stands on its wheels', async (
   return r;
 });
 
+check('a closed block has shopfronts onto its streets, not a band of glass round it', async (page) => {
+  // Every closed tower's ground floor was one box of dark glass wrapped round
+  // the block — a black stripe along every street and down every side onto
+  // the next building. The faces onto a street are shopfronts now
+  // (`storefront`), bays with glass in most of them, and the faces onto the
+  // next block are plain. This reads the glass the merged city draws on
+  // each face of every closed block, under 3 m: some on most street faces,
+  // and none at all on a face that does not look onto a street.
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world;
+    const faces = [];
+    for (const f of w.storefronts || []) {
+      faces.push({ ax: 'z', at: f.z - f.bd / 2, s: -1, lo: f.x - f.bw / 2, hi: f.x + f.bw / 2, street: f.street[0], n: 0 });
+      faces.push({ ax: 'z', at: f.z + f.bd / 2, s: 1, lo: f.x - f.bw / 2, hi: f.x + f.bw / 2, street: f.street[1], n: 0 });
+      faces.push({ ax: 'x', at: f.x - f.bw / 2, s: -1, lo: f.z - f.bd / 2, hi: f.z + f.bd / 2, street: f.street[2], n: 0 });
+      faces.push({ ax: 'x', at: f.x + f.bw / 2, s: 1, lo: f.z - f.bd / 2, hi: f.z + f.bd / 2, street: f.street[3], n: 0 });
+    }
+    for (const m of g.city.children) {
+      if (m.material?.userData?.name !== 'glass') continue;
+      const p = m.geometry.attributes.position, idx = m.geometry.index;
+      const n = idx ? idx.count : p.count;
+      const at = (k) => (idx ? idx.getX(k) : k);
+      for (let t = 0; t < n; t += 3) {
+        let cx = 0, cy = 0, cz = 0;
+        for (let k = 0; k < 3; k++) { cx += p.getX(at(t + k)) / 3; cy += p.getY(at(t + k)) / 3; cz += p.getZ(at(t + k)) / 3; }
+        if (cy > 3) continue;
+        for (const f of faces) {
+          const d = (f.ax === 'z' ? cz - f.at : cx - f.at) * f.s, u = f.ax === 'z' ? cx : cz;
+          if (d > -0.01 && d < 0.15 && u > f.lo && u < f.hi) f.n++;
+        }
+      }
+    }
+    const street = faces.filter((f) => f.street), side = faces.filter((f) => !f.street);
+    return { blocks: faces.length / 4, street: street.length, glazed: street.filter((f) => f.n > 0).length,
+      side: side.length, wrapped: side.filter((f) => f.n > 0).length };
+  });
+  expect(r.blocks >= 20 && r.street >= 20, `only ${r.blocks} closed blocks with ${r.street} street faces to read`);
+  expect(r.glazed >= r.street * 0.8, `${r.glazed} of ${r.street} street faces of closed blocks have a shop window`);
+  expect(r.wrapped === 0, `${r.wrapped} of ${r.side} faces onto the next block are glazed — the band of glass is back`);
+  return r;
+});
+
 check('steel is folded, a ruin is broken at the top, and rubble is a heap', async (page) => {
   // Three things that read as made, in seven rendered frames. A container
   // and a shop's shutter were boxes wearing painted folds — under one low

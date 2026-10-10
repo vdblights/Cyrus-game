@@ -1139,9 +1139,15 @@ function storefront(x, z, bw, bd, cx, cz) {
       }
     }
   });
+  out.street = faces.map((f) => f.street);
+  // and a block with no glass at all — every bay shuttered, or no face onto
+  // a street — gives the band a speck inside the block, where its collider
+  // is: the bake cannot merge an empty geometry, and boot hangs on one
+  if (!out.glass.length) out.glass.push(boxGeo(0.2, 0.2, 0.2, TILE.glass).translate(0, 1, 0));
   // a street face with no shutter still gives the shutter mesh something
-  if (!out.sheet.length) out.sheet.push(rollerShutter(0.6, 0.6, 0.04, TILE.rust).translate(0, KERB, -bd / 2 + 0.3));
-  return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.length ? mergeIntoOne(v) : null]));
+  if (!out.sheet.length) out.sheet.push(rollerShutter(0.6, 0.6, 0.1, TILE.rust).translate(0, KERB, -bd / 2 + 0.3));
+  const geos = Object.fromEntries(['glass', 'sheet', 'conc', 'metal'].map((k) => [k, out[k].length ? mergeIntoOne(out[k]) : null]));
+  return { ...geos, street: out.street };
 }
 
 /**
@@ -2718,6 +2724,7 @@ export function buildCity(scene, painted = null) {
       // its box used to mint, so the rolls after them get the values they
       // did. The roll that placed the shutter is still drawn; nothing reads it.
       const front = open ? null : reserve(() => storefront(x, z, bw, bd, cx, cz));
+      if (front) (w.storefronts ||= []).push({ x, z, bw, bd, street: front.street });
       const none = () => reserve(() => new THREE.BufferGeometry());
       spend(UUID_COST);
       const band = new THREE.Mesh(front?.glass || none(), glass);
