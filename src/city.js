@@ -7,9 +7,13 @@ import { chamferGeo, corrugateGeo, loftGeo, mergeIntoOne, sideGeo, latheGeo, ben
 import { cutWindows } from './windows.js';
 
 const BLOCK = 34;      // centre-to-centre distance between city lots
-const GRID = 6;        // lots per axis
+const GRID = 8;        // lots per axis
 const LOT = 22;        // buildable footprint inside a lot (street = BLOCK - LOT)
 const HALF = (GRID - 1) / 2;
+// The plaza is the lot just off the middle of the grid, on whichever side
+// puts it at (-17, 17) for any even grid — where `INSERTION` in `main.js`
+// drops the player — so the sector can grow round it without moving it.
+const PLAZA = [GRID / 2 - 1, GRID / 2];
 
 const lotCenter = (i) => (i - HALF) * BLOCK;
 
@@ -2435,7 +2439,7 @@ export function buildCity(scene, painted = null) {
   for (let i = 0; i < GRID; i++) {
     for (let j = 0; j < GRID; j++) {
       const cx = lotCenter(i), cz = lotCenter(j);
-      const isCentre = i === 2 && j === 3;      // player insertion plaza
+      const isCentre = i === PLAZA[0] && j === PLAZA[1];      // player insertion plaza
       if (isCentre) {
         buildPlaza(group, world, cx, cz, darkConcrete, metalMat);
         continue;
