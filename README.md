@@ -322,7 +322,7 @@ did for it.
 ## Objectives
 
 Wave survival on its own rewards standing still in the best cover you can
-find, and the other 200 m of city may as well not exist. So most waves put
+find, and the other 270 m of city may as well not exist. So most waves put
 something worth having at the far end of it and start a clock.
 
 | Objective | Where | What it asks | What it pays |
@@ -740,7 +740,8 @@ A few notes on the implementation:
   used to cost, so it can be rebuilt out of fourteen shapes instead of seven
   boxes and stay parked in the same street. A check pins three seeds to a
   fingerprint of every collider's position and turn.
-- **The city is generated per session.** A 6×6 grid of lots is filled with
+- **The city is generated per session.** An 8×8 grid of lots, 272 m on a
+  side, is filled with
   towers, gutted low ruins and rubble lots, then dressed with wrecked cars,
   shipping containers, barricades, streetlights and burning barrels — and the
   blocks themselves with base courses, pilasters, roof tanks and bulkheads,

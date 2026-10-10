@@ -81,6 +81,33 @@ The whole game hangs off `window.__game`, which is how tests and probes drive it
 
 These each cost real debugging time. Changing them needs a reason.
 
+- **The sector is `GRID` lots on a side, and nothing else knows.** It is
+  8 x 8 lots of 34 m (272 m square); it was 6 x 6. Every size in the city
+  derives from `GRID`, `BLOCK` and `LOT` in `city.js` — the bounds, the
+  ground, the streets, the patches the bake batches by, the nav grid, the
+  loading screen's survey — and the plaza is the lot just off the middle
+  (`PLAZA`), at (-17, 17) for any even grid, which is where `INSERTION` in
+  `main.js` drops the player. Growing it is one constant and a lot of
+  re-measuring, because every seed lays out a new city and a bigger sample
+  finds what a smaller one never did. Twenty-eight more lots failed
+  fourteen checks, and they came in two kinds. Half were the generator:
+  rare layouts the old seeds never built, each now handled where it is
+  built — a counter left out where its open end meets a stair's shaft or
+  a column (it walled the back of four stair shops off from the route
+  field), furniture stood out in a room that fills its lot and so has no
+  blank wall, a floor's furniture kept 2 m off the shaft (a crate at its
+  corner stuck a juggernaut walking back to the door), a second stair post
+  found on a closer ring where a stair door opens 4 m from the shopfront,
+  and a pull-up that stops at a wall standing off the ground (next item).
+  The other half were check setups that had only ever met the old seeds'
+  subjects: a ledge sampler that took the fountain's rim, a pavement
+  audit that took litter, a deck sampler that took a broken ruin pier,
+  three hostiles started inside a heap or a crevice, a cover that stopped
+  hiding a raider once it strafed half a metre, a heap with one level
+  side. Each was made to ask the question it had been assuming. What it
+  costs is in the State section. `the route field reaches the whole
+  sector`, which every other measure of the field rests on, needed
+  nothing.
 - **One box list drives everything.** Collision, ground height, line of sight
   and grenade bounce all read `world.boxes`. Register a solid once and every
   system sees it. Anything decorative (rubble, lips, sky) stays out of it.
@@ -373,9 +400,11 @@ These each cost real debugging time. Changing them needs a reason.
   wall test passes `feet + maxRise + 0.5`, or the roof over a shop is a
   wall in front of every crate in it (0 of 6 shops' crates climbable with
   it left at `Infinity`). **The parapet is waist-high onto a street and
-  2.2 m — over a jump's reach — where another building of the lot stands a
-  metre off** (`party` in `buildTower`): the roof next door is one jump
-  away, its colliders are its block's top 0.8 m under the cap you see, and
+  2.2 m where another building of the lot stands a metre off** (`party` in
+  `buildTower`) — and it holds only because a pull-up stops at it (see the
+  mantle invariant): a jump's apex is 1.25 m and a pull-up reaches 1.8 over
+  the feet, so its height alone stops nothing over 3 m. The roof next door
+  is one jump away, its colliders are its block's top 0.8 m under the cap you see, and
   its roof furniture is decoration you walk through. **Everything on a
   stair roof that was decoration goes** — `roofFurniture` and `fireEscape`
   are skipped on it, the plant boxes are decks — and the block loses its
@@ -513,7 +542,10 @@ These each cost real debugging time. Changing them needs a reason.
   with the push off, and with hostile frags hurting hostiles.
   **Up a stairwell the posts are the stair's** (`_stairPostsFor`): on the
   shop floor, 2.5-7 m in front of the stair's door, with a sight line into
-  it, two a building as ever, and the third hostile climbs. It used to hand
+  it, two a building as ever, and the third hostile climbs. Where a stair
+  door opens on a strip 4 m deep in front of the shopfront that ring holds
+  one post, and a finer one at 1.8 m is tried until there are two (one
+  stair in seventeen on the larger seed 1; the check fails with it out). It used to hand
   out the street doors' posts, which watch nothing a player on a roof can
   come out of, and to aim frags in at those doors too; neither happens
   while the player is up. Four things make it work. In a 10 m shop the
@@ -1682,7 +1714,15 @@ These each cost real debugging time. Changing them needs a reason.
   completion, which stopped you dead on the ledge. A check measures the view's
   movement at each of the three seams — the frame the climb starts, the curve
   in between, and the frame it hands back — because a climb is allowed to be
-  quick and is not allowed to teleport.
+  quick and is not allowed to teleport. **A pull-up stops at a wall it
+  cannot stand on** (`_wallAt` in `world.js`): a box off the ground and not
+  a deck, its underside below the chest and its top over the lowest rise
+  worth climbing — a roof's parapet, the sill of an upper floor. `groundHeight`
+  never reads one, so the search outward walked straight through it and
+  gripped whatever was past it; on the larger sector a run and a jump at a
+  2.2 m party wall came down on the roof next door, 2.95 m up and level
+  with nothing. The stairwell check walks at every roof edge, and one of 51
+  let you over with the stop taken out.
 - **An objective cue waits, it is not dropped.** Only one objective runs at a
   time, and their clocks outlive the wave that called them. Refusing a cue
   while one was up meant whole waves passed with no objective at all; cues now
@@ -2012,6 +2052,19 @@ reason was right there in the readers: a counter tops out at 1.28 m, and
 or not. Sample what a body can stand on (`ceilingAbove` again) before
 counting a refusal against the reader under test.
 
+A bigger sample finds what a smaller one never did, and the failures come
+in two kinds that look the same. Growing the sector from 36 lots to 64
+failed fourteen checks at once. Seven were the game, rare layouts the old
+seeds happened never to build (a shop that fills its lot, a stair door 4 m
+from the shopfront, a party wall next to a taller roof). Seven were
+setups that had only ever met the old seeds' subjects: a sampler taking
+the first ledge in the box list found the fountain's rim, a deck sampler
+found a broken ruin pier, a hostile started 5 m out from a door found a
+heap. Probe each one before deciding which kind it is — the counter that
+sealed a stair shop and the heap under a juggernaut's start read the same
+in the failure line — and then make the setup ask what it was assuming,
+the way `__place` validates a firing line, rather than move the bar.
+
 Every check reloads the page, and `localStorage` outlives the reload.
 The operation check dies at wave 18 to read its debrief, which wrote a best
 score of 36,000, and `settings and records survive a reload`, three checks
@@ -2135,6 +2188,27 @@ the repo's pull request list answer it exactly and cannot go stale.
 What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
+
+The pass after the crates grew the sector, asked in one line: can we make
+the city larger? Asked back, the answer was 8 x 8 lots, from 6 x 6: 1.8x
+the area, a new city on every seed, and the invariant at the top of the
+list has what that took. What it cost, seed 1, against the crates under
+software rendering, three views on each tier: the city 617k → 1.07M
+triangles, drawn a frame on high 981k → 1.45M and on low 315k → 489k,
+draw calls 357 → 511 and 120 → 191, and frame time high 2,225-2,272 →
+2,847-2,910 ms and low 291-308 → 362-369 ms, about a quarter more. Most
+of it is distance: the batches cull by patch, but the fog at 0.005 still
+lets two-thirds of the light through at 200 m, so a street seen end to
+end now draws twice the city, and culling it by distance would show it
+pop. Boot to a constructed game went 27 → 29 s in the harness, since the
+texture painting that dominates boot does not grow with the lots. Seed 1
+now has 34 shops (21), 17 stairwells (13), 43 floors (32), 32 perches
+(12), 173 crates and 7,724 colliders (5,183). `auto` sheds resolution and
+a tier on a machine that cannot hold it, which is what it is for; if the
+larger sector costs a real machine more than that, the levers are a
+shorter far plane on low with the sky drawn separately, or thicker haze.
+Every seed-specific number written in this file before this pass
+describes a 6 x 6 city.
 
 The pass after the arrows went back to a survey of rendered frames and
 found the crates: every one in the city a box in a container's painted
