@@ -3490,6 +3490,45 @@ check('what is set into the street lies flush on it, road or pavement', async (p
   return r;
 });
 
+check('a road arrow points the way its lane runs, its head to a point', async (page) => {
+  // An arrow is a shaft and two barbs raked back from its tip. The barbs were
+  // turned by `side * rake` whichever way the lane ran, so every arrow for
+  // traffic running toward −v, half of them, had its barbs mirrored across
+  // the shaft — splayed half a metre wide at the tip, an inverted Y, reported
+  // from a screenshot as an arrow with its head on backwards. This reads the
+  // merged paint round each arrow's tip: within 12 cm of it the paint is no
+  // wider than the shaft and the barbs' roots, and 0.6-0.85 m back the barbs
+  // reach out to either side.
+  const r = await page.evaluate(() => {
+    const g = window.__game, w = g.world;
+    const paint = g.city.children.filter((m) => m.material?.userData?.name === 'paint');
+    const pts = [];
+    for (const m of paint) {
+      const p = m.geometry.attributes.position;
+      for (let i = 0; i < p.count; i++) pts.push([p.getX(i), p.getZ(i)]);
+    }
+    const out = { arrows: (w.arrows || []).length, pointed: 0, barbed: 0, bad: [] };
+    for (const a of w.arrows || []) {
+      let tipWide = 0, backWide = 0;
+      for (const [x, z] of pts) {
+        const u = a.axisX ? z : x, v = a.axisX ? x : z;
+        const du = Math.abs(u - a.u), back = (a.tip - v) * a.fwd;
+        if (du > 0.8 || back < -0.3 || back > 2) continue;
+        if (back < 0.12) tipWide = Math.max(tipWide, du);
+        if (back > 0.6 && back < 0.85) backWide = Math.max(backWide, du);
+      }
+      if (tipWide < 0.2) out.pointed++;
+      if (backWide > 0.4) out.barbed++;
+      if ((tipWide >= 0.2 || backWide <= 0.4) && out.bad.length < 4) out.bad.push({ fwd: a.fwd, tip: +tipWide.toFixed(2), back: +backWide.toFixed(2) });
+    }
+    return out;
+  });
+  expect(r.arrows >= 10, `only ${r.arrows} arrows painted`);
+  expect(r.pointed === r.arrows && r.barbed === r.arrows,
+    `${r.arrows - r.pointed} of ${r.arrows} arrows splay at the tip and ${r.arrows - r.barbed} have no barbs behind it: ${JSON.stringify(r.bad)}`);
+  return r;
+});
+
 check('lane paint lies on the road and faces the sky', async (page) => {
   const r = await page.evaluate(() => {
     const g = window.__game;

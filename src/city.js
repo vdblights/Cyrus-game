@@ -4309,7 +4309,17 @@ export function buildCity(scene, painted = null) {
         return bar + dir * 0.9;
       };
 
-      /** A straight-ahead arrow: a shaft and two raked barbs meeting at a tip. */
+      /**
+       * A straight-ahead arrow: a shaft and two raked barbs meeting at a tip.
+       *
+       * Each barb runs from the tip back along the shaft and out to its side,
+       * along (side·sin rake, −fwd·cos rake), and `quad` turns a piece's long
+       * axis to (−sin θ, cos θ) — so the turn is `fwd · side · rake`. It was
+       * `side · rake`, which is right only for traffic running toward +v:
+       * every arrow facing the other way, half of them, had its barbs mirrored
+       * across the shaft, splayed out at the tip like an inverted Y, and was
+       * reported from a screenshot as an arrow with its head on backwards.
+       */
       const arrow = (axisX, u, v, fwd) => {
         const rake = 0.62, barb = 0.9, wide = 0.17;
         const tip = v + fwd * 0.95;
@@ -4318,8 +4328,9 @@ export function buildCity(scene, painted = null) {
           quad(axisX,
             u + side * (barb / 2) * Math.sin(rake),
             tip - fwd * (barb / 2) * Math.cos(rake),
-            wide, barb, side * rake);
+            wide, barb, fwd * side * rake);
         }
+        (world.arrows ||= []).push({ axisX, u, tip, fwd });
       };
 
       for (const axisX of [true, false]) {

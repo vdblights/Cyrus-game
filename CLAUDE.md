@@ -2105,6 +2105,18 @@ What holds regardless: `npm test` is the contract, every check in it was
 confirmed to fail against what it guards before being kept, and the list at
 the end of this section is what to do next rather than what was left undone.
 
+A road arrow had its head on backwards, reported from a screenshot of this
+pass: half of all arrows — every one for traffic running toward −v — had
+their barbs turned by `side · rake` rather than `fwd · side · rake`, so each
+barb sat where it belonged and leaned the wrong way, crossing the shaft and
+splaying half a metre wide at the tip. It is the street frame's handedness
+lesson again, one level up: a turn written once for both directions of
+travel is right for one of them. It shipped with the road markings and
+survived every pass since, because nothing measured an arrow's shape. `a
+road arrow points the way its lane runs, its head to a point` reads the
+merged paint round each arrow's tip (`world.arrows`): 19 of 19 pointed on
+seed 1, 11 of 19 splayed with the old turn.
+
 The pass after that kept looking, down a street this time, and found the
 ground floor of every closed block was a black stripe: one box of dark
 glass round the whole block. It is shopfronts now (invariant above). What
