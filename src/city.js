@@ -2684,21 +2684,53 @@ export function buildCity(scene, painted = null) {
       const z0 = alongX ? pz - T / 2 - 1 : pz + a0, z1 = alongX ? pz + T / 2 + 1 : pz + a1;
       return o.minX < x1 && o.maxX > x0 && o.minZ < z1 && o.maxZ > z0;
     });
-    const pieces = [];                                   // [a0, a1, y0, y1]
+    // Where it broke. A wall that stood through a collapse does not keep a
+    // ruler-straight top: it comes down in notches, each a V of steps one
+    // column wide, deepest where the floor that tore it away was heaviest,
+    // with the corners — where a wall is stiffest — standing longest. A
+    // column's top is the wall's height less the deepest notch over it, and
+    // never under a stub of a metre and a half. Hashed off where the wall
+    // stands, so it costs the stream nothing; a wall in four keeps its top.
+    const key = [Math.round(px * 7), Math.round(pz * 7)];
+    const notches = [];
+    if (hash2(key[0], key[1], 51) > 0.25) {
+      const count = hash2(key[0], key[1], 52) < 0.45 ? 2 : 1;
+      for (let i = 0; i < count; i++) {
+        const c = (hash2(key[0] + i, key[1], 53) - 0.5) * L * 0.7;
+        notches.push({ c, depth: hh * (0.25 + 0.4 * hash2(key[0], key[1] + i, 54)), width: 2 + 3.5 * hash2(key[0] + i, key[1] + i, 55) });
+      }
+    }
+    const tops = [];
     for (let k = 0; k + 1 < cuts.length; k++) {
-      const a0 = cuts[k], a1 = cuts[k + 1];
-      if (k % 2 === 0 || crossed(a0, a1)) { pieces.push([a0, a1, 0, hh]); continue; }
+      const m = (cuts[k] + cuts[k + 1]) / 2;
+      let drop = 0;
+      for (const n of notches) drop = Math.max(drop, n.depth * Math.max(0, 1 - Math.abs(m - n.c) / n.width));
+      // a little unevenness along what is left, a column at a time
+      if (notches.length) drop += 0.35 * hash2(key[0] + k, key[1], 56);
+      tops.push(Math.max(Math.min(1.5, hh), hh - drop));
+    }
+    const pieces = [];                                   // [a0, a1, y0, y1]
+    const keep = (a0, a1, y0, y1, top) => { if (y0 < top - 0.01) pieces.push([a0, a1, y0, Math.min(y1, top)]); };
+    for (let k = 0; k + 1 < cuts.length; k++) {
+      const a0 = cuts[k], a1 = cuts[k + 1], top = tops[k];
+      if (k % 2 === 0 || crossed(a0, a1)) { keep(a0, a1, 0, hh, top); continue; }
       let y = 0;
       for (let j = 0; j < ns; j++) {
-        pieces.push([a0, a1, y, (j + V0) * storey]);
-        y = (j + V1) * storey;
+        const sill = (j + V0) * storey, head = (j + V1) * storey;
+        keep(a0, a1, y, sill, top);
+        y = head;
+        // A window counts where the piers either side still stand past its
+        // middle; its lintel may be gone, and then it is a notch open to the
+        // sky, which is still a hole to see and shoot through.
+        const open = Math.min(head, top), mid = (sill + open) / 2;
+        if (open - sill < 0.5 || Math.min(tops[k - 1], tops[k + 1]) < mid + 0.15) continue;
         const ca = (a0 + a1) / 2;
         w.ruinWindows.push({
           x: alongX ? px + ca : px, z: alongX ? pz : pz + ca, nx: alongX ? 0 : 1, nz: alongX ? 1 : 0,
-          width: a1 - a0, sill: (j + V0) * storey, head: y, thick: T,
+          width: a1 - a0, sill, head: open, thick: T,
         });
       }
-      pieces.push([a0, a1, y, hh]);
+      keep(a0, a1, y, hh, top);
     }
     // the whole wall's unwrap, asked of each piece's vertices where they are —
     // but across its thickness at the tile's own scale: `boxGeo` snaps that to
