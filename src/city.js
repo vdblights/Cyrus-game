@@ -3320,14 +3320,14 @@ export function buildCity(scene, painted = null) {
   function furnishBare(w, pieces, faces, room, shaft, x, z, r, part, metal, tag) {
     if (pieces.filter((q) => !q.column).length >= 3) return;
     const T = 0.35;
-    const clear = (px, pz, gw, gd) => {
+    const clear = (px, pz, gw, gd, gap = 1.0) => {
       if (shaft && shaft.blocks(px, pz, gw, gd)) return false;
       for (const d of room.doors) {
         const dx = Math.max(0, Math.abs(px - d.x) - gw / 2), dz = Math.max(0, Math.abs(pz - d.z) - gd / 2);
         if (Math.hypot(dx, dz) < d.width / 2 + 1.2) return false;
       }
       for (const q of pieces) {
-        if (Math.abs(px - q.x) < (gw + q.w) / 2 + 1.0 && Math.abs(pz - q.z) < (gd + q.d) / 2 + 1.0) return false;
+        if (Math.abs(px - q.x) < (gw + q.w) / 2 + gap && Math.abs(pz - q.z) < (gd + q.d) / 2 + gap) return false;
       }
       return true;
     };
@@ -3336,7 +3336,7 @@ export function buildCity(scene, painted = null) {
     // under a window: the sill is a ledge, and with anything standing just
     // inside it a pull-up through the window lands on that, a second rise
     // in the middle of a climb that lurches the view
-    const site = (len, deep, salt) => {
+    const site = (len, deep, salt, free = true) => {
       const f0 = Math.floor(r(salt) * 4);
       for (let i = 0; i < 4; i++) {
         const f = faces[(f0 + i) % 4];
@@ -3348,6 +3348,21 @@ export function buildCity(scene, painted = null) {
           const px = f.along === 'x' ? x + along : inward, pz = f.along === 'x' ? inward : z + along;
           const gw = f.along === 'x' ? len : deep, gd = f.along === 'x' ? deep : len;
           if (clear(px, pz, gw, gd)) return { px, pz, gw, gd, face: f };
+        }
+      }
+      // A building that fills its lot has a street on every side and no
+      // blank wall at all, so a piece stands out in the room instead, 1.4 m
+      // off every wall, which keeps it from under any window
+      if (free && faces.every((f) => f.street)) {
+        for (let t = 0; t < 12; t++) {
+          const turn = r(1000 + salt * 40 + t) < 0.5, gw = turn ? deep : len, gd = turn ? len : deep;
+          const roomX = room.maxX - room.minX - 2.8 - gw, roomZ = room.maxZ - room.minZ - 2.8 - gd;
+          if (roomX < 0 || roomZ < 0) continue;
+          const px = room.minX + 1.4 + gw / 2 + r(1012 + salt * 40 + t) * roomX;
+          const pz = room.minZ + 1.4 + gd / 2 + r(1024 + salt * 40 + t) * roomZ;
+          // two cells of the route field between it and anything else out
+          // in the room, or the two close a corner off between them
+          if (clear(px, pz, gw, gd, 2.6)) return { px, pz, gw, gd, face: null };
         }
       }
       return null;
@@ -3382,7 +3397,7 @@ export function buildCity(scene, painted = null) {
       pieces.push({ x: c.px, z: c.pz, w: c.gw, d: c.gd });
     }
     // and a low shelf unit on a blank wall, standing on its own feet
-    const u = site(1.4, 0.45, 131);
+    const u = site(1.4, 0.45, 131, false);
     if (u) {
       // boards, sides and a back panel against the wall, each something a
       // round stops at; a body meets the whole unit
@@ -3612,7 +3627,22 @@ export function buildCity(scene, painted = null) {
       const len = Math.min(3.6, across * 0.4), side = ends.size ? -[...ends][0] : (r(41) < 0.5 ? -1 : 1);
       const off = side * (across / 2 - len / 2 - 0.9);
       const inset = (front.along === 'x' ? bd : bw) / 2 - T - 2.6;
-      if (front.along === 'x') furnish(len, 1.0, 0.7, x + off, KERB, z + front.s * inset, metal, TILE.metal);
+      // Its far end is 0.9 m off a wall, so the way round it is past the
+      // other end, and a stairwell's shaft standing there, or just behind
+      // it, walls part of the shop off from its door: a pocket the route
+      // field cannot reach, four of the 34 shops on seed 1 when the sector
+      // grew — and a column of a wide floor standing off its open end
+      // closes the same gap. A cell of the field clear all round it and two
+      // past its open end, or no counter.
+      const open = off - side * (len / 2 + 1.6);
+      const cw = front.along === 'x' ? len : 0.7, cd = front.along === 'x' ? 0.7 : len;
+      const cx = front.along === 'x' ? x + off : x + front.s * inset, cz = front.along === 'x' ? z + front.s * inset : z + off;
+      const crowded = pieces.some((q) => Math.abs(q.x - cx) < (q.w + cw) / 2 + 1.6 && Math.abs(q.z - cz) < (q.d + cd) / 2 + 1.6);
+      const sealed = crowded || shaft && (front.along === 'x'
+        ? shaft.blocks(x + open, z + front.s * inset, 3.2, 1.7) || shaft.blocks(x + off, z + front.s * inset, len + 3.2, 3.9)
+        : shaft.blocks(x + front.s * inset, z + open, 1.7, 3.2) || shaft.blocks(x + front.s * inset, z + off, 3.9, len + 3.2));
+      if (sealed) { /* the stair stands where the counter would */ }
+      else if (front.along === 'x') furnish(len, 1.0, 0.7, x + off, KERB, z + front.s * inset, metal, TILE.metal);
       else furnish(0.7, 1.0, len, x + front.s * inset, KERB, z + off, metal, TILE.metal);
     }
     // shelving against the blank walls, and crates in the corners

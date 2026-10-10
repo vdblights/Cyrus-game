@@ -559,6 +559,10 @@ check('what stands on a perch holds you up', async (page) => {
           const near = decks.find(({ p, b: k }) => y > p.y - 0.3 && y < p.y + REACH &&
             x > k.minX - CARRY && x < k.maxX + CARRY && z > k.minZ - CARRY && z < k.maxZ + CARRY);
           if (!near) continue;
+          // the top of a wall — a building's sill or the head of a pier,
+          // which by the floors' rule nobody stands on — is a wall's
+          if (g.world.boxes.some((k) => k.base > 0 && Math.abs(k.top - y) < 0.01 &&
+            x > k.minX && x < k.maxX && z > k.minZ && z < k.maxZ)) continue;
           ring++;
           const ground = g.world.groundHeight(x, z, 0.12, y + 0.25);
           if (ground < y - 0.15) off.push([+x.toFixed(1), +y.toFixed(2), +z.toFixed(1), +ground.toFixed(2)]);
@@ -629,6 +633,11 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
         // room for a body on the deck, and a deck there to stand on
         if (g.world.groundHeight(px, lz, R, Infinity) > box.top + 0.05) continue;
         if (g.world.groundHeight(px, lz, R, box.top + 0.05) < box.top - 0.25) continue;
+        // and deck past where it lands: a pull-up hands back the way it was
+        // going at a walk, so a wall under a body wide — the fountain's rim,
+        // half a metre — is climbed and walked straight off into the basin,
+        // which is right, and is not a ledge
+        if (g.world.groundHeight(px, lz + 0.8, 0.12, box.top + 0.05) < box.top - 0.25) continue;
         // and headroom over it: a window sill under the floors of an open
         // building is a ledge with a ceiling a body's height too low over it
         if (g.world.ceilingAbove(px, lz, R, box.top) < box.top + 1.9) continue;
@@ -994,6 +1003,9 @@ check('the pavement is a floor you stand on, step onto and shoot', async (page) 
         const x = (a[0] + b[0] + c[0]) / 3, y = (a[1] + b[1] + c[1]) / 3, z = (a[2] + b[2] + c[2]) / 3;
         // above the road paint, and no higher than a step
         if (y < 0.1 || y > 0.55) continue;
+        // and bigger than a foot: the concrete chips along the kerbs and the
+        // walls are walk-through litter 8 cm across, level on top
+        if (len / 2 < 0.01) continue;
         // room for a body: a plinth's top is a ledge on a wall, not a floor
         if (W.groundHeight(x, z, g.player.radius, Infinity) > y + 0.05) continue;
         area += len / 2;
@@ -3331,7 +3343,14 @@ check('rubble stops you and stops a bullet, and you can climb it', async (page) 
     };
     const open = heaps.filter((m) => [0, 1, 2, 3].some((k) => sight(m, k * Math.PI / 2 + 0.4)?.object === m))
       .sort((a, b) => size(b) - size(a));
-    const heap = open[0];
+    // and of those, the biggest with two level sides to walk at it from:
+    // the biggest of all can stand against a wall or a kerb on three
+    const level = (m, ang) => {
+      const R0 = size(m), b0 = W.groundHeight(m.position.x, m.position.z, 0.12, 0.5);
+      const sx = m.position.x + Math.sin(ang) * (R0 + 2.5), sz = m.position.z + Math.cos(ang) * (R0 + 2.5);
+      return Math.abs(W.groundHeight(sx, sz, 0.42, 3) - b0) <= 0.05 && sight(m, ang)?.object === m;
+    };
+    const heap = open.find((m) => [0, 1, 2, 3].filter((k) => level(m, (k / 4) * Math.PI * 2 + 0.4)).length >= 2) || open[0];
     if (!heap) return { ghostArea: +ghostArea.toFixed(1), heaps: heaps.length, open: 0 };
     const hx = heap.position.x, hz = heap.position.z, R = size(heap);
     const base = W.groundHeight(hx, hz, 0.12, 0.5);
@@ -4088,6 +4107,13 @@ check('a hostile reloads behind cover, and turns its head to a far-off shot', as
         const hy = W.groundHeight(hx, hz, 0.12, b.top - 0.5), qy = W.groundHeight(qx, qz, 0.12, 0.6);
         if (Math.abs(hy - (b.top - 1.05)) > 0.05 || qy > 0.5) continue;      // both ends on the slab's own floor
         if (W.blocked(hx, hz, 0.45, hy + 0.6) || W.blocked(qx, qz, 0.5, 0.6)) continue;
+        // and a slab that does what cover is for from where you stand: a
+        // standing chest in sight and a kneeling one (`CROUCH.drop`, 0.36 m
+        // lower) not — another prop in the line, or a kerb under your feet,
+        // can make either untrue, and then getting down is rightly refused
+        g.player.reset(qx, qz);
+        const e = g.player.position;
+        if (!W.lineOfSight(e.x, e.y, e.z, hx, hy + 1.25, hz) || W.lineOfSight(e.x, e.y, e.z, hx, hy + 1.25 - 0.36, hz)) continue;
         cover = { hx, hy, hz, qx, qz };
         break;
       }
