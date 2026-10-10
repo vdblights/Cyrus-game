@@ -699,7 +699,11 @@ A few notes on the implementation:
   any part of you on it, and it stops a bullet. Only a fallen slab, leaning
   at a wall's pitch, is too steep to climb. A gutted ruin's windows are real
   holes in its walls: you see through them into the courtyard and shoot
-  through them, and so does whoever is in there. Containers, wrecks, barriers, drums and lamps stand
+  through them, and so does whoever is in there, and its walls come down
+  at the top in broken steps where the floors tore away. A heap is a
+  slumped mound of broken concrete and brick, not a boulder. A container's
+  steel is folded and a shop's shutter is slatted, in the shape rather than
+  painted on, so a low sun lights one side of every rib. Containers, wrecks, barriers, drums and lamps stand
   clear of one another, inside the sector, and on the floor under them —
   a barrier on the pavement stands on the pavement — and the plaza's dry
   fountain is a basin you can climb into, round a plinth that stops you.
