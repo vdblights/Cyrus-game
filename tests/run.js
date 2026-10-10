@@ -618,7 +618,13 @@ check('a jump at a chest-high ledge climbs it, a wall stays a wall', async (page
         const px = mid + off;
         // on the ground — the street or a floor laid on it, all under half a
         // metre — rather than on top of something
-        if (g.world.groundHeight(px, pz, R, 99) > 0.5) continue;
+        const ground = g.world.groundHeight(px, pz, R, 99);
+        if (ground > 0.5) continue;
+        // and a ledge, not a step: anything under 0.6 m over the ground you
+        // start from is walked onto (`STEP_HEIGHT`). The box list's height is
+        // over the street, and a broken ruin's sill can stand 0.8 m over it
+        // and 0.52 m over the pavement in front of it.
+        if (box.top - ground < 0.62) continue;
         if (g.world.occupied(px, pz, R, 0.6)) continue;            // stuck inside something
         // room for a body on the deck, and a deck there to stand on
         if (g.world.groundHeight(px, lz, R, Infinity) > box.top + 0.05) continue;
@@ -5787,10 +5793,18 @@ check('a seed still lays out the city it did', async (page) => {
   // after boot identical (each pays the bake the UUID it no longer costs
   // there). Before it: 5361/1649 'b0d92d20', 3660/1323 '3dc368da',
   // 4854/1712 'a5ab07a8'.
+  //
+  // And a ruin's walls are broken at the top, a column at a time (`tops` in
+  // `ruinWall`), hashed off where each wall stands. Compared collider by
+  // collider on all three seeds: 243, 134 and 34 colliders gone and 204,
+  // 120 and 32 new, every one of either a 0.7 m ruin wall piece; the
+  // perches and the mark after boot identical. Before it: 5342
+  // '8afdfa64' (5003 '6edef181'), 3639 '3f753593' (3202 'dc28bfb4'), 4835
+  // 'dd322493' (4372 'f8b6d04b').
   const want = {
-    1: { boxes: 5342, solids: 1642, perches: 12, fp: '8afdfa64', placed: 5003, fpPlaced: '6edef181', mark: -1361973962 },
-    7: { boxes: 3639, solids: 1317, perches: 11, fp: '3f753593', placed: 3202, fpPlaced: 'dc28bfb4', mark: -559214183 },
-    20260101: { boxes: 4835, solids: 1706, perches: 10, fp: 'dd322493', placed: 4372, fpPlaced: 'f8b6d04b', mark: -1572333659 },
+    1: { boxes: 5303, solids: 1642, perches: 12, fp: '1885486a', placed: 4964, fpPlaced: 'cd6bf043', mark: -1361973962 },
+    7: { boxes: 3625, solids: 1317, perches: 11, fp: '34d1e3e5', placed: 3188, fpPlaced: '4ac1ea6a', mark: -559214183 },
+    20260101: { boxes: 4833, solids: 1706, perches: 10, fp: 'fc3267d4', placed: 4370, fpPlaced: '6eb20fbc', mark: -1572333659 },
   };
   // `mark` is where the seeded stream stands at the end of boot, which is
   // the stream every spawn is picked from. Every pass that changed how
