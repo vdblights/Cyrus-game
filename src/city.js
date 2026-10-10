@@ -1062,6 +1062,89 @@ function rubbleGeo(r, n) {
 }
 
 /**
+ * A closed block's shopfronts, drawn on the faces of the block that look onto
+ * a street: piers on the bay lines, a stall riser, a fascia over the lot, and
+ * in each bay a window over the riser, a door, a shutter pulled down, or the
+ * opening blocked up — with a transom light over all but the shutters. It
+ * used to be one box of dark glass wrapped round the whole ground floor, a
+ * black stripe along every street and down every side of every block.
+ *
+ * Everything is a few centimetres proud of the block's own face at most,
+ * which is where its collider is, so it is decoration by the "on a wall"
+ * rule. The faces onto the next building get a plain render band instead.
+ * Returned by material, relative to the block's middle, with y as built:
+ * `glass` and `sheet` ride on the band and shutter meshes the stream always
+ * paid for, and `conc` and `metal` are laid as decoration.
+ */
+function storefront(x, z, bw, bd, cx, cz) {
+  const out = { glass: [], sheet: [], conc: [], metal: [] };
+  const KERB = 0.28, TOP = 2.85, FASCIA = 2.38, RISER = 0.75;
+  const faces = [
+    { along: 'x', s: -1, len: bw, at: bd / 2, street: Math.abs(z - bd / 2 - cz) > LOT / 2 - 0.6 },
+    { along: 'x', s: 1, len: bw, at: bd / 2, street: Math.abs(z + bd / 2 - cz) > LOT / 2 - 0.6 },
+    { along: 'z', s: -1, len: bd, at: bw / 2, street: Math.abs(x - bw / 2 - cx) > LOT / 2 - 0.6 },
+    { along: 'z', s: 1, len: bd, at: bw / 2, street: Math.abs(x + bw / 2 - cx) > LOT / 2 - 0.6 },
+  ];
+  // a box on a face: `u` along it, from `y0` to `y1`, standing `d` proud
+  const box = (f, list, u0, u1, y0, y1, d, inset = 0, tile = TILE.concrete) => {
+    const wu = u1 - u0, h = y1 - y0, n = f.at + inset + d / 2;
+    if (wu < 0.01 || h < 0.01) return;
+    const geo = f.along === 'x'
+      ? boxGeo(wu, h, d, tile).translate((u0 + u1) / 2, (y0 + y1) / 2, f.s * n)
+      : boxGeo(d, h, wu, tile).translate(f.s * n, (y0 + y1) / 2, (u0 + u1) / 2);
+    list.push(geo);
+  };
+  faces.forEach((f, fi) => {
+    const half = f.len / 2;
+    if (!f.street) { box(f, out.conc, -half, half, KERB, TOP, 0.03); return; }
+    const n = Math.max(1, Math.round(f.len / 3.2)), bay = f.len / n, PIER = 0.4;
+    box(f, out.metal, -half, half, FASCIA, TOP, 0.12, 0, TILE.metal);
+    const kinds = [];
+    for (let i = 0; i < n; i++) {
+      const k = hash2(Math.round(x * 3) + i, Math.round(z * 3) + fi * 17, 230);
+      kinds.push(k < 0.42 ? 'window' : k < 0.6 ? 'door' : k < 0.82 ? 'shutter' : 'blocked');
+    }
+    for (let i = 0; i <= n; i++) {
+      const c = -half + bay * i;
+      box(f, out.conc, Math.max(-half, c - PIER / 2), Math.min(half, c + PIER / 2), KERB, FASCIA, 0.07);
+    }
+    for (let i = 0; i < n; i++) {
+      const a = -half + bay * i + PIER / 2, b = a + bay - PIER, m = (a + b) / 2;
+      const kind = kinds[i];
+      if (kind === 'shutter') {
+        const sh = rollerShutter(b - a, FASCIA - KERB, 0.06, TILE.rust);
+        sh.translate(0, KERB, 0);
+        if (f.along === 'x') sh.rotateY(f.s > 0 ? 0 : Math.PI).translate(m * (f.s > 0 ? 1 : 1), 0, f.s * (f.at + 0.03));
+        else sh.rotateY(f.s * Math.PI / 2).translate(f.s * (f.at + 0.03), 0, m);
+        out.sheet.push(sh);
+        continue;
+      }
+      // a transom light over the bay, under the fascia
+      box(f, out.glass, a, b, 2.05, FASCIA, 0.02, 0, TILE.glass);
+      box(f, out.metal, a, b, 2.0, 2.06, 0.05, 0, TILE.metal);
+      if (kind === 'blocked') { box(f, out.conc, a, b, KERB, 2.0, 0.04); continue; }
+      if (kind === 'window') {
+        box(f, out.conc, a, b, KERB, RISER, 0.05);
+        box(f, out.glass, a, b, RISER, 2.0, 0.02, 0, TILE.glass);
+        box(f, out.metal, a, b, RISER, RISER + 0.05, 0.06, 0, TILE.metal);
+        box(f, out.metal, m - 0.03, m + 0.03, RISER, 2.0, 0.05, 0, TILE.metal);
+      } else {
+        // a door on one side and a narrow light beside it
+        const d0 = a, d1 = a + Math.min(1.1, (b - a) * 0.55);
+        box(f, out.glass, d0, d1, KERB, 2.0, 0.02, 0, TILE.glass);
+        for (const e of [d0, d1]) box(f, out.metal, e - 0.04, e + 0.04, KERB, 2.0, 0.06, 0, TILE.metal);
+        box(f, out.metal, d0 + 0.15, d1 - 0.15, 1.0, 1.04, 0.09, 0, TILE.metal);      // the push bar
+        box(f, out.conc, d1 + 0.04, b, KERB, RISER, 0.05);
+        box(f, out.glass, d1 + 0.04, b, RISER, 2.0, 0.02, 0, TILE.glass);
+      }
+    }
+  });
+  // a street face with no shutter still gives the shutter mesh something
+  if (!out.sheet.length) out.sheet.push(rollerShutter(0.6, 0.6, 0.04, TILE.rust).translate(0, KERB, -bd / 2 + 0.3));
+  return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.length ? mergeIntoOne(v) : null]));
+}
+
+/**
  * An oil drum with its rolling hoops, which is what a drum is for.
  *
  * Two raised bands around a cylinder: cheap, and the only thing that stops a
@@ -2630,18 +2713,40 @@ export function buildCity(scene, painted = null) {
       // ground-floor storefront: dark glass band + a shutter. An open ground
       // floor still mints both, and rolls where the shutter would have gone,
       // so the stream after it is the one every closed block leaves.
-      const band = new THREE.Mesh(boxGeo(bw + 0.1, 2.6, bd + 0.1, TILE.glass), glass);
-      band.position.set(x, 1.6, z);
-      // the box it used to be cost a geometry's UUID; the slats are built
-      // free and pay that, so the rolls after it get the values they did
+      // Both are shopfronts now (`storefront`): the band carries its glass
+      // and the shutter its shutters, built free, and each pays the geometry
+      // its box used to mint, so the rolls after them get the values they
+      // did. The roll that placed the shutter is still drawn; nothing reads it.
+      const front = open ? null : reserve(() => storefront(x, z, bw, bd, cx, cz));
+      const none = () => reserve(() => new THREE.BufferGeometry());
       spend(UUID_COST);
-      const shut = new THREE.Mesh(reserve(() => rollerShutter(bw * 0.4, 2.4, 0.2).translate(0, -1.2, 0)), sheetFor(x, z));
-      shut.position.set(x + randRange(-bw / 4, bw / 4), 1.4, z + bd / 2 + 0.12);
+      const band = new THREE.Mesh(front?.glass || none(), glass);
+      band.position.set(x, 0, z);
+      band.receiveShadow = true;
+      spend(UUID_COST);
+      const shut = new THREE.Mesh(front?.sheet || none(), sheetFor(x, z));
+      randRange(-bw / 4, bw / 4);
+      shut.position.set(x, 0, z);
+      shut.receiveShadow = true;
       shut.userData.tint = tintAt(x, z, 2, 0.1);
       let stair = null;
       infillMat = infills[mat.userData.style] || conc;
       if (open) reserve(() => { stair = groundFloor(g, w, x, z, bw, bd, h, cx, cz, conc, metal, tint, body, cap, party); });
-      else { g.add(band); g.add(shut); }
+      else {
+        g.add(band); g.add(shut);
+        // the piers, risers and blocked bays, and the fascias and frames:
+        // decoration, on the wall
+        decor(() => {
+          for (const [geo, m] of [[front.conc, conc], [front.metal, metal]]) {
+            if (!geo) continue;
+            const part = new THREE.Mesh(geo, m);
+            part.position.set(x, 0, z);
+            part.castShadow = part.receiveShadow = true;
+            part.userData.tint = tint;
+            g.add(part);
+          }
+        });
+      }
 
       // relief, roofline and street level — none of it costs the layout a
       // draw, so the same seed lays out the same city with or without it.
