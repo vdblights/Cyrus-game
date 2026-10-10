@@ -3,7 +3,7 @@ import { World, randRange, pick } from './world.js';
 import * as TEX from './textures.js';
 import { TILE, FACADE_BAYS, FACADE_FLOORS, FACADE_VARIANTS } from './textures.js';
 import { reserve, spend, makeRandom, UUID_COST } from './rng.js';
-import { chamferGeo, corrugateGeo, loftGeo, mergeIntoOne, sideGeo, latheGeo, bend } from './shapes.js';
+import { chamferGeo, corrugateGeo, loftGeo, mergeIntoOne, sideGeo, latheGeo, bend, planarUV } from './shapes.js';
 import { cutWindows } from './windows.js';
 
 const BLOCK = 34;      // centre-to-centre distance between city lots
@@ -1028,6 +1028,40 @@ function rollerShutter(len, height, thick, tile = TILE.rust) {
 }
 
 /**
+ * A heap of rubble: a mound that slumped, not a stone that was cut.
+ *
+ * It used to be an icosahedron at detail 0 — twenty flat faces, which under
+ * one sun reads as a faceted grey boulder, a hundred and fifty of them across
+ * the city. This is the same sphere subdivided twice and pushed in and out
+ * by a lumpy field off each vertex's direction, so every copy of a vertex
+ * moves alike and the surface stays closed; the faces are shaded flat, so it
+ * reads as broken concrete in lumps. `n` picks the lumps (the heap's count,
+ * which the stream already decided), and the heap's colliders are cut from
+ * this shape (`registerHeaps`), so you stand on the lumps you see.
+ */
+function rubbleGeo(r, n) {
+  const geo = new THREE.IcosahedronGeometry(r, 2);
+  const p = geo.attributes.position;
+  const o = [hash2(n, 3, 61) * 9, hash2(n, 5, 62) * 9, hash2(n, 7, 63) * 9];
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i).normalize();
+    const x = v.x * 2.1 + o[0], y = v.y * 2.1 + o[1], z = v.z * 2.1 + o[2];
+    // ridged: |sin| folds make creases rather than swells, which is the
+    // difference between broken slabs leaning on each other and a pebble
+    const ridge = (t) => 1 - 2 * Math.abs(Math.sin(t));
+    const lump = 0.5 * Math.sin(x * 1.7 + Math.sin(z * 1.3)) * Math.sin(y * 1.9 + Math.sin(x * 1.1))
+      + 0.45 * ridge(x * 3.1 + y * 2.3 - z * 1.1)
+      + 0.35 * ridge(z * 4.7 - x * 2.9 + y * 1.7)
+      + 0.25 * ridge(y * 7.9 + z * 5.3 - x * 3.7);
+    v.multiplyScalar(r * (1 + 0.2 * lump));
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();             // non-indexed: one normal a face
+  return planarUV(geo, TILE.concrete);
+}
+
+/**
  * An oil drum with its rolling hoops, which is what a drum is for.
  *
  * Two raised bands around a cylinder: cheap, and the only thing that stops a
@@ -1778,7 +1812,7 @@ export const CITY_PAINT = [
   })),
   {
     label: 'Pouring concrete',
-    weight: 6,
+    weight: 9,
     run(m) {
       const concreteTex = TEX.concrete('#6a6c72');   // cooler stock; the warm key tints it
       m.concreteMat = new THREE.MeshStandardMaterial({
@@ -1793,6 +1827,14 @@ export const CITY_PAINT = [
         normalScale: new THREE.Vector2(0.7, 0.7),
         roughnessMap: TEX.surfaceFrom(darkTex, { dark: 1, lite: 0.72 }, 'dark'),
         roughness: 1, metalness: 0.02, envMapIntensity: 0.6, vertexColors: true,
+      });
+      // what a heap of rubble is made of, close to
+      const debrisTex = TEX.debris();
+      m.debrisMat = new THREE.MeshStandardMaterial({
+        map: debrisTex, normalMap: TEX.normalFrom(debrisTex, 2.2, 'debris', 1),
+        normalScale: new THREE.Vector2(1, 1),
+        roughnessMap: TEX.surfaceFrom(debrisTex, { dark: 1, lite: 0.8 }, 'debris'),
+        roughness: 1, metalness: 0.02, envMapIntensity: 0.5, vertexColors: true,
       });
     },
   },
@@ -2079,6 +2121,10 @@ function labelMaterials(m) {
   m.carRustMats.forEach((mat, i) => label(mat, 'carrust' + i, TILE.metal));
   label(m.concreteMat, 'concrete', TILE.concrete);
   label(m.darkConcrete, 'dark', TILE.concrete);
+  // new, so unbilled: the heaps it dresses used to wear concrete, which the
+  // rest of the city still wears, so the batches the stream pays for are the
+  // ones they were
+  label(m.debrisMat, 'debris', TILE.concrete); m.debrisMat.userData.unbilled = true;
   m.rusts.forEach((mat, i) => label(mat, 'rust' + i, TILE.rust));
   // A sheet is worn where its rust twin was, so the bake bills it as that
   // twin: whichever of the two a seed's props end up wearing, the batches
@@ -2121,7 +2167,7 @@ export function buildCity(scene, painted = null) {
 
   const mats = painted || paintCity();
   labelMaterials(mats);
-  const { facades, infills, concreteMat, darkConcrete, rusts, rustSheets, metalMat, glassMat,
+  const { facades, infills, concreteMat, darkConcrete, debrisMat, rusts, rustSheets, metalMat, glassMat,
     asphaltMat, paintMat, yellowMat, coverMat, grateMat, tactileMat, ironMat, gratingMat, railMat, carBodyMats, carRustMats, burntMat, tireMat, weedMat,
     waterMat, dampMat, litterMat, shardMat } = mats;
 
@@ -4512,11 +4558,20 @@ export function buildCity(scene, painted = null) {
   }
 
   function rubblePile(g, x, z, conc, scale = 1) {
-    const geo = new THREE.IcosahedronGeometry(randRange(0.5, 1.1) * scale, 0);
-    const m = new THREE.Mesh(geo, conc);
+    // the radius is rolled as it always was, and the icosahedron it used to
+    // mint is paid for: the mound is built free (see `rubbleGeo`)
+    const r = randRange(0.5, 1.1) * scale;
+    spend(UUID_COST);
+    const geo = reserve(() => rubbleGeo(r, heaps.length + 1));
+    const m = new THREE.Mesh(geo, debrisMat);
     m.userData.tint = tintAt(x, z, 10, 0.2);
     m.position.set(x, randRange(0.05, 0.3) * scale, z);
-    m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+    // A heap slumps: squashed along the vertical and only tipped a little,
+    // where it used to be spun on all three axes and its squash could come
+    // out standing up — a grey egg on end. The three rolls are drawn as
+    // they always were, and the lumps give each a face of its own.
+    const tx = Math.random(), ty = Math.random(), tz = Math.random();
+    m.rotation.set((tx - 0.5) * 0.3, ty * 3, (tz - 0.5) * 0.3);
     m.scale.y = randRange(0.35, 0.7);
     m.receiveShadow = m.castShadow = true;
     g.add(m);

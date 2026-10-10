@@ -389,6 +389,61 @@ export function asphalt(variant = 0) {
 }
 
 /** Pitted sidewalk / plaza concrete, slabbed at roughly 1.3 m. */
+/**
+ * A heap of rubble seen close: broken concrete in lumps, a few brick ends,
+ * and dark gaps between them where the light does not get in.
+ *
+ * Painted back to front — a layer of small pieces, then larger ones over
+ * them, each an irregular polygon with a shadow under its lower edge and a
+ * lit upper edge — so it reads as a pile rather than a pattern. Every piece
+ * near a tile edge is drawn again across it, so the tile wraps. 4 m a tile,
+ * the concrete's, so a piece is 4 to 30 cm.
+ */
+export function debris() {
+  return make('debris', () => {
+    const s = 512, c = canvas(s), ctx = c.getContext('2d');
+    ctx.fillStyle = '#3b3733';             // the gaps
+    ctx.fillRect(0, 0, s, s);
+    const greys = ['#6f6c67', '#67645f', '#77746d', '#5f5c57', '#7d7a72', '#6b6660'];
+    const bricks = ['#7a4a38', '#6b3f30', '#86553f'];
+    const piece = (x, y, r) => {
+      const n = 4 + Math.floor(rr(0, 4)), a0 = rr(0, Math.PI * 2), pts = [];
+      for (let i = 0; i < n; i++) {
+        const a = a0 + (i / n) * Math.PI * 2 + rr(-0.35, 0.35), d = r * rr(0.55, 1.15);
+        pts.push([x + Math.cos(a) * d, y + Math.sin(a) * d * rr(0.6, 1)]);
+      }
+      const fill = chance(0.12) ? bricks[Math.floor(rr(0, bricks.length))] : greys[Math.floor(rr(0, greys.length))];
+      for (const ox of [-s, 0, s]) for (const oy of [-s, 0, s]) {
+        if (x + ox + r * 1.2 < 0 || x + ox - r * 1.2 > s || y + oy + r * 1.2 < 0 || y + oy - r * 1.2 > s) continue;
+        const path = () => {
+          ctx.beginPath();
+          pts.forEach(([px, py], i) => (i ? ctx.lineTo(px + ox, py + oy) : ctx.moveTo(px + ox, py + oy)));
+          ctx.closePath();
+        };
+        // the shadow it casts on what is under it, then the piece, then its
+        // lit top edge
+        ctx.save(); ctx.translate(r * 0.12, r * 0.18); path();
+        ctx.fillStyle = 'rgba(20,16,12,0.34)'; ctx.fill(); ctx.restore();
+        path(); ctx.fillStyle = fill; ctx.fill();
+        ctx.save(); ctx.clip();
+        const g = ctx.createLinearGradient(0, y + oy - r, 0, y + oy + r);
+        g.addColorStop(0, 'rgba(255,250,240,0.09)');
+        g.addColorStop(0.45, 'rgba(255,255,255,0)');
+        g.addColorStop(1, 'rgba(0,0,0,0.18)');
+        ctx.fillStyle = g; ctx.fillRect(x + ox - r * 1.3, y + oy - r * 1.3, r * 2.6, r * 2.6);
+        ctx.restore();
+      }
+    };
+    for (let k = 0; k < 900; k++) piece(rr(0, s), rr(0, s), rr(3, 9));
+    for (let k = 0; k < 260; k++) piece(rr(0, s), rr(0, s), rr(8, 20));
+    for (let k = 0; k < 40; k++) piece(rr(0, s), rr(0, s), rr(18, 34));
+    mottle(ctx, s, 14, 'rgba(40,32,24,0.22)', 10, 40);
+    grit(ctx, s, 3000, '220,214,204', '0,0,0', 1.2);
+    noise(ctx, s, 18);
+    return c;
+  });
+}
+
 export function concrete(tint = '#6d6b6d', variant = 0) {
   return make('concrete' + tint + '_' + variant, () => {
     const s = 512, c = canvas(s), ctx = c.getContext('2d');
