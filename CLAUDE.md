@@ -17,6 +17,7 @@ npm test -- --only="a|b"       # either, in suite order, in one browser
 npm run build                  # one-file dist/ashfall.html, no external refs
 node tests/probe.js --list     # canned probes
 node tests/probe.js "g.perches.length"   # ask the running game anything
+(cd tools/devlog && npm ci && npm test)  # the X dev log tool's own checks
 ```
 
 `npm install` + `npx playwright install chromium` are only needed for tests and
@@ -43,6 +44,15 @@ builds, never to play.
   list. A status line here is wrong the moment anyone merges, and it was the
   only thing needing correction in four sessions running. Write down what was
   *learned* and what it *measured*; leave the bookkeeping to git.
+- **The X dev log drafts; it does not send.** `tools/devlog/` (its README
+  has the setup) drafts a post for X on each merged PR, as a comment, and
+  three times a week on another topic, as a `devlog` issue, in the voice set
+  out in `tools/devlog/voice.md`. Nothing reaches X until the owner runs the
+  `Devlog` workflow with `post` ticked, or sets `DEVLOG_AUTOPOST`. Posting is
+  public and cannot be taken back, so do not turn that on, or post, on your
+  own. A PR's title and description are what its post is written from, so
+  write them as something a player could read; label a PR `no-devlog` to
+  skip it.
 - **This file is the only memory that survives.** Sessions run in a container
   that is reclaimed when they end, so anything worth keeping — a preference, a
   measurement, a trap someone already fell into — belongs in here or in

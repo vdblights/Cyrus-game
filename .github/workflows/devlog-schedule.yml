@@ -1,0 +1,61 @@
+name: Devlog schedule
+
+# A post about the game on something other than the latest merge, three
+# times a week: a transmission from Carrow, a look behind a mechanic, a tip,
+# or a city to try. Each is drafted as an issue labelled `devlog`, posted the
+# same way as a merge's draft (the Devlog workflow), and needs
+# ANTHROPIC_API_KEY. tools/devlog/schedule.js has the rest.
+on:
+  schedule:
+    - cron: '0 16 * * 1,3,5'
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: Topic (otherwise the next in turn)
+        type: choice
+        options: ['', transmission, mechanic, tip, seed]
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: devlog-schedule
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            tools/devlog
+            src
+            CLAUDE.md
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install
+        working-directory: tools/devlog
+        run: npm ci --no-audit --no-fund
+
+      - name: Draft a post
+        working-directory: tools/devlog
+        run: node schedule.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TOPIC: ${{ inputs.topic }}
+          DEVLOG_AUTOPOST: ${{ vars.DEVLOG_AUTOPOST }}
+          DEVLOG_LINK: ${{ vars.DEVLOG_LINK }}
+          DEVLOG_HANDLE: ${{ vars.DEVLOG_HANDLE }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}

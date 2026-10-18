@@ -1,0 +1,12 @@
+{
+  "name": "ashfall-devlog",
+  "private": true,
+  "description": "Drafts, and when told to posts, a dev log post on X for each merged pull request",
+  "type": "module",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0"
+  }
+}

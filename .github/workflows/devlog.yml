@@ -1,0 +1,70 @@
+name: Devlog
+
+# Drafts a post about the game for X from every merged pull request, as a
+# comment on it, and posts a draft only when told to: by running this
+# workflow by hand with its PR or issue number and `post` ticked, or for
+# every draft once the repo variable DEVLOG_AUTOPOST is `true`. The scheduled
+# posts are devlog-schedule.yml. tools/devlog/README.md has the rest.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      number:
+        description: PR or issue number with the draft
+        required: true
+      post:
+        description: Post to X (otherwise just draft again)
+        type: boolean
+        default: false
+      text:
+        description: Post this instead of the drafted text (optional)
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+# One run per pull request at a time, so a post can never go out twice.
+concurrency:
+  group: devlog-${{ github.event.pull_request.number || inputs.number }}
+
+jobs:
+  devlog:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: tools/devlog
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install
+        working-directory: tools/devlog
+        run: npm ci --no-audit --no-fund
+
+      # Inputs reach the script through the environment, never pasted into
+      # the shell, because a PR title or a typed post can hold anything.
+      - name: Draft, or post
+        working-directory: tools/devlog
+        run: node run.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_NUMBER: ${{ inputs.number }}
+          INPUT_POST: ${{ inputs.post }}
+          INPUT_TEXT: ${{ inputs.text }}
+          DEVLOG_AUTOPOST: ${{ vars.DEVLOG_AUTOPOST }}
+          DEVLOG_LINK: ${{ vars.DEVLOG_LINK }}
+          DEVLOG_HANDLE: ${{ vars.DEVLOG_HANDLE }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}

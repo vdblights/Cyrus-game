@@ -62,6 +62,23 @@ jobs:
       - name: Run checks
         run: npm test -- --shard=${{ matrix.shard }}/4
 
+  # The devlog workflow's own checks: no browser, nothing sent anywhere.
+  devlog:
+    name: devlog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Check the devlog tool
+        working-directory: tools/devlog
+        run: npm ci --no-audit --no-fund && npm test
+
   # The one-file build needs no browser, and only a green suite is worth
   # handing out as a playable copy.
   build:
